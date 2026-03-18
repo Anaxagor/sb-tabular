@@ -6,10 +6,8 @@ import pandas as pd
 from typing import Optional
 
 from sbtab.bridge.timegrid import TimeGrid
-from sbtab.models.field.boosted.catboost_continuous_field import (
-    CatBoostContinuousFieldConfig,
-    CatBoostContinuousField,
-)
+from sbtab.models.boosted.catboost_continuous_joint import CatBoostContinuousFieldConfig, CatBoostContinuousField
+
 
 @dataclass
 class JointContinuousBoostedConfig:

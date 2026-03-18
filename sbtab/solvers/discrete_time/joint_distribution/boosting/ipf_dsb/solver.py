@@ -6,10 +6,8 @@ import numpy as np
 import pandas as pd
 
 from sbtab.bridge.timegrid import TimeGrid
-from sbtab.models.field.boosted.catboost_discrete_field import (
-    CatBoostDiscreteFieldConfig,
-    CatBoostTimeDiscretizedField,
-)
+from sbtab.models.boosted.catboost_discrete_joint import CatBoostDiscreteFieldConfig, CatBoostTimeDiscretizedField
+
 
 @dataclass
 class JointDiscreteBoostedConfig:

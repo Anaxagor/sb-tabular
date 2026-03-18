@@ -14,10 +14,8 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.ipf_dsb_boosted.joint_continuous_solver import (
-    JointContinuousBoostedSolver,
-    JointContinuousBoostedConfig,
-)
+from sbtab.solvers.continuous_time.joint_distribution.boosting.ipf_dsb.solver import JointContinuousBoostedSolver, JointContinuousBoostedConfig
+
 from sbtab.models.field.boosted.catboost_continuous_field import CatBoostContinuousFieldConfig
 from sbtab.evaluation.metrics.statistical import sliced_wasserstein
 
