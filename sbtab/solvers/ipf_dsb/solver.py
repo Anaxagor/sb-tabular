@@ -12,8 +12,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from sbtab.bridge.timegrid import TimeGrid
 from sbtab.bridge.reference import GaussianReference
 from sbtab.bridge.sde import EulerMaruyama
-from sbtab.models.field.neural.mlp import TimeConditionedMLP, TimeMLPConfig
-from sbtab.models.field.neural.trainer import NeuralTrainer, NeuralTrainerConfig
+from sbtab.models.neural.mlp import TimeConditionedMLP, TimeMLPConfig
+from sbtab.models.neural.trainer import NeuralTrainer, NeuralTrainerConfig
 from sbtab.bridge.losses import RegressionLoss
 
 
