@@ -12,8 +12,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from sbtab.bridge.reference import GaussianReference
 from sbtab.bridge.sde import EulerMaruyama
 from sbtab.bridge.losses import RegressionLoss
-from sbtab.models.field.neural.mlp import TimeConditionedMLP, TimeMLPConfig
-from sbtab.models.field.neural.trainer import NeuralTrainer, NeuralTrainerConfig
+from sbtab.models.neural.mlp import TimeConditionedMLP, TimeMLPConfig
+from sbtab.models.neural.trainer import NeuralTrainer, NeuralTrainerConfig
 
 
 FB = Literal["f", "b"]

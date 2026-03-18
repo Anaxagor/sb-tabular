@@ -29,7 +29,7 @@ class CatBoostDiscreteFieldConfig:
 
     allow_writing_files: bool = False
 
-    feature_mode: Literal["x", "x_x0", "x_t", "x_x0_t"] = "x"
+    
 
 
 class CatBoostTimeDiscretizedField:
@@ -60,33 +60,6 @@ class CatBoostTimeDiscretizedField:
                 "Install with: pip install catboost"
             ) from e
         self._checked_deps = True
-
-    # -------------------------------------------------------
-
-    def _build_features(
-        self,
-        x: np.ndarray,
-        *,
-        x0: Optional[np.ndarray] = None,
-        t: Optional[float] = None,
-    ) -> np.ndarray:
-
-        parts = [x]
-
-        if self.cfg.feature_mode in ("x_x0", "x_x0_t"):
-            if x0 is None:
-                raise ValueError("feature_mode requires x0 but it is None")
-            parts.append(x0)
-
-        if self.cfg.feature_mode in ("x_t", "x_x0_t"):
-            if t is None:
-                raise ValueError("feature_mode requires t but it is None")
-            t_col = np.full((x.shape[0], 1), float(t), dtype=np.float32)
-            parts.append(t_col)
-
-        return np.concatenate(parts, axis=1)
-
-    # -------------------------------------------------------
 
     def fit_step(
         self,
@@ -131,20 +104,12 @@ class CatBoostTimeDiscretizedField:
         self,
         k: int,
         x: np.ndarray,
-        *,
-        x0: Optional[np.ndarray] = None,
     ) -> np.ndarray:
 
         model = self.models[k]
         if model is None:
             raise RuntimeError(f"Model for time step {k} is not trained.")
-
-        t = float(self.t_grid[k])
-
-        X_feat = self._build_features(x, x0=x0, t=t)
-
-        pred = model.predict(X_feat)
-
+        x = np.asarray(x, dtype=np.float32)
+        pred = model.predict(x)
         pred = np.asarray(pred, dtype=np.float32)
-
         return pred
