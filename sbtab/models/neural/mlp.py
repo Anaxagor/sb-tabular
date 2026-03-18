@@ -25,7 +25,6 @@ class TimeConditionedMLP(nn.Module):
     """
     Time-conditioned MLP: takes x (B,D) and t (B,1) and predicts vector (B,D).
 
-    Used as field/drift/mean-map model for DSB/IPF.
     """
 
     def __init__(self, cfg: TimeMLPConfig):
