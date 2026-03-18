@@ -9,10 +9,7 @@ from pgmpy.estimators import HillClimbSearch, BicScore
 from sklearn.preprocessing import KBinsDiscretizer
 
 from sbtab.bridge.timegrid import TimeGrid
-from sbtab.models.field.boosted.catboost_discrete_field import (
-    CatBoostDiscreteFieldConfig,
-    CatBoostTimeDiscretizedField,
-)
+from sbtab.models.boosted.catboost_discrete_scalar import CatBoostDiscreteFieldConfig, CatBoostTimeDiscretizedField
 
 @dataclass
 class StructuralDiscreteBoostedConfig:

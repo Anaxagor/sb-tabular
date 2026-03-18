@@ -14,10 +14,7 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.ipf_dsb_boosted.structural_discrete_solver import (
-    StructuralDiscreteBoostedSolver,
-    StructuralDiscreteBoostedConfig,
-)
+from sbtab.solvers.discrete_time.feature_wise.boosting.ipf_dsb.solver import StructuralDiscreteBoostedSolver, StructuralDiscreteBoostedConfig
 from sbtab.models.field.boosted.catboost_discrete_field import CatBoostDiscreteFieldConfig
 from sbtab.evaluation.metrics.statistical import sliced_wasserstein
 
