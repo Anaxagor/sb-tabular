@@ -1,3 +1,7 @@
+"""
+This file is adapted from the official TabDDPM repository: https://github.com/yandex-research/tab-ddpm
+"""
+
 from __future__ import annotations
 
 import os
@@ -10,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from sbtab.baselines.base import BaselineGenerativeModel, BaselineFitInfo, ArrayLike
+from sbtab.data.schema import TabularSchema
 
 # import modules TabDDPM
 from .gaussian_multinomial_diffsuion import GaussianMultinomialDiffusion
@@ -54,22 +59,27 @@ class TabDDPMWrapper(BaselineGenerativeModel):
         self.num_numerical_features = 0
         self.num_classes = [] # For categorical features
         
-    def _preprocess_data(self, df: pd.DataFrame):
-        """Detects types and splits into numerical and categorical."""
+    def _preprocess_data(self, df: pd.DataFrame, schema: TabularSchema):
+        """
+        Splits data into numerical and categorical based strictly on TabularSchema.
+        """
         self.columns_ = list(df.columns)
         
-        # Detect numerical
-        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        # Detect categorical
-        cat_cols = [c for c in df.columns if c not in num_cols]
+        #  TabularSchema
+        num_cols = getattr(schema, "continuous_cols", list(schema.feature_cols))
+        
+        cat_cols = getattr(schema, "categorical_cols",[])
+        
+        num_cols = [c for c in num_cols if c in df.columns]
+        cat_cols = [c for c in cat_cols if c in df.columns]
         
         # Original TabDDPM expects numerical features first, then categorical
         self.num_numerical_features = len(num_cols)
         self.ordered_cols = num_cols + cat_cols
         
-        X_num = df[num_cols].values.astype(np.float32)
+        X_num = df[num_cols].values.astype(np.float32) if num_cols else np.empty((len(df), 0), dtype=np.float32)
         X_cat = []
-        self.num_classes = []
+        self.num_classes =[]
         
         for col in cat_cols:
             codes = df[col].astype('category').cat.codes.values
@@ -87,10 +97,14 @@ class TabDDPMWrapper(BaselineGenerativeModel):
         return torch.from_numpy(X).to(self.device)
 
     def fit(self, data: ArrayLike, **kwargs: Any) -> "TabDDPMWrapper":
+        schema = kwargs.get("schema")
+        if schema is None:
+            raise ValueError("TabularSchema must be provided in kwargs (e.g., model.fit(data, schema=schema))")
+
         if not isinstance(data, pd.DataFrame):
             data = pd.DataFrame(data, columns=[f"f{i}" for i in range(data.shape[1])])
-            
-        X = self._preprocess_data(data)
+
+        X = self._preprocess_data(data, schema)
         
         # 1. Define internal model (denoising function)
         model = MLPDiffusion(
@@ -127,16 +141,12 @@ class TabDDPMWrapper(BaselineGenerativeModel):
         for epoch in range(self.cfg.n_epochs):
             for batch in loader:
                 x_batch = batch[0]
-                # TabDDPM expects a dict as 2nd arg for conditional info (we use empty y)
                 loss_multi, loss_gauss = self.diffusion.mixed_loss(x_batch, out_dict={'y': None})
                 loss = loss_multi + loss_gauss
                 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                
-            if (epoch + 1) % 100 == 0:
-                print(f"Epoch {epoch+1}/{self.cfg.n_epochs} | Loss: {loss.item():.4f}")
 
         self.fit_info_ = BaselineFitInfo(
             n_rows=int(data.shape[0]),

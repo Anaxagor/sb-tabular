@@ -13,10 +13,8 @@ from scipy.stats import wasserstein_distance
 from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold
 
-# Импорты sbtab
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-# Импортируем нашу обертку для TabDDPM
 from sbtab.baselines.tabddpm.model import TabDDPMWrapper, TabDDPMConfig
 
 
@@ -151,10 +149,10 @@ def load_best_params(best_json_path: Path) -> Dict:
 
 def build_tabddpm_config_from_best(best: Dict, seed: int, device: str) -> TabDDPMConfig:
     """
-    Маппинг параметров из Optuna JSON в TabDDPMConfig.
+    Maps Optuna JSON parameters to TabDDPMConfig.
     """
     return TabDDPMConfig(
-        n_epochs=int(best.get("n_iter", 1000)), # В TabDDPM n_iter часто называют эпохами
+        n_epochs=int(best.get("n_iter", 1000)),
         num_timesteps=int(best.get("num_timesteps", 1000)),
         batch_size=int(best.get("batch_size", 4096)),
         lr=float(best.get("lr", 0.001)),
