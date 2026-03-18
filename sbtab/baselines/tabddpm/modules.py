@@ -1,5 +1,5 @@
 """
-Code was adapted from https://github.com/Yura52/rtdl
+This file is adapted from the official TabDDPM repository: https://github.com/yandex-research/tab-ddpm
 """
 
 import math

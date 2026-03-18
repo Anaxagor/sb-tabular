@@ -15,7 +15,6 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-# Импорт вашей обертки CTGAN
 from sbtab.baselines.ctgan.model import CTGANWrapper
 
 
@@ -150,7 +149,7 @@ def load_best_params(best_json_path: Path) -> Dict:
 
 def build_ctgan_config_from_best(best: Dict) -> Dict:
     """
-    Маппинг параметров из Optuna JSON в аргументы инициализации CTGANWrapper.
+    Maps Optuna JSON parameters to CTGANWrapper init arguments.
     """
     gen_w = int(best.get("gen_width", 512))
     disc_w = int(best.get("disc_width", 512))

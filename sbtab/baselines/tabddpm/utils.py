@@ -1,3 +1,7 @@
+"""
+This file is adapted from the official TabDDPM repository: https://github.com/yandex-research/tab-ddpm
+"""
+
 import torch
 import numpy as np
 import torch.nn.functional as F

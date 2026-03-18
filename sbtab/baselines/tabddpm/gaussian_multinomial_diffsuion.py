@@ -1,4 +1,5 @@
 """
+This file is adapted from the official TabDDPM repository: https://github.com/yandex-research/tab-ddpm
 Based on https://github.com/openai/guided-diffusion/blob/main/guided_diffusion
 and https://github.com/ehoogeboom/multinomial_diffusion
 """
