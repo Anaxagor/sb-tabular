@@ -13,6 +13,7 @@ from sbtab.bridge.timegrid import TimeGrid
 from sbtab.bridge.reference import GaussianReference
 from sbtab.bridge.sde import EulerMaruyama
 from sbtab.models.neural.mlp import TimeConditionedMLP, TimeMLPConfig
+from sbtab.models.neural.time_embedding import SinusoidalTimeEmbeddingConfig
 from sbtab.models.neural.trainer import NeuralTrainer, NeuralTrainerConfig
 from sbtab.bridge.losses import RegressionLoss
 
@@ -37,21 +38,24 @@ class IPFDSBConfig:
     gamma_min: float = 1e-4
     gamma_max: float = 1e-2
     schedule: Literal["linear", "geom"] = "geom"
+    alpha_ou: float = 1.0  # OU reference scaling for gamma (gamma_eff = gamma * alpha_ou)
 
     # training
     batch_size: int = 512
     cache_batches: int = 200  # number of batches to generate per IPF phase
+    steps_per_phase: Optional[int] = None  # if set, epochs_per_phase = steps_per_phase // cache_batches
     lr: float = 2e-4
     weight_decay: float = 0.0
     epochs_per_phase: int = 1
     grad_clip: Optional[float] = 1.0
 
+    # MLP architecture (passed to TimeMLPConfig)
+    hidden_units: int = 256
+    time_features: int = 64
+
     # sampler
     noise: bool = True
 
-    # parametrization
-    # "mean_map": model predicts residual (x_prev - x_next) / gamma  style (we use direct residual here)
-    # For simplicity we keep one variant aligned with cache target defined below.
     device: str = "cpu"
     seed: int = 42
 
@@ -78,10 +82,14 @@ class IPFDSBSolver:
 
         self.device = torch.device(cfg.device)
 
+        # Apply alpha_ou scaling to gamma (larger alpha_ou -> larger effective step)
+        gamma_min = cfg.gamma_min * cfg.alpha_ou
+        gamma_max = cfg.gamma_max * cfg.alpha_ou
+
         self.timegrid = TimeGrid(
             num_steps=cfg.num_steps,
-            gamma_min=cfg.gamma_min,
-            gamma_max=cfg.gamma_max,
+            gamma_min=gamma_min,
+            gamma_max=gamma_max,
             schedule=cfg.schedule,
             device=self.device,
             dtype=torch.float32,
@@ -89,18 +97,27 @@ class IPFDSBSolver:
         self.integrator = EulerMaruyama(noise=cfg.noise)
         self.reference = GaussianReference(dim=self.dim, device=self.device)
 
-        # Models (f and b): time-conditioned MLPs
-        mlp_cfg = TimeMLPConfig(in_dim=self.dim)
+        # Models (f and b): time-conditioned MLPs (time_features must be even)
+        te_dim = cfg.time_features if cfg.time_features % 2 == 0 else cfg.time_features + 1
+        mlp_cfg = TimeMLPConfig(
+            in_dim=self.dim,
+            hidden_dim=cfg.hidden_units,
+            time_emb=SinusoidalTimeEmbeddingConfig(dim=te_dim),
+        )
         self.net_f = TimeConditionedMLP(mlp_cfg).to(self.device)
         self.net_b = TimeConditionedMLP(mlp_cfg).to(self.device)
 
         self.loss = RegressionLoss(kind="mse", reduction="mean")
 
+        epochs = cfg.epochs_per_phase
+        if cfg.steps_per_phase is not None and cfg.steps_per_phase > 0:
+            epochs = max(1, cfg.steps_per_phase // cfg.cache_batches)
+
         self.trainer = NeuralTrainer(
             NeuralTrainerConfig(
                 lr=cfg.lr,
                 weight_decay=cfg.weight_decay,
-                max_epochs=cfg.epochs_per_phase,
+                max_epochs=epochs,
                 grad_clip=cfg.grad_clip,
                 device=cfg.device,
             ),
