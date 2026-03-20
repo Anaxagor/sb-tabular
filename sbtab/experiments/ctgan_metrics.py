@@ -15,7 +15,7 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.baselines.ctgan.model import CTGANWrapper
+from sbtab.baselines.ctgan.model import CTGANWrapper, CTGANConfig
 
 
 # ----------------------------
@@ -150,10 +150,11 @@ def load_best_params(best_json_path: Path) -> Dict:
 def build_ctgan_config_from_best(best: Dict) -> Dict:
     """
     Maps Optuna JSON parameters to CTGANWrapper init arguments.
+    Supports both gen_disc_width (from ctgan_tuning) and gen_width/disc_width.
     """
-    gen_w = int(best.get("gen_width", 512))
-    disc_w = int(best.get("disc_width", 512))
-    
+    gen_w = int(best.get("gen_disc_width", best.get("gen_width", 512)))
+    disc_w = int(best.get("gen_disc_width", best.get("disc_width", 512)))
+
     return {
         "embedding_dim": int(best.get("embedding_dim", 128)),
         "generator_dim": (gen_w, gen_w),
@@ -220,6 +221,7 @@ def main() -> None:
             best_params_raw = load_best_params(best_json_path)
             
         ctgan_kwargs = build_ctgan_config_from_best(best_params_raw)
+        cfg = CTGANConfig(**{**ctgan_kwargs, "seed": args.seed})
 
         kf = KFold(n_splits=args.n_splits, shuffle=args.shuffle, random_state=args.seed)
         idx = np.arange(len(df))
@@ -241,7 +243,7 @@ def main() -> None:
             test_scaled = pipe.transform(df_test_raw)
 
             # Train CTGAN baseline
-            model = CTGANWrapper(**ctgan_kwargs, seed=args.seed)
+            model = CTGANWrapper(cfg=cfg)
             model.fit(train_scaled)
 
             # Sample synthetic dataset of size equal to test fold size
