@@ -235,9 +235,9 @@ def main() -> None:
             train_scaled = pipe.transform(df_train_raw)
             test_scaled = pipe.transform(df_test_raw)
 
-            # Train TabDDPM baseline
+            # Train TabDDPM baseline (schema defines continuous vs categorical columns)
             model = TabDDPMWrapper(cfg)
-            model.fit(train_scaled)
+            model.fit(train_scaled, schema=schema)
 
             # Sample synthetic dataset of size equal to test fold size
             x_synth = model.sample(n=len(test_scaled), seed=args.seed + fold_id)

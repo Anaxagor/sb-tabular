@@ -55,45 +55,47 @@ class TabDDPMWrapper(BaselineGenerativeModel):
         self.device = torch.device(cfg.device)
         
         self._fitted = False
-        self.columns_ = None
+        self.columns_: Optional[List[str]] = None
         self.num_numerical_features = 0
-        self.num_classes = [] # For categorical features
-        
-    def _preprocess_data(self, df: pd.DataFrame, schema: TabularSchema):
+        self.num_classes = np.array([], dtype=np.int64)
+        self.ordered_cols: List[str] = []
+
+    def _preprocess_data(self, df: pd.DataFrame, schema: TabularSchema) -> torch.Tensor:
         """
-        Splits data into numerical and categorical based strictly on TabularSchema.
+        Build a tensor for TabDDPM from ``df`` using ``TabularSchema`` for column roles:
+        ``schema.continuous_cols`` for numerical block; optional ``categorical_cols`` on
+        the schema object (if present) for categorical columns, else none.
         """
         self.columns_ = list(df.columns)
-        
-        #  TabularSchema
-        num_cols = getattr(schema, "continuous_cols", list(schema.feature_cols))
-        
-        cat_cols = getattr(schema, "categorical_cols",[])
-        
-        num_cols = [c for c in num_cols if c in df.columns]
-        cat_cols = [c for c in cat_cols if c in df.columns]
+
+        num_cols = [c for c in schema.continuous_cols if c in df.columns]
+        cat_cols_raw = getattr(schema, "categorical_cols", None)
+        if cat_cols_raw is None:
+            cat_cols: List[str] = []
+        else:
+            cat_cols = [c for c in list(cat_cols_raw) if c in df.columns]
         
         # Original TabDDPM expects numerical features first, then categorical
         self.num_numerical_features = len(num_cols)
         self.ordered_cols = num_cols + cat_cols
         
         X_num = df[num_cols].values.astype(np.float32) if num_cols else np.empty((len(df), 0), dtype=np.float32)
-        X_cat = []
-        self.num_classes =[]
-        
+        X_cat: List[np.ndarray] = []
+        num_classes_list: List[int] = []
+
         for col in cat_cols:
-            codes = df[col].astype('category').cat.codes.values
-            n_classes = df[col].nunique()
+            codes = df[col].astype("category").cat.codes.values
+            n_classes = int(df[col].nunique())
             X_cat.append(codes)
-            self.num_classes.append(n_classes)
-            
+            num_classes_list.append(n_classes)
+
         if X_cat:
-            X_cat = np.stack(X_cat, axis=1).astype(np.float32)
-            X = np.concatenate([X_num, X_cat], axis=1)
+            X_cat_arr = np.stack(X_cat, axis=1).astype(np.float32)
+            X = np.concatenate([X_num, X_cat_arr], axis=1)
         else:
             X = X_num
-            
-        self.num_classes = np.array(self.num_classes)
+
+        self.num_classes = np.array(num_classes_list, dtype=np.int64)
         return torch.from_numpy(X).to(self.device)
 
     def fit(self, data: ArrayLike, **kwargs: Any) -> "TabDDPMWrapper":
