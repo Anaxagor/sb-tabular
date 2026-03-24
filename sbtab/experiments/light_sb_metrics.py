@@ -15,6 +15,7 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
+from sbtab.models.sb.light_sb import LightSBPotentialConfig
 from sbtab.solvers.light_sb.config import LightSBConfig
 from sbtab.solvers.light_sb.solver import LightSBSolver
 
@@ -148,15 +149,23 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--n-bins-kl", type=int, default=20)
     ap.add_argument("--strict-targets", action="store_true")
-    ap.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
+
+    # LightSBPotentialConfig params
     ap.add_argument("--n-potentials", type=int, default=50)
     ap.add_argument("--epsilon", type=float, default=0.1)
-    ap.add_argument("--max-iter", type=int, default=10_000)
-    ap.add_argument("--batch-size", type=int, default=512)
-    ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--no-diagonal", action="store_true")
+    ap.add_argument("--sampling-batch-size", type=int, default=256)
+    ap.add_argument("--s-diagonal-init", type=float, default=0.1)
+
+    # LightSBConfig params
+    ap.add_argument("--lr", type=float, default=1e-2)
+    ap.add_argument("--batch-size", type=int, default=256)
+    ap.add_argument("--max-iter", type=int, default=10_000)
+    ap.add_argument("--grad-clip", type=float, default=None)
     ap.add_argument("--use-sde-sampling", action="store_true")
     ap.add_argument("--n-euler-steps", type=int, default=100)
+    ap.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda", "auto"])
+    ap.add_argument("--verbose-every", type=int, default=0)
 
     args = ap.parse_args()
 
@@ -194,22 +203,29 @@ def main() -> None:
         target_col = resolve_target_col(ds_name, df, strict=args.strict_targets)
         feature_cols = [c for c in cols if c != target_col]
         if len(feature_cols) < 1:
-            print(f"[SKIP] Dataset '{ds_name}' has no features after selecting target '{target_col}'.")
+            print(f"[SKIP] Dataset '{ds_name}' has no features.")
             continue
 
         print(f"Target: {target_col}  |  #features: {len(feature_cols)}  |  rows: {len(df)}")
 
-        cfg = LightSBConfig(
+        potential_cfg = LightSBPotentialConfig(
             n_potentials=args.n_potentials,
             epsilon=args.epsilon,
             is_diagonal=not args.no_diagonal,
-            max_iter=args.max_iter,
-            batch_size=args.batch_size,
+            sampling_batch_size=args.sampling_batch_size,
+            S_diagonal_init=args.s_diagonal_init,
+        )
+        cfg = LightSBConfig(
+            potential=potential_cfg,
             lr=args.lr,
+            batch_size=args.batch_size,
+            max_iter=args.max_iter,
+            grad_clip=args.grad_clip,
             use_sde_sampling=args.use_sde_sampling,
             n_euler_steps=args.n_euler_steps,
             device=args.device,
             seed=args.seed,
+            verbose_every=args.verbose_every,
         )
 
         kf = KFold(n_splits=args.n_splits, shuffle=args.shuffle, random_state=args.seed)
@@ -231,8 +247,11 @@ def main() -> None:
             solver = LightSBSolver(dim=len(cols), cfg=cfg)
             solver.fit(train_scaled)
 
-            x_synth = solver.sample(n=len(test_scaled), seed=args.seed + 1000 + fold_id)
-            synth_scaled = pd.DataFrame(x_synth, columns=cols)
+            synth_scaled = solver.sample_df(
+                n=len(test_scaled),
+                seed=args.seed + 1000 + fold_id,
+                use_sde_sampling=args.use_sde_sampling,
+            )
 
             m_kl = avg_kl_hist(test_scaled, synth_scaled, cols=cols, n_bins=args.n_bins_kl)
             m_wd = avg_wd(test_scaled, synth_scaled, cols=cols)
@@ -278,7 +297,10 @@ def main() -> None:
             "n_splits": int(args.n_splits),
             "shuffle": bool(args.shuffle),
             "seed": int(args.seed),
-            "light_sb_config": asdict(cfg),
+            "potential_config": asdict(potential_cfg),
+            "solver_config": {
+                k: v for k, v in asdict(cfg).items() if k != "potential"
+            },
             "metrics_mean": {},
             "metrics_std": {},
         }
