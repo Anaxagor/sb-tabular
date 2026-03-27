@@ -84,38 +84,36 @@ class DiscretePathSampler:
 
         x = x_init.clone()
         curr_batch_size = x.shape[0]
-        path = [x] if return_path else None
+        path = [x.clone()] if return_path else None
 
-        ks = range(K) if direction == "forward" else range(K - 1, -1, -1)
+        if direction == "forward":
+            ks = range(K)
+        else:
+            ks = range(K, 0, -1)
 
         for k in ks:
-            tk = t_vals[k].expand(curr_batch_size, 1).to(x.device)
-
+            t_idx = k if direction == "forward" else (k - 1)
+            tk = t_vals[t_idx].expand(curr_batch_size, 1).to(x.device)
             logits = model(x, tk)
-            probs = torch.softmax(logits, dim=-1)
-
-            flat_probs = probs.reshape(-1, self.reference.S_max)
-            x_target_pred = torch.multinomial(flat_probs + 1e-12, 1).view(x.shape)
 
             if direction == "forward":
-                x = self.reference.sample(
-                    x_prev=x,
-                    x_target=x_target_pred,
-                    t=k,
-                    total_steps=K
+                probs_step = self.reference.model_induced_next_step(
+                    model_logits=logits,
+                    x_t=x,
+                    n=k,
+                    K=K
                 )
+                x = self.reference.sample_from_probs(probs_step)
             else:
-                t_prev = k
-                probs_back = self.reference.bridge_at_time(
-                    x_start=x_target_pred,
-                    x_target=x,
-                    t=torch.full((curr_batch_size,), t_prev, device=x.device),
-                    total_steps=k + 1
+                probs_step = self.reference.model_induced_prev_step(
+                    model_logits=logits,
+                    x_t=x,
+                    n=k
                 )
-                x = torch.multinomial(probs_back.view(-1, self.reference.S_max) + 1e-12, 1).view(x.shape)
+                x = self.reference.sample_from_probs(probs_step)
 
             if return_path:
-                path.append(x)
+                path.append(x.clone())
 
         model.train()
         return x, (torch.stack(path) if return_path else None)
