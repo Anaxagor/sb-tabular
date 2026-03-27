@@ -1,7 +1,8 @@
+from dataclasses import dataclass
+
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-from dataclasses import dataclass
 
 from sbtab.bridge.pathsampler import DiscretePathSampler
 from sbtab.solvers.csbm import CSBMUpdater
@@ -12,6 +13,8 @@ class CSBMSolver:
     updater: "CSBMUpdater"
     sampler: "DiscretePathSampler"
     num_outer_iterations: int
+    epochs: int = 15
+    batch_size: int = 264
 
     def fit(self, dataloader_p1, dataloader_p0):
         K = self.sampler.timegrid.num_steps
@@ -24,12 +27,13 @@ class CSBMSolver:
         for l in range(1, self.num_outer_iterations + 1):
             print(f"\n{'=' * 10} CSBM Outer Iteration L={l} {'=' * 10}")
 
+            # --- Forward update stage ---
             if l == 1:
-                indices = torch.randperm(len(all_x1_real))
-                curr_x1 = all_x1_real
+                indices = torch.randperm(len(all_x0_real))
                 curr_x0 = all_x0_real[indices[:len(all_x1_real)]]
+                curr_x1 = all_x1_real
             else:
-                print("Sampling new coupling (x0, x1) using backward model...")
+                print("Sampling new coupling (x1, x0) using backward model...")
                 curr_x1 = all_x1_real
                 curr_x0, _ = self.sampler.simulate(
                     x_init=curr_x1,
@@ -37,24 +41,20 @@ class CSBMSolver:
                     direction="backward"
                 )
 
-            coupling_loader = DataLoader(TensorDataset(curr_x0, curr_x1), batch_size=256, shuffle=True)
-
-            for epoch in range(4):
+            coupling_loader = DataLoader(TensorDataset(curr_x0, curr_x1), batch_size=self.batch_size, shuffle=True)
+            for epoch in range(self.epochs):
                 pbar = tqdm(coupling_loader, desc=f"L={l} | Forward Training")
                 for x0_batch, x1_batch in pbar:
                     B = x1_batch.shape[0]
-                    # Sample n ~ U[0, K-1]
                     n = torch.randint(0, K, (B,), device=device)
 
-                    # Sample xt ~ q_ref(xt | x0, x1)
-                    probs = ref.bridge_at_time(x_start=x0_batch, x_target=x1_batch, t=n, total_steps=K)
-                    xt = torch.multinomial(probs.view(-1, ref.S_max), 1).view(x1_batch.shape)
+                    xt = ref.sample_x_t(x0_batch, x1_batch, n, K)
 
-                    # Train forward model
                     loss = self.updater.train_forward_step(xt, x1_batch, n, K)
                     pbar.set_postfix(loss=f"{loss:.4f}")
 
-            print("Sampling new coupling (x1, x0) using forward model...")
+            # --- Backward update stage ---
+            print("Sampling new coupling (x0, x1) using forward model...")
             new_x0 = all_x0_real
             new_x1, _ = self.sampler.simulate(
                 x_init=new_x0,
@@ -62,16 +62,14 @@ class CSBMSolver:
                 direction="forward"
             )
 
-            back_coupling_loader = DataLoader(TensorDataset(new_x0, new_x1), batch_size=256, shuffle=True)
-
-            for epoch in range(4):
+            back_coupling_loader = DataLoader(TensorDataset(new_x0, new_x1), batch_size=self.batch_size, shuffle=True)
+            for epoch in range(self.epochs):
                 pbar = tqdm(back_coupling_loader, desc=f"L={l} | Backward Training")
                 for x0_batch, x1_batch in pbar:
                     B = x0_batch.shape[0]
-                    n = torch.randint(0, K, (B,), device=device)
+                    n = torch.randint(1, K + 1, (B,), device=device)
 
-                    probs = ref.bridge_at_time(x_start=x0_batch, x_target=x1_batch, t=n, total_steps=K)
-                    xt = torch.multinomial(probs.view(-1, ref.S_max), 1).view(x0_batch.shape)
+                    xt = ref.sample_x_t(x0_batch, x1_batch, n, K)
 
                     loss = self.updater.train_backward_step(xt, x0_batch, n, K)
                     pbar.set_postfix(loss=f"{loss:.4f}")

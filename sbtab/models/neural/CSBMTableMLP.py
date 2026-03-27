@@ -20,10 +20,20 @@ class CSBMTableMLP(nn.Module):
             nn.Linear(hidden_dim, self.D * self.S_max)
         )
 
+        mask = torch.full((self.D, self.S_max), -1e9)
+        for i, c in enumerate(self.cardinalities):
+            mask[i, :c] = 0.0
+        self.register_buffer("logit_mask", mask)
+
     def forward(self, x, t):
         B = x.shape[0]
         embeddings = [self.embs[i](torch.clamp(x[:, i], 0, self.cardinalities[i] - 1)) for i in range(self.D)]
         h = torch.cat(embeddings, dim=-1)
         te = self.time_emb(t.view(-1, 1))
+
         logits = self.net(torch.cat([h, te], dim=-1))
-        return logits.view(B, self.D, self.S_max)
+        logits = logits.view(B, self.D, self.S_max)
+
+        logits = logits + self.logit_mask.unsqueeze(0)
+
+        return logits

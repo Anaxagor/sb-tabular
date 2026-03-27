@@ -7,6 +7,8 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
+from sbtab.bridge.reference import CategoricalReference
+
 
 @dataclass(frozen=True)
 class RegressionLoss:
@@ -40,78 +42,38 @@ class RegressionLoss:
             return loss.sum()
         raise ValueError(f"Unknown reduction: {self.reduction}")
 
-class EfficientCSBMLoss:
-    def __init__(self, lmbda: float = 0.001):
+class CSBMLoss:
+    def __init__(self, reference: CategoricalReference, lmbda: float = 0.001):
         self.lmbda = lmbda
+        self.reference = reference
 
-    def forward_loss(self, pred_logits_x1, x_1_true, x_t_minus_1, n, N, ref):
-        B, D, S_max = pred_logits_x1.shape
+    def forward_loss(self, pred_logits_x1, x_1_true, x_t, n, K):
+        model_transition = self.reference.model_induced_next_step(pred_logits_x1, x_t, n, K)
 
-        l_simple = F.cross_entropy(pred_logits_x1.view(-1, S_max), x_1_true.view(-1))
+        target_transition = self.reference.bridge_next_given_prev(x_t, x_1_true, n, K)
 
-        log_q_theta = F.log_softmax(pred_logits_x1, dim=-1)
-        target_dist = F.one_hot(x_1_true, num_classes=S_max).float()
+        kl_input = torch.log(model_transition.view(-1, self.reference.S_max) + 1e-12)
+        kl_target = target_transition.view(-1, self.reference.S_max)
 
-        kl = F.kl_div(log_q_theta, target_dist, reduction="batchmean")
+        kl_term = F.kl_div(kl_input, kl_target, reduction="batchmean")
 
-        return kl + self.lmbda * l_simple
+        ce_input = pred_logits_x1.view(-1, self.reference.S_max)
+        ce_target = x_1_true.view(-1)
+        simple_term = F.cross_entropy(ce_input, ce_target)
 
-    def backward_loss(self, pred_logits_x0, x_0_true, x_t_n, n, N, ref):
-        B, D, S_max = pred_logits_x0.shape
+        return kl_term + self.lmbda * simple_term
 
-        l_simple = F.cross_entropy(pred_logits_x0.view(-1, S_max), x_0_true.view(-1))
+    def backward_loss(self, pred_logits_x0, x_0_true, x_t, n):
+        model_transition = self.reference.model_induced_prev_step(pred_logits_x0, x_t, n)
+        target_transition = self.reference.bridge_prev_given_next(x_0_true, x_t, n)
 
-        log_q_eta = F.log_softmax(pred_logits_x0, dim=-1)
-        target_dist = F.one_hot(x_0_true, num_classes=S_max).float()
+        kl_input = torch.log(model_transition.view(-1, self.reference.S_max) + 1e-12)
+        kl_target = target_transition.view(-1, self.reference.S_max)
 
-        kl = F.kl_div(log_q_eta, target_dist, reduction="batchmean")
+        kl_term = F.kl_div(kl_input, kl_target, reduction="batchmean")
 
-        return kl + self.lmbda * l_simple
+        ce_input = pred_logits_x0.view(-1, self.reference.S_max)
+        ce_target = x_0_true.view(-1)
+        simple_term = F.cross_entropy(ce_input, ce_target)
 
-# class EfficientCSBMLoss:
-#     def __init__(self, lmbda: float = 0.5):
-#         self.lmbda = lmbda
-#
-#     def forward_loss(self, pred_logits_x1, x_1_true, x_t_prev, n, N, ref):
-#         B, D, S_max = pred_logits_x1.shape
-#         p_theta_x1 = F.softmax(pred_logits_x1, dim=-1)
-#
-#         with torch.no_grad():
-#             q_ref_true = ref.bridge_at_time(x_t_prev, x_1_true, n + 1, N)
-
-#         q_ref_all = ref.bridge_at_time(
-#             x_t_prev.unsqueeze(-1).expand(-1, -1, S_max).reshape(-1, D),
-#             all_possible_x1.expand(B, D, -1).reshape(-1, D),
-#             n.repeat_interleave(S_max),
-#             N
-#         ).view(B, D, S_max, S_max)
-#
-#         q_ref_pred = torch.einsum('bds,bdsk->bdk', p_theta_x1, q_ref_all)
-#
-#         kl = F.kl_div(q_ref_pred.log() + 1e-12, q_ref_true, reduction="batchmean")
-#
-#         l_simple = F.cross_entropy(pred_logits_x1.view(-1, S_max), x_1_true.view(-1))
-#
-#         return kl + self.lmbda * l_simple
-#
-#     def backward_loss(self, pred_logits_x0, x_0_true, x_t, n, N, ref):
-#         B, D, S_max = pred_logits_x0.shape
-#         p_eta_x0 = F.softmax(pred_logits_x0, dim=-1)
-#
-#         with torch.no_grad():
-#             q_ref_true = ref.bridge_at_time(x_0_true, x_t, n - 1, N)
-#
-#         all_possible_x0 = torch.arange(S_max, device=x_t.device).view(1, 1, S_max)
-#         q_ref_all = ref.bridge_at_time(
-#             all_possible_x0.expand(B, D, -1).reshape(-1, D),
-#             x_t.unsqueeze(-1).expand(-1, -1, S_max).reshape(-1, D),
-#             n.repeat_interleave(S_max),
-#             N
-#         ).view(B, D, S_max, S_max)
-#
-#         q_ref_pred = torch.einsum('bds,bdsk->bdk', p_eta_x0, q_ref_all)
-#
-#         kl = F.kl_div(q_ref_pred.log() + 1e-12, q_ref_true, reduction="batchmean")
-#         l_simple = F.cross_entropy(pred_logits_x0.view(-1, S_max), x_0_true.view(-1))
-#
-#         return kl + self.lmbda * l_simple
+        return kl_term + self.lmbda * simple_term
