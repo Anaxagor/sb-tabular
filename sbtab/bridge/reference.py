@@ -246,7 +246,7 @@ class CategoricalReference:
             p_model_d = p_model_xK[:, d, :S_d]
             term_to_sum = p_model_d / (norm_den + 1e-12)
 
-            summed_targets = torch.einsum('bi, bij -> bj', term_to_sum, Q_rest)
+            summed_targets = torch.einsum('bj,bsj->bs', term_to_sum, Q_rest)
 
             w_step = Q_1[x_t[:, d]]
             probs_d = w_step * summed_targets
@@ -295,6 +295,21 @@ class CategoricalReference:
             induced_probs.append(probs_d)
 
         return torch.stack(induced_probs, dim=1)
+
+    def update_alpha(self, new_alpha: float):
+        self.alpha = new_alpha
+        self._powers = []
+        for d in range(self.D):
+            S_d = int(self.S[d].item())
+            is_ord = bool(self.is_ordered[d].item())
+            feat_powers = []
+            for k in range(self.total_number_of_q_powers + 1):
+                if is_ord:
+                    matrix = self._build_gaussian_k_matrix(S_d, k)
+                else:
+                    matrix = self._build_uniform_k_matrix(S_d, k)
+                feat_powers.append(matrix)
+            self._powers.append(torch.stack(feat_powers))
 
     def sample_from_probs(self, probs: torch.Tensor) -> torch.Tensor:
         batch_size, dims, s_max = probs.shape
