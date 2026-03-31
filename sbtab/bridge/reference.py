@@ -246,7 +246,7 @@ class CategoricalReference:
             p_model_d = p_model_xK[:, d, :S_d]
             term_to_sum = p_model_d / (norm_den + 1e-12)
 
-            summed_targets = torch.einsum('bi, bij -> bj', term_to_sum, Q_rest)
+            summed_targets = torch.einsum('bj,bsj->bs', term_to_sum, Q_rest)
 
             w_step = Q_1[x_t[:, d]]
             probs_d = w_step * summed_targets
