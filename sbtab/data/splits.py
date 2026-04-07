@@ -1,78 +1,77 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
+
 import numpy as np
-from sklearn.model_selection import KFold, train_test_split
 
 
 @dataclass(frozen=True)
 class SplitConfigKFold:
-    """Config for k-fold splitting used in experiments."""
     n_splits: int = 5
     shuffle: bool = True
-    random_seed: int = 42
-
-
-@dataclass(frozen=True)
-class SplitConfigHoldout:
-    """Config for a single train/val split used for tuning generative models."""
-    val_size: float = 0.2
-    shuffle: bool = True
-    random_seed: int = 42
+    random_state: Optional[int] = 42
 
 
 @dataclass(frozen=True)
 class KFoldSplit:
-    """One CV fold split (positional indices)."""
     fold_id: int
     train_idx: np.ndarray
     test_idx: np.ndarray
 
 
 @dataclass(frozen=True)
+class SplitConfigHoldout:
+    val_size: float = 0.2
+    shuffle: bool = True
+    random_state: Optional[int] = 42
+
+
+@dataclass(frozen=True)
 class HoldoutSplit:
-    """One fixed train/val split (positional indices)."""
     train_idx: np.ndarray
     val_idx: np.ndarray
 
 
 def make_kfold_splits(n_samples: int, cfg: SplitConfigKFold) -> List[KFoldSplit]:
-    if n_samples <= 1:
-        raise ValueError("n_samples must be > 1")
     if cfg.n_splits < 2:
-        raise ValueError("n_splits must be >= 2")
+        raise ValueError("n_splits must be at least 2.")
+    if n_samples < cfg.n_splits:
+        raise ValueError("n_samples must be greater than or equal to n_splits.")
 
-    all_idx = np.arange(n_samples)
-    kf = KFold(n_splits=cfg.n_splits, shuffle=cfg.shuffle, random_state=cfg.random_seed)
+    indices = np.arange(n_samples)
+    if cfg.shuffle:
+        rng = np.random.default_rng(cfg.random_state)
+        indices = rng.permutation(indices)
 
-    folds: List[KFoldSplit] = []
-    for fold_id, (train_idx, test_idx) in enumerate(kf.split(all_idx)):
-        folds.append(
-            KFoldSplit(
-                fold_id=fold_id,
-                train_idx=np.asarray(train_idx, dtype=int),
-                test_idx=np.asarray(test_idx, dtype=int),
-            )
-        )
-    return folds
+    fold_sizes = np.full(cfg.n_splits, n_samples // cfg.n_splits, dtype=int)
+    fold_sizes[: n_samples % cfg.n_splits] += 1
+
+    splits: List[KFoldSplit] = []
+    current = 0
+    for fold_id, fold_size in enumerate(fold_sizes):
+        start, stop = current, current + fold_size
+        test_idx = indices[start:stop]
+        train_idx = np.concatenate([indices[:start], indices[stop:]])
+        splits.append(KFoldSplit(fold_id=fold_id, train_idx=train_idx, test_idx=test_idx))
+        current = stop
+    return splits
 
 
 def make_holdout_split(n_samples: int, cfg: SplitConfigHoldout) -> HoldoutSplit:
-    if n_samples <= 1:
-        raise ValueError("n_samples must be > 1")
-    if not (0.0 < cfg.val_size < 1.0):
-        raise ValueError("val_size must be in (0, 1)")
+    if not 0.0 < cfg.val_size < 1.0:
+        raise ValueError("val_size must be in the open interval (0, 1).")
+    if n_samples < 2:
+        raise ValueError("At least 2 samples are required to create a holdout split.")
 
-    all_idx = np.arange(n_samples)
-    train_idx, val_idx = train_test_split(
-        all_idx,
-        test_size=cfg.val_size,
-        shuffle=cfg.shuffle,
-        random_state=cfg.random_seed,
-    )
-    return HoldoutSplit(
-        train_idx=np.asarray(train_idx, dtype=int),
-        val_idx=np.asarray(val_idx, dtype=int),
-    )
+    indices = np.arange(n_samples)
+    if cfg.shuffle:
+        rng = np.random.default_rng(cfg.random_state)
+        indices = rng.permutation(indices)
+
+    n_val = int(round(n_samples * cfg.val_size))
+    n_val = min(max(n_val, 1), n_samples - 1)
+
+    val_idx = indices[:n_val]
+    train_idx = indices[n_val:]
+    return HoldoutSplit(train_idx=train_idx, val_idx=val_idx)

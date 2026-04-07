@@ -15,8 +15,7 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.imf_dsbm.solver import IMFDSBMSolver, IMFDSBMConfig
-
+from sbtab.solvers.continuous_time.joint_distribution.mlp.imf_dsbm.solver import IMFDSBMSolver, IMFDSBMConfig
 
 # ----------------------------
 # Dataset -> target column map
@@ -283,8 +282,12 @@ def main() -> None:
             df_test_raw = df.iloc[test_idx].copy()
 
             # Preprocess per fold: fit on train only
-            schema = TabularSchema(feature_cols=cols)
-            pipe = TransformPipeline.default_continuous_dropna()
+            schema = TabularSchema.infer_from_dataframe(df, target_col=TARGET_COL_BY_DATASET[ds_name])
+            print("\nInferred schema:")
+            print("  continuous:", schema.continuous_cols)
+            print("  discrete  :", schema.discrete_cols)
+            print("  categorical:", schema.categorical_cols)
+            pipe = TransformPipeline.default_dropna_and_scale()
             pipe.fit(df_train_raw, schema)
 
             train_scaled = pipe.transform(df_train_raw)

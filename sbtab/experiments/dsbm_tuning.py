@@ -20,7 +20,7 @@ from sbtab.data.schema import TabularSchema
 from sbtab.data.datamodule import TabularDataModule
 from sbtab.data.splits import SplitConfigHoldout
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.imf_dsbm.solver import IMFDSBMSolver, IMFDSBMConfig
+from sbtab.solvers.continuous_time.joint_distribution.mlp.imf_dsbm.solver import IMFDSBMSolver, IMFDSBMConfig
 
 
 DEFAULT_DATASETS = [
@@ -34,6 +34,21 @@ DEFAULT_DATASETS = [
     "german_credit",
     "california_housing"
 ]
+
+TARGET_COL_BY_DATASET: Dict[str, str] = {
+    "german_credit":'duration',
+    "online_news_popularity": " shares",
+    "covertype": "Horizontal_Distance_To_Hydrology",
+    "online_shoppers": "ProductRelated",
+    "bank_marketing": "pdays",
+    "bank_loan": "Income",
+    "diabetes": "target",
+    "california_housing": "MedHouseVal",
+    "king_county_housing": "price"
+    
+
+}
+
 
 
 def average_wd(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
@@ -64,7 +79,6 @@ def export_trials_csv(study: optuna.Study, out_csv: Path) -> None:
 def make_objective_for_dataset(
     train_scaled: pd.DataFrame,
     test_scaled: pd.DataFrame,
-    inv_pipe: TransformPipeline,
     cols: List[str],
     seed: int,
     device: str,
@@ -78,8 +92,6 @@ def make_objective_for_dataset(
       - inv_pipe: pipeline fitted on raw train (for inverse transform to original scale)
       - cols: column order
     """
-    # Real test in original scale for WD computation
-    real_test_orig = inv_pipe.inverse_transform(test_scaled)
 
     def objective(trial: optuna.Trial) -> float:
         # --- hyperparameter search space ---
@@ -120,9 +132,6 @@ def make_objective_for_dataset(
             n_synth = len(test_scaled)
             x_synth = model.sample(n=n_synth, seed=seed + 123, steps=int(num_steps))
             synth_scaled = pd.DataFrame(x_synth, columns=cols)
-
-            synth_orig = inv_pipe.inverse_transform(synth_scaled)
-
             score = average_wd(test_scaled, synth_scaled, cols)
 
             trial.report(score, step=0)
@@ -189,23 +198,24 @@ def main() -> None:
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        schema = TabularSchema(feature_cols=cols)
-        transforms = TransformPipeline.default_continuous_dropna()
+        schema = TabularSchema.infer_from_dataframe(
+        df,
+        target_col=TARGET_COL_BY_DATASET[ds_name])
+        print("\nInferred schema:")
+        print("  continuous:", schema.continuous_cols)
+        print("  discrete  :", schema.discrete_cols)
+        print("  categorical:", schema.categorical_cols)
+
+        transforms = TransformPipeline.default_dropna_and_scale()
 
         # Single split (train/test) via DataModule holdout
-        dm = TabularDataModule(df=df, schema=schema, transforms=transforms, reset_index=True)
-        dm.prepare_holdout(SplitConfigHoldout(val_size=args.test_size, shuffle=True, random_seed=args.seed))
+        dm = TabularDataModule(df=df, schema=schema, transforms=transforms)
+        dm.prepare_holdout(SplitConfigHoldout(val_size=args.test_size, shuffle=True, random_state=args.seed))
         holdout = dm.get_holdout()
 
         train_scaled = holdout.train
         test_scaled = holdout.val
 
-        # Build inverse transform pipeline fitted on RAW TRAIN subset (original scale)
-        sp = dm._holdout_split  # type: ignore[attr-defined]
-        train_raw = dm.df_clean.iloc[sp.train_idx].copy()  # type: ignore[attr-defined]
-
-        inv_pipe = TransformPipeline.default_continuous_dropna()
-        inv_pipe.fit(train_raw, schema)
 
         print(f"Columns: {len(cols)}")
         print(f"Train size (scaled): {len(train_scaled)}")
@@ -227,7 +237,6 @@ def main() -> None:
         objective = make_objective_for_dataset(
             train_scaled=train_scaled,
             test_scaled=test_scaled,
-            inv_pipe=inv_pipe,
             cols=cols,
             seed=args.seed,
             device=args.device,

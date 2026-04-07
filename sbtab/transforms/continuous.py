@@ -1,8 +1,8 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List
+
 import pandas as pd
 
 from .base import TransformState
@@ -11,11 +11,9 @@ from sbtab.data.schema import TabularSchema
 
 @dataclass
 class ContinuousStandardScaler:
-  
     name: str = "continuous_standard_scaler"
     eps: float = 1e-12
 
-    # fitted state
     fitted_: bool = False
     continuous_cols_: List[str] = field(default_factory=list)
     means_: Dict[str, float] = field(default_factory=dict)
@@ -29,16 +27,20 @@ class ContinuousStandardScaler:
 
     def fit(self, df: pd.DataFrame, schema: TabularSchema) -> "ContinuousStandardScaler":
         cols = list(schema.continuous_cols)
+        self.continuous_cols_ = cols
+
         if not cols:
-            raise ValueError("No continuous columns in schema.")
+            self.means_ = {}
+            self.stds_ = {}
+            self.fitted_ = True
+            return self
 
         x = df[cols].astype(float)
         means = x.mean(axis=0, skipna=True)
         stds = x.std(axis=0, ddof=0, skipna=True)
 
-        self.continuous_cols_ = cols
-        self.means_ = {c: float(means[c]) for c in cols}
-        self.stds_ = {c: float(max(float(stds[c]), self.eps)) for c in cols}
+        self.means_ = {col: float(means[col]) for col in cols}
+        self.stds_ = {col: float(max(float(stds[col]), self.eps)) for col in cols}
         self.fitted_ = True
         return self
 
@@ -47,8 +49,10 @@ class ContinuousStandardScaler:
             raise RuntimeError("ContinuousStandardScaler must be fitted before transform().")
 
         out = df.copy()
-        for c in self.continuous_cols_:
-            out[c] = (out[c].astype(float) - self.means_[c]) / self.stds_[c]
+        for col in self.continuous_cols_:
+            if col not in out.columns:
+                raise ValueError(f"Continuous column {col!r} is missing during scaling.")
+            out[col] = (out[col].astype(float) - self.means_[col]) / self.stds_[col]
         return out
 
     def inverse_transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -56,30 +60,18 @@ class ContinuousStandardScaler:
             raise RuntimeError("ContinuousStandardScaler must be fitted before inverse_transform().")
 
         out = df.copy()
-        for c in self.continuous_cols_:
-            out[c] = out[c].astype(float) * self.stds_[c] + self.means_[c]
+        for col in self.continuous_cols_:
+            if col not in out.columns:
+                raise ValueError(f"Continuous column {col!r} is missing during inverse scaling.")
+            out[col] = out[col].astype(float) * self.stds_[col] + self.means_[col]
         return out
 
     def get_state(self) -> TransformState:
-        if not self.fitted_:
-            # Important: DataModule clones pipelines *before* fitting fold-wise, so
-            # serialization should still work for unfitted scalers.
-            return TransformState(
-                name=self.name,
-                params={
-                    "eps": self.eps,
-                    "fitted": False,
-                    "continuous_cols": [],
-                    "means": {},
-                    "stds": {},
-                },
-            )
-
         return TransformState(
             name=self.name,
             params={
                 "eps": self.eps,
-                "fitted": True,
+                "fitted": self.fitted_,
                 "continuous_cols": self.continuous_cols_,
                 "means": self.means_,
                 "stds": self.stds_,
@@ -89,10 +81,8 @@ class ContinuousStandardScaler:
     @classmethod
     def from_state(cls, state: TransformState) -> "ContinuousStandardScaler":
         obj = cls(eps=float(state.params.get("eps", 1e-12)))
-        fitted = bool(state.params.get("fitted", False))
-        obj.fitted_ = fitted
-        if fitted:
-            obj.continuous_cols_ = list(state.params.get("continuous_cols", []))
-            obj.means_ = dict(state.params.get("means", {}))
-            obj.stds_ = dict(state.params.get("stds", {}))
+        obj.fitted_ = bool(state.params.get("fitted", False))
+        obj.continuous_cols_ = list(state.params.get("continuous_cols", []))
+        obj.means_ = dict(state.params.get("means", {}))
+        obj.stds_ = dict(state.params.get("stds", {}))
         return obj
