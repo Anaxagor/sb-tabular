@@ -1,4 +1,22 @@
+#!/usr/bin/env python3
 from __future__ import annotations
+
+"""
+Optuna tuning for TabDDPM under the current mixed-type repository logic.
+
+Updated using the actual TransformPipeline API:
+  - TransformPipeline.default_dropna_and_scale()
+  - TransformPipeline.default_impute_and_scale()
+  - TransformPipeline.default_impute_scale_encode()
+
+Key repository assumptions reflected here:
+  1. TabularSchema.infer_from_dataframe(...) splits columns into continuous / discrete / categorical.
+  2. TabularDataModule applies only stateless global-safe transforms before splitting and
+     then fits the pipeline on the train subset only for each holdout split.
+  3. TabDDPMWrapper is trained on the *already-preprocessed* DataFrame and should receive both:
+       - schema
+       - the fitted split-specific transforms object
+"""
 
 import argparse
 import json
@@ -8,18 +26,17 @@ from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
-import pandas as pd
 import optuna
-from optuna.samplers import TPESampler
+import pandas as pd
 from optuna.pruners import MedianPruner
-
+from optuna.samplers import TPESampler
 from scipy.stats import wasserstein_distance
 
-from sbtab.data.schema import TabularSchema
+from sbtab.baselines.tabddpm.model import TabDDPMConfig, TabDDPMWrapper
 from sbtab.data.datamodule import TabularDataModule
+from sbtab.data.schema import TabularSchema
 from sbtab.data.splits import SplitConfigHoldout
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.baselines.tabddpm.model import TabDDPMWrapper, TabDDPMConfig
 
 
 DEFAULT_DATASETS = [
@@ -34,17 +51,45 @@ DEFAULT_DATASETS = [
     "california_housing",
 ]
 
+TARGET_COL_BY_DATASET: Dict[str, str] = {
+    "german_credit":'duration',
+    "online_news_popularity": " shares",
+    "covertype": "Horizontal_Distance_To_Hydrology",
+    "online_shoppers": "ProductRelated",
+    "bank_marketing": "pdays",
+    "bank_loan": "Income",
+    "diabetes": "target",
+    "california_housing": "MedHouseVal",
+    "king_county_housing": "price"
+    
 
-def average_wd(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
-    """Average 1D Wasserstein distance across columns."""
+}
+
+
+def average_wd_processed(real: pd.DataFrame, synth: pd.DataFrame) -> float:
+    """
+    Average 1D Wasserstein distance across all numeric columns in the processed representation.
+
+    In the new module logic, the holdout split returned by TabularDataModule is already transformed.
+    After `default_impute_scale_encode()`, categorical features become one-hot numeric columns and can
+    also be included in this processed-space comparison.
+    """
+    common_cols = [c for c in real.columns if c in synth.columns]
+    metric_cols = [
+        c for c in common_cols
+        if pd.api.types.is_numeric_dtype(real[c]) and pd.api.types.is_numeric_dtype(synth[c])
+    ]
+    if not metric_cols:
+        raise ValueError("No common numeric columns available for Wasserstein metric.")
+
     wds = []
-    for c in cols:
+    for c in metric_cols:
+        print(c)
         wds.append(float(wasserstein_distance(real[c].to_numpy(), synth[c].to_numpy())))
     return float(np.mean(wds))
 
 
 def export_trials_csv(study: optuna.Study, out_csv: Path) -> None:
-    """Export all trials to CSV for offline analysis."""
     rows = []
     for tr in study.trials:
         row = {
@@ -59,66 +104,90 @@ def export_trials_csv(study: optuna.Study, out_csv: Path) -> None:
     pd.DataFrame(rows).to_csv(out_csv, index=False)
 
 
+def build_transforms(schema: TabularSchema, *, missing_strategy: str) -> TransformPipeline:
+    """
+    Select the actual pipeline constructor exposed by the repository.
+
+    Missing strategies:
+      - "impute" : keep rows, impute missing values
+      - "drop"   : drop rows with missing values (only supported for continuous-only tuning)
+    """
+    if schema.has_categorical:
+        # For mixed data, the explicit pipeline in pipeline.py is:
+        #   TypeAwareImputer -> ContinuousStandardScaler -> CategoricalRepresentationTransform(one_hot)
+        if missing_strategy == "drop":
+            raise ValueError(
+                "missing_strategy='drop' is not supported for mixed/categorical datasets by the current "
+                "TransformPipeline API. Use 'impute'."
+            )
+        return TransformPipeline.default_impute_scale_encode()
+
+    # Continuous/discrete-only datasets
+    if missing_strategy == "drop":
+        return TransformPipeline.default_dropna_and_scale()
+    return TransformPipeline.default_impute_and_scale()
+
+
 def make_objective_for_dataset(
-    train_scaled: pd.DataFrame,
-    test_scaled: pd.DataFrame,
-    inv_pipe: TransformPipeline,
-    cols: List[str],
+    train_proc: pd.DataFrame,
+    val_proc: pd.DataFrame,
+    *,
     seed: int,
     device: str,
     schema: TabularSchema,
+    fitted_transforms,
 ):
     """
-    Objective function factory for TabDDPM tuning.
-    Uses fixed train/test split and fixed preprocessing.
+    Objective factory for one dataset and one fixed holdout split.
     """
     def objective(trial: optuna.Trial) -> float:
-        # --- hyperparameter search space (TabDDPM spec) ---
-        n_iter = trial.suggest_int("n_iter", 500, 1000, step=100)
-        num_timesteps = trial.suggest_int("num_timesteps", 100, 600, step=50)
-        batch_size = trial.suggest_categorical("batch_size", [256, 512, 1024])
+        # Search space aligned with TabDDPM paper defaults
+        n_epochs = trial.suggest_categorical("n_epochs", [5000, 10000, 20000])
+        num_timesteps = trial.suggest_categorical("num_timesteps", [100, 1000])
+        batch_size = trial.suggest_categorical("batch_size", [256, 4096])
+
+        n_layers = trial.suggest_int("n_layers", 2, 8)
+        layer_size = trial.suggest_categorical("layer_size", [128, 256, 512, 1024])
+        lr = trial.suggest_float("lr", 1e-5, 3e-3, log=True)
 
         cfg = TabDDPMConfig(
-            n_epochs=int(n_iter),
+            n_epochs=int(n_epochs),
             num_timesteps=int(num_timesteps),
             batch_size=int(batch_size),
-            lr=0.001,
+            lr=float(lr),
             weight_decay=1e-4,
-            seed=seed,
+            d_layers=[layer_size] * n_layers,
+            dropout=0.0,
+            scheduler="cosine",
             device=device,
+            seed=seed,
         )
 
-        try:
-            model = TabDDPMWrapper(cfg=cfg)
-            model.fit(train_scaled, schema=schema)
+        # try:
+        model = TabDDPMWrapper(cfg=cfg)
+        model.fit(train_proc, schema=schema, transforms=fitted_transforms)
 
-            n_synth = len(test_scaled)
-            synth_df = model.sample(n=n_synth, seed=seed + 123)
+        synth_df = model.sample(n=len(val_proc), seed=seed + 123)
+        score = average_wd_processed(val_proc, synth_df)
 
-            score = average_wd(test_scaled, synth_df, cols)
+        trial.report(score, step=0)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
 
-            trial.report(score, step=0)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+        return score
 
-            return score
-
-        except optuna.TrialPruned:
-            raise
-        except Exception as e:
-            trial.set_user_attr("exception", repr(e))
-            return float("inf")
+        # except optuna.TrialPruned:
+        #     raise
+        # except Exception as e:
+        #     trial.set_user_attr("exception", repr(e))
+            #return float("inf")
 
     return objective
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--pickle",
-        type=str,
-        default="C:/Users/Anaxagor/Documents/projects/sb-tabular/sbtab/data/datasets/datasets_continuous_only.pkl",
-    )
+    ap.add_argument("--pickle", type=str, default="C:/Users/Anaxagor/Documents/projects/sb-tabular/sbtab/data/datasets/datasets_continuous_only.pkl")
     ap.add_argument("--datasets", type=str, default=",".join(DEFAULT_DATASETS))
     ap.add_argument("--test-size", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
@@ -129,8 +198,17 @@ def main() -> None:
     ap.add_argument("--storage", type=str, default="sqlite:///tabddpm_optuna.db")
     ap.add_argument("--study-prefix", type=str, default="tabddpm")
 
-    ap.add_argument("--outdir", type=str, default="tabddpm_optuna_results", help="Folder for CSV summaries")
-    ap.add_argument("--export-trials", action="store_true", help="Export per-trial CSV for each dataset")
+    ap.add_argument("--outdir", type=str, default="tabddpm_optuna_results")
+    ap.add_argument("--export-trials", action="store_true")
+    ap.add_argument(
+        "--missing-strategy",
+        type=str,
+        default="impute",
+        choices=["impute", "drop"],
+        help="Which TransformPipeline variant to use. "
+             "'impute' -> default_impute_and_scale/default_impute_scale_encode; "
+             "'drop' -> default_dropna_and_scale (continuous-only).",
+    )
 
     args = ap.parse_args()
 
@@ -156,33 +234,42 @@ def main() -> None:
         print("=" * 90)
 
         df = my_data[ds_name].copy()
-        cols = list(df.columns)
-
-        if len(cols) < 2:
+        if df.shape[1] < 2:
             raise ValueError(f"Dataset '{ds_name}' has <2 columns; cannot tune TabDDPM.")
 
-        for c in cols:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+        # New schema logic: infer mixed feature groups from the raw DataFrame
+        schema = TabularSchema.infer_from_dataframe(df, target_col=TARGET_COL_BY_DATASET[ds_name])
+        transforms = build_transforms(schema, missing_strategy=args.missing_strategy)
 
-        schema = TabularSchema(feature_cols=cols)
-        transforms = TransformPipeline.default_continuous_dropna()
-
-        dm = TabularDataModule(df=df, schema=schema, transforms=transforms, reset_index=True)
-        dm.prepare_holdout(SplitConfigHoldout(val_size=args.test_size, shuffle=True, random_seed=args.seed))
+        dm = TabularDataModule(
+            df=df,
+            schema=schema,
+            transforms=transforms,
+            reset_index=True,
+        )
+        dm.prepare_holdout(
+            SplitConfigHoldout(
+                val_size=args.test_size,
+                shuffle=True,
+                random_state=args.seed,
+            )
+        )
         holdout = dm.get_holdout()
 
-        train_scaled = holdout.train
-        test_scaled = holdout.val
+        train_proc = holdout.train
+        val_proc = holdout.val
+        fitted_transforms = holdout.transforms
 
-        sp = dm._holdout_split  # type: ignore[attr-defined]
-        train_raw = dm.df_clean.iloc[sp.train_idx].copy()  # type: ignore[attr-defined]
-
-        inv_pipe = TransformPipeline.default_continuous_dropna()
-        inv_pipe.fit(train_raw, schema)
-
-        print(f"Columns: {len(cols)}")
-        print(f"Train size (scaled): {len(train_scaled)}")
-        print(f"Test size  (scaled): {len(test_scaled)}")
+        print(
+            "Schema: "
+            f"continuous={len(schema.continuous_cols)}, "
+            f"discrete={len(schema.discrete_cols)}, "
+            f"categorical={len(schema.categorical_cols)}"
+        )
+        print(f"Pipeline: {transforms.__class__.__name__}")
+        print(f"Train size (processed): {len(train_proc)}")
+        print(f"Val size   (processed): {len(val_proc)}")
+        print(f"Processed columns: {len(train_proc.columns)}")
 
         study_name = f"{args.study_prefix}__{ds_name}"
         study = optuna.create_study(
@@ -195,13 +282,12 @@ def main() -> None:
         )
 
         objective = make_objective_for_dataset(
-            train_scaled=train_scaled,
-            test_scaled=test_scaled,
-            inv_pipe=inv_pipe,
-            cols=cols,
+            train_proc=train_proc,
+            val_proc=val_proc,
             seed=args.seed,
             device=args.device,
             schema=schema,
+            fitted_transforms=fitted_transforms,
         )
 
         t0 = time.time()
@@ -217,7 +303,7 @@ def main() -> None:
         best = study.best_trial
         print("\n--- BEST RESULT ---")
         print(f"Dataset: {ds_name}")
-        print(f"Best avg WD: {best.value}")
+        print(f"Best avg WD (processed space): {best.value}")
         print("Best params:")
         for k, v in best.params.items():
             print(f"  {k}: {v}")
@@ -225,11 +311,12 @@ def main() -> None:
 
         best_json = {
             "dataset": ds_name,
-            "best_avg_wd": float(best.value),
+            "best_avg_wd_processed": float(best.value),
             "best_trial": int(best.number),
             "n_trials": int(len(study.trials)),
             "elapsed_sec": float(elapsed),
             "best_params": dict(best.params),
+            "missing_strategy": args.missing_strategy,
         }
         (outdir / f"{ds_name}_best.json").write_text(json.dumps(best_json, indent=2), encoding="utf-8")
 
@@ -239,20 +326,21 @@ def main() -> None:
         summary_rows.append(
             {
                 "dataset": ds_name,
-                "best_avg_wd": float(best.value),
+                "best_avg_wd_processed": float(best.value),
                 "best_trial": int(best.number),
                 "n_trials": int(len(study.trials)),
                 "elapsed_sec": float(elapsed),
+                "missing_strategy": args.missing_strategy,
                 **best.params,
             }
         )
 
-    summary_df = pd.DataFrame(summary_rows).sort_values("best_avg_wd", ascending=True)
+    summary_df = pd.DataFrame(summary_rows).sort_values("best_avg_wd_processed", ascending=True)
     out_csv = outdir / "tabddpm_optuna_summary.csv"
     summary_df.to_csv(out_csv, index=False)
 
     print("\n" + "=" * 90)
-    print("FINAL SUMMARY (sorted by best_avg_wd)")
+    print("FINAL SUMMARY (sorted by best_avg_wd_processed)")
     print("=" * 90)
     with pd.option_context("display.max_columns", 200, "display.width", 200):
         print(summary_df)

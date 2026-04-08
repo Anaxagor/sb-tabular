@@ -233,6 +233,7 @@ def main() -> None:
             continue
 
         target_col = resolve_target_col(ds_name, df, strict=args.strict_targets)
+        print(target_col)
         feature_cols = [c for c in cols if c != target_col]
         if len(feature_cols) < 1:
             print(f"[SKIP] Dataset '{ds_name}' has no features after selecting target '{target_col}'.")
@@ -251,8 +252,12 @@ def main() -> None:
             df_test_raw = df.iloc[test_idx].copy()
 
             # Preprocess per fold: fit on train only, apply to train+test
-            schema = TabularSchema(feature_cols=cols)
-            pipe = TransformPipeline.default_continuous_dropna()
+            schema = TabularSchema.infer_from_dataframe(df, target_col=target_col)
+            print("\nInferred schema:")
+            print("  continuous:", schema.continuous_cols)
+            print("  discrete  :", schema.discrete_cols)
+            print("  categorical:", schema.categorical_cols)
+            pipe = TransformPipeline.default_dropna_and_scale()
             pipe.fit(df_train_raw, schema)
 
             train_scaled = pipe.transform(df_train_raw)
