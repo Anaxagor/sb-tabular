@@ -37,7 +37,19 @@ DEFAULT_DATASETS = [
     "california_housing",
 ]
 
+TARGET_COL_BY_DATASET: Dict[str, str] = {
+    "german_credit":'duration',
+    "online_news_popularity": " shares",
+    "covertype": "Horizontal_Distance_To_Hydrology",
+    "online_shoppers": "ProductRelated",
+    "bank_marketing": "pdays",
+    "bank_loan": "Income",
+    "diabetes": "target",
+    "california_housing": "MedHouseVal",
+    "king_county_housing": "price"
+    
 
+}
 def average_wd(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
     """Average 1D Wasserstein distance across columns."""
     wds = []
@@ -102,27 +114,27 @@ def make_objective_for_dataset(
             seed=seed,
         )
 
-        try:
-            model = IPFDSBSolver(dim=len(cols), cfg=cfg)
-            model.fit(train_scaled)
+        # try:
+        model = IPFDSBSolver(dim=len(cols), cfg=cfg)
+        model.fit(train_scaled)
 
-            n_synth = len(test_scaled)
-            x_synth = model.sample(n=n_synth, seed=seed + 123)
-            synth_scaled = pd.DataFrame(x_synth, columns=cols)
+        n_synth = len(test_scaled)
+        x_synth = model.sample(n=n_synth, seed=seed + 123)
+        synth_scaled = pd.DataFrame(x_synth, columns=cols)
 
-            score = average_wd(test_scaled, synth_scaled, cols)
+        score = average_wd(test_scaled, synth_scaled, cols)
 
-            trial.report(score, step=0)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+        trial.report(score, step=0)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
 
-            return score
+        return score
 
-        except optuna.TrialPruned:
-            raise
-        except Exception as e:
-            trial.set_user_attr("exception", repr(e))
-            return float("inf")
+        # except optuna.TrialPruned:
+        #     raise
+        # except Exception as e:
+        #     trial.set_user_attr("exception", repr(e))
+        #     return float("inf")
 
     return objective
 
@@ -132,7 +144,7 @@ def main() -> None:
     ap.add_argument(
         "--pickle",
         type=str,
-        default="C:/Users/Anaxagor/Documents/projects/sb-tabular/sbtab/data/datasets/datasets_continuous_only.pkl",
+        default="sbtab/data/datasets/datasets_continuous_only.pkl",
     )
     ap.add_argument("--datasets", type=str, default=",".join(DEFAULT_DATASETS))
     ap.add_argument("--test-size", type=float, default=0.2)
@@ -179,11 +191,11 @@ def main() -> None:
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        schema = TabularSchema(feature_cols=cols)
-        transforms = TransformPipeline.default_continuous_dropna()
+        schema = TabularSchema.infer_from_dataframe(df=df, target_col=TARGET_COL_BY_DATASET[ds_name])
+        transforms = TransformPipeline.default_dropna_and_scale()
 
         dm = TabularDataModule(df=df, schema=schema, transforms=transforms, reset_index=True)
-        dm.prepare_holdout(SplitConfigHoldout(val_size=args.test_size, shuffle=True, random_seed=args.seed))
+        dm.prepare_holdout(SplitConfigHoldout(val_size=args.test_size, shuffle=True, random_state=args.seed))
         holdout = dm.get_holdout()
 
         train_scaled = holdout.train
@@ -192,7 +204,7 @@ def main() -> None:
         sp = dm._holdout_split  # type: ignore[attr-defined]
         train_raw = dm.df_clean.iloc[sp.train_idx].copy()  # type: ignore[attr-defined]
 
-        inv_pipe = TransformPipeline.default_continuous_dropna()
+        inv_pipe = TransformPipeline.default_dropna_and_scale()
         inv_pipe.fit(train_raw, schema)
 
         print(f"Columns: {len(cols)}")

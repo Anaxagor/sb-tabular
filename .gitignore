@@ -8,3 +8,8 @@ catboost_info/catboost_training.json
 catboost_info/
 
 sbtab/experiments/sbtab
+sbtab/experiments/calculating_metrics/sbtab/experiments/ctgan_metrics.py
+sbtab/experiments/calculating_metrics/sbtab/
+sbtab/experiments/tuning_script/sbtab/
+sbtab/experiments/tuning_script/sbtab
+sbtab/experiments/calculating_metrics/sbtab

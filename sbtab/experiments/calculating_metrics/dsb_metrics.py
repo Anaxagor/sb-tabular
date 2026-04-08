@@ -1,3 +1,5 @@
+
+
 from __future__ import annotations
 
 import argparse
@@ -15,14 +17,17 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.continuous_time.joint_distribution.mlp.imf_dsbm.solver import IMFDSBMSolver, IMFDSBMConfig
+
+from sbtab.solvers.continuous_time.joint_distribution.mlp.ipf_dsb.solver import IPFDSBSolver, IPFDSBConfig
+
+
 
 # ----------------------------
 # Dataset -> target column map
 # ----------------------------
 
 TARGET_COL_BY_DATASET: Dict[str, str] = {
-    "german_credit":'duration',
+    "german_credit": 'duration',
     "online_news_popularity": " shares",
     "covertype": "Horizontal_Distance_To_Hydrology",
     "online_shoppers": "ProductRelated",
@@ -31,8 +36,6 @@ TARGET_COL_BY_DATASET: Dict[str, str] = {
     "diabetes": "target",
     "california_housing": "MedHouseVal",
     "king_county_housing": "price"
-    
-
 }
 
 
@@ -79,10 +82,6 @@ def avg_kl_hist(
     n_bins: int = 50,
     eps: float = 1e-12,
 ) -> float:
-    """
-    Histogram-based marginal KL divergence: KL(p_real || p_synth) averaged over columns.
-    Shared bins per feature from combined min/max.
-    """
     kls: List[float] = []
     for c in cols:
         r = real[c].to_numpy()
@@ -95,7 +94,6 @@ def avg_kl_hist(
             continue
 
         bins = np.linspace(lo, hi, n_bins + 1)
-
         pr, _ = np.histogram(r, bins=bins, density=False)
         ps, _ = np.histogram(s, bins=bins, density=False)
 
@@ -105,13 +103,12 @@ def avg_kl_hist(
         ps /= ps.sum()
 
         kls.append(float(np.sum(pr * (np.log(pr) - np.log(ps)))))
-
     return float(np.mean(kls))
 
 
 def corr_frobenius(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
-    rc = real[cols].corr().to_numpy()
-    sc = synth[cols].corr().to_numpy()
+    rc = real[cols].corr().fillna(0).to_numpy()
+    sc = synth[cols].corr().fillna(0).to_numpy()
     return float(np.linalg.norm(rc - sc, ord="fro"))
 
 
@@ -123,14 +120,6 @@ def utility_delta_r2_percent(
     target_col: str,
     seed: int,
 ) -> Tuple[float, float, float]:
-    """
-    Utility metric: delta% between R2 scores on real test.
-
-    R2_real  : model trained on real-train, evaluated on real-test
-    R2_synth : model trained on synth-train, evaluated on real-test
-
-    delta% = (R2_synth - R2_real) / (abs(R2_real) + 1e-12) * 100
-    """
     Xtr = train_real[feature_cols].to_numpy()
     ytr = train_real[target_col].to_numpy()
     Xte = test_real[feature_cols].to_numpy()
@@ -151,7 +140,7 @@ def utility_delta_r2_percent(
 
 
 # ----------------------------
-# Best params loading -> config
+# Best params loading -> IPFDSBConfig
 # ----------------------------
 
 def load_best_params(best_json_path: Path) -> Dict:
@@ -161,37 +150,15 @@ def load_best_params(best_json_path: Path) -> Dict:
     return {k: v for k, v in data.items() if isinstance(v, (int, float, str, bool))}
 
 
-def build_dsbm_config_from_best(best: Dict, seed: int, device: str) -> IMFDSBMConfig:
-    """
-    Reconstruct IMFDSBMConfig from tuning best params.
-    Expected keys: sigma, num_steps, eps, inner_iters, lr, batch_size, imf_len, first_coupling, noise
-    """
-    sigma = float(best["sigma"])
-    num_steps = int(best["num_steps"])
-    eps = float(best["eps"])
-    inner_iters = int(best["inner_iters"])
-    lr = float(best["lr"])
-    batch_size = int(best["batch_size"])
-    first_coupling = str(best["first_coupling"])
-    noise = bool(best["noise"])
-
-    imf_len = int(best.get("imf_len", 5))
-    if imf_len % 2 == 0:
-        imf_len += 1
-    fb_sequence = tuple("b" if i % 2 == 0 else "f" for i in range(imf_len))
-
-    return IMFDSBMConfig(
-        fb_sequence=fb_sequence,        # type: ignore[arg-type]
-        num_steps=num_steps,
-        sigma=sigma,
-        eps=eps,
-        first_coupling=first_coupling,  # type: ignore[arg-type]
-        inner_iters=inner_iters,
-        batch_size=batch_size,
-        lr=lr,
-        weight_decay=0.0,
-        grad_clip=1.0,
-        noise=noise,
+def build_dsb_config_from_best(best: Dict, seed: int, device: str) -> IPFDSBConfig:
+    return IPFDSBConfig(
+        ipf_iters=int(best.get("ipf_iters", 10)),
+        num_steps=int(best.get("N", 48)), 
+        batch_size=int(best.get("batch_size", 2048)),
+        hidden_units = int(best.get("hidden_units", 256)),
+        lr=float(best.get("lr", 3e-4)),
+        time_features=int(best.get("time_features", 32)),
+        alpha_ou=float(best.get("alpha_ou", 1.0)),
         device=device,
         seed=seed,
     )
@@ -203,9 +170,9 @@ def build_dsbm_config_from_best(best: Dict, seed: int, device: str) -> IMFDSBMCo
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pickle", type=str, default="C:/Users/Anaxagor/Documents/projects/sb-tabular/sbtab/data/datasets/datasets_continuous_only.pkl")
-    ap.add_argument("--best_json_dir", type=str,  default="C:/Users/Anaxagor/Documents/projects/sb-tabular/sbtab/experiments/dsbm_optuna_results/")
-    ap.add_argument("--outdir", type=str, default="dsbm_kfold_eval")
+    ap.add_argument("--pickle", type=str, default="sbtab/data/datasets/datasets_continuous_only.pkl")
+    ap.add_argument("--best_json_dir", type=str, default="sbtab/experiments/tuning_script/dsb_optuna_results/")
+    ap.add_argument("--outdir", type=str, default="dsb_kfold_eval")
 
     ap.add_argument("--datasets", type=str, default=",".join(TARGET_COL_BY_DATASET.keys()))
     ap.add_argument("--n-splits", type=int, default=5)
@@ -224,15 +191,7 @@ def main() -> None:
         my_data: Dict[str, pd.DataFrame] = pickle.load(f)
 
     ds_list = [d.strip() for d in args.datasets.split(",") if d.strip()]
-    missing_ds = [d for d in ds_list if d not in my_data]
-    if missing_ds:
-        raise KeyError(f"Missing dataset keys in pickle: {missing_ds}")
-
-    missing_targets = [d for d in ds_list if d not in TARGET_COL_BY_DATASET]
-    if missing_targets:
-        raise KeyError(f"Target column not specified for datasets: {missing_targets}. "
-                       f"Add them to TARGET_COL_BY_DATASET in this script.")
-
+    
     global_rows = []
 
     for ds_name in ds_list:
@@ -243,32 +202,21 @@ def main() -> None:
         df = my_data[ds_name].copy()
         cols = list(df.columns)
 
-        # Safety numeric cast (continuous-only expected)
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
         target_col = TARGET_COL_BY_DATASET[ds_name]
-        if target_col not in df.columns:
-            raise ValueError(
-                f"Target column '{target_col}' not found in dataset '{ds_name}'. "
-                f"Available columns: {df.columns.tolist()}"
-            )
-
         feature_cols = [c for c in cols if c != target_col]
-        if len(feature_cols) < 1:
-            raise ValueError(f"Dataset '{ds_name}' has no features after removing target '{target_col}'.")
 
         # Load best params
         best_json_path = best_dir / f"{ds_name}_best.json"
         if not best_json_path.exists():
-            raise FileNotFoundError(f"Best params JSON not found: {best_json_path}")
-        best_params = load_best_params(best_json_path)
-        cfg = build_dsbm_config_from_best(best_params, seed=args.seed, device=args.device)
-
-        print(f"Target column: {target_col}  (#features={len(feature_cols)})")
-        print(f"Best params loaded: {best_json_path.name}")
-        print(f"DSBM config: sigma={cfg.sigma}, steps={cfg.num_steps}, inner_iters={cfg.inner_iters}, lr={cfg.lr}, "
-              f"batch={cfg.batch_size}, fb_sequence={cfg.fb_sequence}, first_coupling={cfg.first_coupling}, noise={cfg.noise}")
+            print(f"[WARN] Best params not found for {ds_name}, using defaults.")
+            best_params = {}
+        else:
+            best_params = load_best_params(best_json_path)
+            
+        cfg = build_dsb_config_from_best(best_params, seed=args.seed, device=args.device)
 
         kf = KFold(n_splits=args.n_splits, shuffle=args.shuffle, random_state=args.seed)
         idx = np.arange(len(df))
@@ -281,36 +229,28 @@ def main() -> None:
             df_train_raw = df.iloc[train_idx].copy()
             df_test_raw = df.iloc[test_idx].copy()
 
-            # Preprocess per fold: fit on train only
-            schema = TabularSchema.infer_from_dataframe(df, target_col=TARGET_COL_BY_DATASET[ds_name])
-            print("\nInferred schema:")
-            print("  continuous:", schema.continuous_cols)
-            print("  discrete  :", schema.discrete_cols)
-            print("  categorical:", schema.categorical_cols)
+            # Preprocessing via sbtab pipeline
+            schema = TabularSchema.infer_from_dataframe(df=df, target_col=TARGET_COL_BY_DATASET[ds_name])
             pipe = TransformPipeline.default_dropna_and_scale()
             pipe.fit(df_train_raw, schema)
 
             train_scaled = pipe.transform(df_train_raw)
             test_scaled = pipe.transform(df_test_raw)
 
-            # Train DSBM on preprocessed train
-            model = IMFDSBMSolver(dim=len(cols), cfg=cfg)
+            # Fit DSB Solver
+            model = IPFDSBSolver(dim=len(cols), cfg=cfg)
             model.fit(train_scaled)
 
-            # Sample synthetic dataset of size equal to test fold size
-            x_synth = model.sample(
-                n=len(test_scaled),
-                seed=args.seed + 1000 + fold_id,
-                steps=cfg.num_steps,
-            )
+            # Sample synthetic data
+            x_synth = model.sample(n=len(test_scaled), seed=args.seed + fold_id)
             synth_scaled = pd.DataFrame(x_synth, columns=cols)
 
-            # Metrics on PREPROCESSED test fold
+            # Calculate Metrics
             m_kl = avg_kl_hist(test_scaled, synth_scaled, cols=cols, n_bins=args.n_bins_kl)
             m_wd = avg_wd(test_scaled, synth_scaled, cols=cols)
             m_corr = corr_frobenius(test_scaled, synth_scaled, cols=cols)
 
-            # Utility on PREPROCESSED data
+            # Utility evaluation
             util_delta, r2_real, r2_syn = utility_delta_r2_percent(
                 train_real=train_scaled,
                 test_real=test_scaled,
@@ -320,84 +260,49 @@ def main() -> None:
                 seed=args.seed + fold_id,
             )
 
-            fold_rows.append(
-                {
-                    "dataset": ds_name,
-                    "fold": fold_id,
-                    "n_train": len(train_scaled),
-                    "n_test": len(test_scaled),
-                    "avg_kl": float(m_kl),
-                    "avg_wd": float(m_wd),
-                    "corr_frob": float(m_corr),
-                    "delta_r2_percent": float(util_delta),
-                    "r2_real": float(r2_real),
-                    "r2_synth": float(r2_syn),
-                }
-            )
+            fold_rows.append({
+                "dataset": ds_name, "fold": fold_id,
+                "avg_kl": m_kl, "avg_wd": m_wd, "corr_frob": m_corr,
+                "delta_r2_percent": util_delta, "r2_real": r2_real, "r2_synth": r2_syn,
+            })
 
             print(f"avg_KL={m_kl:.6f}  avg_WD={m_wd:.6f}  corr_F={m_corr:.6f}  deltaR2%={util_delta:.3f}")
 
-        # Save per-dataset fold metrics
+        # Summary for current dataset
         fold_df = pd.DataFrame(fold_rows)
         fold_csv = outdir / f"{ds_name}_fold_metrics.csv"
         fold_df.to_csv(fold_csv, index=False)
 
-        # Summary stats
-        def mean_std(s: pd.Series) -> Tuple[float, float]:
-            return float(s.mean()), float(s.std(ddof=0))
-
         summary = {
-            "dataset": ds_name,
-            "target_col": target_col,
-            "n_splits": int(args.n_splits),
-            "shuffle": bool(args.shuffle),
-            "seed": int(args.seed),
-            "best_params_path": str(best_json_path),
-            "best_params": best_params,
-            "dsbm_config": asdict(cfg),
-            "metrics_mean": {},
-            "metrics_std": {},
+            "dataset": ds_name, "metrics_mean": {}, "metrics_std": {},
+            "solver_config": asdict(cfg)
         }
 
         for key in ["avg_kl", "avg_wd", "corr_frob", "delta_r2_percent", "r2_real", "r2_synth"]:
-            mu, sd = mean_std(fold_df[key])
-            summary["metrics_mean"][key] = mu
-            summary["metrics_std"][key] = sd
+            summary["metrics_mean"][key] = float(fold_df[key].mean())
+            summary["metrics_std"][key] = float(fold_df[key].std(ddof=0))
 
         summary_json = outdir / f"{ds_name}_kfold_summary.json"
         summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-        global_rows.append(
-            {
-                "dataset": ds_name,
-                "target_col": target_col,
-                "avg_kl_mean": summary["metrics_mean"]["avg_kl"],
-                "avg_kl_std": summary["metrics_std"]["avg_kl"],
-                "avg_wd_mean": summary["metrics_mean"]["avg_wd"],
-                "avg_wd_std": summary["metrics_std"]["avg_wd"],
-                "corr_frob_mean": summary["metrics_mean"]["corr_frob"],
-                "corr_frob_std": summary["metrics_std"]["corr_frob"],
-                "delta_r2_percent_mean": summary["metrics_mean"]["delta_r2_percent"],
-                "delta_r2_percent_std": summary["metrics_std"]["delta_r2_percent"],
-                "r2_real_mean": summary["metrics_mean"]["r2_real"],
-                "r2_synth_mean": summary["metrics_mean"]["r2_synth"],
-                "fold_csv": str(fold_csv),
-                "summary_json": str(summary_json),
-            }
-        )
+        global_rows.append({
+            "dataset": ds_name,
+            "avg_kl_mean": summary["metrics_mean"]["avg_kl"],
+            "avg_kl_std": summary["metrics_std"]["avg_kl"],
+            "avg_wd_mean": summary["metrics_mean"]["avg_wd"],
+            "avg_wd_std": summary["metrics_std"]["avg_wd"],
+            "corr_frob_mean": summary["metrics_mean"]["corr_frob"],
+            "corr_frob_std": summary["metrics_std"]["corr_frob"],
+            "delta_r2_percent_mean": summary["metrics_mean"]["delta_r2_percent"],
+            "delta_r2_percent_std": summary["metrics_std"]["delta_r2_percent"],
+            "r2_real_mean": summary["metrics_mean"]["r2_real"],
+            "r2_synth_mean": summary["metrics_mean"]["r2_synth"],
+        })
 
-        print(f"\nSaved fold metrics:   {fold_csv}")
-        print(f"Saved dataset summary:{summary_json}")
-
-    # Global summary CSV
+    # Global CSV summary
     global_df = pd.DataFrame(global_rows).sort_values("avg_wd_mean", ascending=True)
-    global_csv = outdir / "kfold_summary_all_datasets.csv"
-    global_df.to_csv(global_csv, index=False)
-
-    print("\n" + "=" * 100)
-    print("DONE. Global summary saved:")
-    print(global_csv)
-    print("=" * 100)
+    global_df.to_csv(outdir / "kfold_summary_all_datasets.csv", index=False)
+    print(f"\nGlobal summary saved to: {outdir / 'kfold_summary_all_datasets.csv'}")
 
 
 if __name__ == "__main__":

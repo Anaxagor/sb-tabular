@@ -184,7 +184,6 @@ class IPFDSBSolver:
         g = self.timegrid.gammas()
         t = self.timegrid.times()
         K = self.timegrid.num_steps
-
         gen = torch.Generator(device=str(self.device))
         gen.manual_seed(int(seed))
 
@@ -199,11 +198,12 @@ class IPFDSBSolver:
 
         # Repeat / sample init_x to size N
         if init_x.shape[0] >= N:
-            base = init_x[torch.randperm(init_x.shape[0], generator=gen)[:N]]
+            
+            base = init_x[torch.randperm(init_x.shape[0], device=self.device, generator=gen)[:N]]
         else:
             reps = (N + init_x.shape[0] - 1) // init_x.shape[0]
             base = init_x.repeat((reps, 1))[:N]
-            base = base[torch.randperm(base.shape[0], generator=gen)]
+            base = base[torch.randperm(base.shape[0], device=self.device, generator=gen)]
 
         # Random step indices
         k_idx = torch.randint(low=0, high=K, size=(N,), generator=gen, device=self.device)
