@@ -14,7 +14,7 @@ from sbtab.data.schema import TabularSchema
 from sbtab.data.datamodule import TabularDataModule
 from sbtab.data.splits import SplitConfigHoldout
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.continuous_time.joint_distribution.mlp.imf_dsbm.solver import IMFDSBMDiscreteJointMLPConfig, IMFDSBMDiscreteJointMLPSolver
+from sbtab.solvers.discrete_time.joint_distribution.mlp.imf_dsbm.solver import IMFDSBMDiscreteJointMLPConfig, IMFDSBMDiscreteJointMLPSolver
 from sbtab.models.neural.mlp_discrete_joint import (
     MLPTimeDiscretizedField,
     StepMLPJointConfig,
@@ -116,7 +116,7 @@ def main() -> None:
     # -------------------------------
     dm = TabularDataModule(df=df, schema=schema, transforms=transforms, reset_index=True)
 
-    holdout_cfg = SplitConfigHoldout(val_size=0.2, shuffle=True, random_seed=42)
+    holdout_cfg = SplitConfigHoldout(val_size=0.2, shuffle=True, random_state=42)
     dm.prepare_holdout(holdout_cfg)
 
     holdout = dm.get_holdout()
