@@ -117,3 +117,86 @@ class DiscretePathSampler:
 
         model.train()
         return x, (torch.stack(path) if return_path else None)
+
+@dataclass
+class MixedPathSampler:
+    timegrid: TimeGrid
+    reference: CategoricalReference
+    integrator: EulerMaruyama
+
+    @torch.no_grad()
+    def simulate(
+            self,
+            x_cont_init: torch.Tensor,
+            x_cat_init: torch.Tensor,
+            model: torch.nn.Module,
+            direction: Literal["forward", "backward"],
+            return_path: bool = False,
+            seed: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[dict]]:
+        model.eval()
+        K = self.timegrid.num_steps
+        t_vals = self.timegrid.times()
+
+        gen = None
+        if seed is not None:
+            gen = torch.Generator(device=str(x_cont_init.device))
+            gen.manual_seed(int(seed))
+
+        x_cont = x_cont_init.clone()
+        x_cat = x_cat_init.clone()
+        B = x_cont.shape[0]
+        g = self.timegrid.gammas()
+
+        path_cont, path_cat = None, None
+        if return_path:
+            path_cont = [x_cont.clone()]
+            path_cat = [x_cat.clone()]
+
+        if direction == "forward":
+            ks = range(K)
+        else:
+            ks = range(K, 0, -1)
+
+        for k in ks:
+            if direction == "forward":
+                t_idx = k
+            else:
+                t_idx = k - 1
+
+            tk = t_vals[t_idx].expand(B, 1).to(x_cont.device)
+
+            v_num, logits_cat = model(x_cont, x_cat, tk)
+
+            drift = v_num
+            x_cont = self.integrator.step(x_cont, drift=drift, gamma=g[t_idx], generator=gen)
+
+            if direction == "forward":
+                probs_step = self.reference.model_induced_next_step(
+                    model_logits=logits_cat,
+                    x_t=x_cat,
+                    n=k,
+                    K=K
+                )
+            else:
+                probs_step = self.reference.model_induced_prev_step(
+                    model_logits=logits_cat,
+                    x_t=x_cat,
+                    n=k
+                )
+            x_cat = self.reference.sample_from_probs(probs_step)
+
+            if return_path:
+                path_cont.append(x_cont.clone())
+                path_cat.append(x_cat.clone())
+
+        model.train()
+
+        paths = None
+        if return_path:
+            paths = {
+                "cont": torch.stack(path_cont),
+                "cat": torch.stack(path_cat)
+            }
+
+        return x_cont, x_cat, paths
