@@ -3,13 +3,17 @@ from __future__ import annotations
 import networkx as nx
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
-from pgmpy.estimators import HillClimbSearch, BicScore
+from pgmpy.estimators import HillClimbSearch
+try:
+    from pgmpy.estimators import BicScore
+except ImportError:
+    from pgmpy.estimators import BIC as BicScore
 from sklearn.preprocessing import KBinsDiscretizer
 
 from sbtab.bridge.timegrid import TimeGrid
-from sbtab.models.boosted.catboost_continuous_scalar import CatBoostContinuousFieldConfig, CatBoostContinuousField
+from sbtab.models.boosted.catboost_continuous_scalar import CatBoostContinuousScalarConfig, CatBoostContinuousScalar
 
 
 @dataclass
@@ -19,7 +23,7 @@ class StructuralContinuousBoostedConfig:
     alpha_ou: float = 1.0
     n_bins: int = 5
     seed: int = 42
-    catboost: CatBoostContinuousFieldConfig = CatBoostContinuousFieldConfig(feature_mode="x_x0_t")
+    catboost: CatBoostContinuousScalarConfig = field(default_factory=lambda: CatBoostContinuousScalarConfig(feature_mode="x_x0_t"))
 
 class StructuralContinuousBoostedSolver:
     """
@@ -28,7 +32,7 @@ class StructuralContinuousBoostedSolver:
     """
     def __init__(self, cfg: StructuralContinuousBoostedConfig):
         self.cfg = cfg
-        self.timegrid = TimeGrid(num_steps=cfg.num_steps, T=1.0)
+        self.timegrid = TimeGrid(num_steps=cfg.num_steps)
         self.gammas = self.timegrid.gammas().numpy()
         self.times = self.timegrid.times().numpy()
         self._rng = np.random.default_rng(cfg.seed)
@@ -65,8 +69,8 @@ class StructuralContinuousBoostedSolver:
         n = len(x_data)
 
         # 1 dim since we predict column by column
-        f_net = CatBoostContinuousField(dim=1, cfg=self.cfg.catboost)
-        b_net = CatBoostContinuousField(dim=1, cfg=self.cfg.catboost)
+        f_net = CatBoostContinuousScalar(cfg=self.cfg.catboost)
+        b_net = CatBoostContinuousScalar(cfg=self.cfg.catboost)
 
         # 1. OU Pretrain
         k_rand = self._rng.integers(0, self.cfg.num_steps, size=n)

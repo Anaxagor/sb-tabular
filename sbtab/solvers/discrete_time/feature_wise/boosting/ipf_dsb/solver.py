@@ -3,13 +3,17 @@ from __future__ import annotations
 import networkx as nx
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
-from pgmpy.estimators import HillClimbSearch, BicScore
+from pgmpy.estimators import HillClimbSearch
+try:
+    from pgmpy.estimators import BicScore
+except ImportError:
+    from pgmpy.estimators import BIC as BicScore
 from sklearn.preprocessing import KBinsDiscretizer
 
 from sbtab.bridge.timegrid import TimeGrid
-from sbtab.models.boosted.catboost_discrete_scalar import CatBoostDiscreteFieldConfig, CatBoostTimeDiscretizedField
+from sbtab.models.boosted.catboost_discrete_scalar import CatBoostDiscreteScalarConfig, CatBoostDiscreteScalar
 
 @dataclass
 class StructuralDiscreteBoostedConfig:
@@ -19,7 +23,7 @@ class StructuralDiscreteBoostedConfig:
     n_bins: int = 5
     seed: int = 42
     # Mandatory for passing parents
-    catboost: CatBoostDiscreteFieldConfig = CatBoostDiscreteFieldConfig(feature_mode="x_x0")
+    catboost: CatBoostDiscreteScalarConfig = field(default_factory=lambda: CatBoostDiscreteScalarConfig(feature_mode="x_x0"))
 
 class StructuralDiscreteBoostedSolver:
     """
@@ -28,12 +32,12 @@ class StructuralDiscreteBoostedSolver:
     """
     def __init__(self, cfg: StructuralDiscreteBoostedConfig):
         self.cfg = cfg
-        self.timegrid = TimeGrid(num_steps=cfg.num_steps, T=1.0)
+        self.timegrid = TimeGrid(num_steps=cfg.num_steps)
         self.gammas = self.timegrid.gammas().numpy()
         self.t_grid = self.timegrid.times().numpy()
         self._rng = np.random.default_rng(cfg.seed)
         
-        self.fields: dict[str, CatBoostTimeDiscretizedField] = {}
+        self.fields: dict[str, CatBoostDiscreteScalar] = {}
         self.dag = None
         self.order =[]
         self.feature_cols =[]
@@ -66,8 +70,8 @@ class StructuralDiscreteBoostedSolver:
             x_data = df[col].values.reshape(-1, 1).astype(np.float32)
             p_data_clean = df[parents].values.astype(np.float32) if parents else np.empty((n, 0), dtype=np.float32)
 
-            field_f = CatBoostTimeDiscretizedField(1, self.t_grid, self.cfg.catboost)
-            field_b = CatBoostTimeDiscretizedField(1, self.t_grid, self.cfg.catboost)
+            field_f = CatBoostDiscreteScalar(self.t_grid, self.cfg.catboost)
+            field_b = CatBoostDiscreteScalar(self.t_grid, self.cfg.catboost)
 
             # OU Pretrain
             for k in range(self.cfg.num_steps):
