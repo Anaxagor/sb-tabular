@@ -7,7 +7,7 @@ import numpy as np
 
 
 @dataclass
-class CatBoostDiscreteFieldConfig:
+class CatBoostDiscreteJointConfig:
     """
     CatBoost field approximator on a discrete time grid.
 
@@ -32,14 +32,14 @@ class CatBoostDiscreteFieldConfig:
     
 
 
-class CatBoostTimeDiscretizedField:
+class CatBoostDiscreteJoint:
     """
     Holds a list of CatBoost regressors {f_k} over discrete times {t_k}.
 
     Each model predicts drift vectors in R^dim using MultiRMSE.
     """
 
-    def __init__(self, dim: int, t_grid: np.ndarray, cfg: CatBoostDiscreteFieldConfig):
+    def __init__(self, dim: int, t_grid: np.ndarray, cfg: CatBoostDiscreteJointConfig):
 
         self.dim = int(dim)
         self.t_grid = np.asarray(t_grid, dtype=np.float32)
@@ -61,6 +61,23 @@ class CatBoostTimeDiscretizedField:
             ) from e
         self._checked_deps = True
 
+    def _build_features(
+        self,
+        x: np.ndarray,
+        *,
+        t: np.ndarray | float,
+    ) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float32)
+        if np.isscalar(t):
+            t_arr = np.full((x.shape[0], 1), float(t), dtype=np.float32)
+        else:
+            t_arr = np.asarray(t, dtype=np.float32)
+            if t_arr.ndim == 1:
+                t_arr = t_arr[:, None]
+            if t_arr.shape[1] != 1:
+                raise ValueError("t must have shape (n,) or (n,1)")
+        return np.concatenate([x, t_arr], axis=1)
+
     def fit_step(
         self,
         k: int,
@@ -81,7 +98,8 @@ class CatBoostTimeDiscretizedField:
         from catboost import CatBoostRegressor
 
         t = float(self.t_grid[k])
-        X_feat = self._build_features(x, x0=x0, t=t)
+        del x0
+        X_feat = self._build_features(x, t=t)
 
         boosting_type = "Plain" if self.cfg.task_type == "GPU" else "Ordered"
 
@@ -115,7 +133,11 @@ class CatBoostTimeDiscretizedField:
         model = self.models[k]
         if model is None:
             raise RuntimeError(f"Model for time step {k} is not trained.")
-        x = np.asarray(x, dtype=np.float32)
-        pred = model.predict(x)
+        X_feat = self._build_features(x, t=float(self.t_grid[k]))
+        pred = model.predict(X_feat)
         pred = np.asarray(pred, dtype=np.float32)
         return pred
+
+
+CatBoostDiscreteFieldConfig = CatBoostDiscreteJointConfig
+CatBoostTimeDiscretizedField = CatBoostDiscreteJoint

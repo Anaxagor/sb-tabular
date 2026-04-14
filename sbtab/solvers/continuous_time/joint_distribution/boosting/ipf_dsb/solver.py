@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 from typing import Optional
 
 from sbtab.bridge.timegrid import TimeGrid
-from sbtab.models.boosted.catboost_continuous_joint import CatBoostContinuousFieldConfig, CatBoostContinuousField
+from sbtab.models.boosted.catboost_continuous_joint import CatBoostContinuousJointConfig, CatBoostContinuousJoint
 
 
 @dataclass
@@ -15,7 +15,7 @@ class JointContinuousBoostedConfig:
     ipf_iters: int = 5
     alpha_ou: float = 1.0
     seed: int = 42
-    catboost: CatBoostContinuousFieldConfig = CatBoostContinuousFieldConfig()
+    catboost: CatBoostContinuousJointConfig = field(default_factory=CatBoostContinuousJointConfig)
 
 class JointContinuousBoostedSolver:
     """[CT] + [Boosting] + [Joint]
@@ -25,13 +25,13 @@ class JointContinuousBoostedSolver:
         self.dim = dim
         self.cfg = cfg
         
-        self.timegrid = TimeGrid(num_steps=cfg.num_steps, T=1.0)
+        self.timegrid = TimeGrid(num_steps=cfg.num_steps)
         self.gammas = self.timegrid.gammas().numpy()
         self.times = self.timegrid.times().numpy()
         self._rng = np.random.default_rng(cfg.seed)
 
-        self.F = CatBoostContinuousField(dim=dim, cfg=cfg.catboost)
-        self.B = CatBoostContinuousField(dim=dim, cfg=cfg.catboost)
+        self.F = CatBoostContinuousJoint(dim=dim, cfg=cfg.catboost)
+        self.B = CatBoostContinuousJoint(dim=dim, cfg=cfg.catboost)
         
         self.columns_: Optional[list[str]] = None
         self._fitted = False

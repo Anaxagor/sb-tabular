@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
 import pandas as pd
 
 from sbtab.bridge.timegrid import TimeGrid
-from sbtab.models.boosted.catboost_discrete_joint import CatBoostDiscreteFieldConfig, CatBoostTimeDiscretizedField
+from sbtab.models.boosted.catboost_discrete_joint import CatBoostDiscreteJointConfig, CatBoostDiscreteJoint
 
 
 @dataclass
@@ -15,7 +15,7 @@ class JointDiscreteBoostedConfig:
     ipf_iters: int = 5
     alpha_ou: float = 1.0
     seed: int = 42
-    catboost: CatBoostDiscreteFieldConfig = CatBoostDiscreteFieldConfig()
+    catboost: CatBoostDiscreteJointConfig = field(default_factory=CatBoostDiscreteJointConfig)
 
 class JointDiscreteBoostedSolver:
     """
@@ -25,12 +25,12 @@ class JointDiscreteBoostedSolver:
     def __init__(self, dim: int, cfg: JointDiscreteBoostedConfig):
         self.dim = dim
         self.cfg = cfg
-        self.timegrid = TimeGrid(num_steps=cfg.num_steps, T=1.0)
+        self.timegrid = TimeGrid(num_steps=cfg.num_steps)
         self.gammas = self.timegrid.gammas().numpy()
         self.t_grid = self.timegrid.times().numpy()
         
-        self.field_f = CatBoostTimeDiscretizedField(dim, self.t_grid, cfg.catboost)
-        self.field_b = CatBoostTimeDiscretizedField(dim, self.t_grid, cfg.catboost)
+        self.field_f = CatBoostDiscreteJoint(dim, self.t_grid, cfg.catboost)
+        self.field_b = CatBoostDiscreteJoint(dim, self.t_grid, cfg.catboost)
         self._rng = np.random.default_rng(cfg.seed)
         self.columns_: Optional[list[str]] = None
 

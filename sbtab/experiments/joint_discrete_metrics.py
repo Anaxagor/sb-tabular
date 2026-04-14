@@ -14,11 +14,11 @@ from sklearn.model_selection import KFold
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.ipf_dsb_boosted.joint_discrete_solver import (
+from sbtab.solvers.discrete_time.joint_distribution.boosting.ipf_dsb.solver import (
     JointDiscreteBoostedSolver,
     JointDiscreteBoostedConfig,
 )
-from sbtab.models.field.boosted.catboost_discrete_field import CatBoostDiscreteFieldConfig
+from sbtab.models.boosted.catboost_discrete_joint import CatBoostDiscreteJointConfig
 from sbtab.evaluation.metrics.statistical import sliced_wasserstein
 
 
@@ -125,8 +125,8 @@ def load_best_params(best_json_path: Path) -> Dict:
     return {k: v for k, v in data.items() if isinstance(v, (int, float, str, bool))}
 
 
-def build_config(best: Dict, seed: int) -> JointDiscreteBoostedConfig:
-    cat_cfg = CatBoostDiscreteFieldConfig(
+def build_discrete_config(best: Dict, seed: int) -> JointDiscreteBoostedConfig:
+    cat_cfg = CatBoostDiscreteJointConfig(
         iterations=int(best.get("iterations", 2000)),
         depth=int(best.get("depth", 8)),
         learning_rate=float(best.get("learning_rate", 0.05)),
@@ -156,6 +156,7 @@ def main() -> None:
     ap.add_argument("--shuffle", action="store_true", default=True)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--n-bins-kl", type=int, default=20)
+    ap.add_argument("--max-folds", type=int, default=0, help="Max folds to run per dataset (0 = all)")
     args = ap.parse_args()
 
     best_dir = Path(args.best_json_dir)
@@ -168,9 +169,29 @@ def main() -> None:
     ds_list = [d.strip() for d in args.datasets.split(",") if d.strip()]
     global_rows: List[Dict] = []
 
+    max_folds = args.max_folds if args.max_folds > 0 else args.n_splits
+
     for ds_name in ds_list:
         if ds_name not in my_data:
             continue
+
+        existing_csv = outdir / f"{ds_name}_fold_metrics.csv"
+        if existing_csv.is_file():
+            print(f"\n[SKIP] {ds_name}: {existing_csv} already exists")
+            prev = pd.read_csv(existing_csv)
+            summary_mean = prev.mean(numeric_only=True).to_dict()
+            global_rows.append({
+                "dataset": ds_name,
+                "avg_kl_mean": summary_mean.get("avg_kl", 0),
+                "avg_wd_mean": summary_mean.get("avg_wd", 0),
+                "swd_mean": summary_mean.get("swd", 0),
+                "corr_frob_mean": summary_mean.get("corr_frob", 0),
+                "delta_r2_percent_mean": summary_mean.get("delta_r2_percent", 0),
+                "r2_real_mean": summary_mean.get("r2_real", 0),
+                "r2_synth_mean": summary_mean.get("r2_synth", 0),
+            })
+            continue
+
         print("\n" + "=" * 100)
         print(f"JOINT DISCRETE BOOSTED | DATASET: {ds_name}")
         print("=" * 100)
@@ -185,13 +206,15 @@ def main() -> None:
 
         best_json_path = best_dir / f"{ds_name}_best.json"
         best_params = load_best_params(best_json_path) if best_json_path.exists() else {}
-        cfg = build_config(best_params, seed=args.seed)
+        cfg = build_discrete_config(best_params, seed=args.seed)
 
         kf = KFold(n_splits=args.n_splits, shuffle=args.shuffle, random_state=args.seed)
         fold_rows: List[Dict] = []
 
         for fold_id, (train_idx, test_idx) in enumerate(kf.split(np.arange(len(df)))):
-            print(f"\n--- Fold {fold_id + 1}/{args.n_splits} ---")
+            if fold_id >= max_folds:
+                break
+            print(f"\n--- Fold {fold_id + 1}/{max_folds} ---")
 
             df_train_raw = df.iloc[train_idx].copy()
             df_test_raw = df.iloc[test_idx].copy()
