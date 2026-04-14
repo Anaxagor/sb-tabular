@@ -7,7 +7,7 @@ import numpy as np
 
 
 @dataclass
-class CatBoostContinuousFieldConfig:
+class CatBoostContinuousJointConfig:
     """
     Continuous-time CatBoost field for joint/vector prediction.
 
@@ -28,8 +28,8 @@ class CatBoostContinuousFieldConfig:
 
 
 
-class CatBoostContinuousField:
-    def __init__(self, dim: int, cfg: CatBoostContinuousFieldConfig):
+class CatBoostContinuousJoint:
+    def __init__(self, dim: int, cfg: CatBoostContinuousJointConfig):
         self.dim = int(dim)
         self.cfg = cfg
         self.model = None
@@ -67,9 +67,21 @@ class CatBoostContinuousField:
         parts.append(t_arr)
         return np.concatenate(parts, axis=1)
 
-    def fit(self, X_feat: np.ndarray, y: np.ndarray) -> None:
+    def fit(
+        self,
+        x: np.ndarray,
+        t: np.ndarray | float | None = None,
+        y: np.ndarray | None = None,
+    ) -> None:
         self._check_deps()
         from catboost import CatBoostRegressor
+
+        if y is None:
+            X_feat = np.asarray(x, dtype=np.float32)
+            y_arr = np.asarray(t, dtype=np.float32)
+        else:
+            X_feat = self._build_features(x, t=t)
+            y_arr = np.asarray(y, dtype=np.float32)
 
         boosting_type = "Plain" if self.cfg.task_type == "GPU" else "Ordered"
 
@@ -86,14 +98,13 @@ class CatBoostContinuousField:
             verbose=self.cfg.verbose,
             allow_writing_files=self.cfg.allow_writing_files,
         )
-        model.fit(np.asarray(X_feat, dtype=np.float32), np.asarray(y, dtype=np.float32))
+        model.fit(np.asarray(X_feat, dtype=np.float32), y_arr)
         self.model = model
 
     def predict(
         self,
         x: np.ndarray,
-        *,
-        t: np.ndarray | float,
+        t: np.ndarray | float = 0.0,
     ) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("Call fit() before predict().")
@@ -103,3 +114,7 @@ class CatBoostContinuousField:
         if pred.ndim == 1:
             pred = pred[:, None]
         return pred
+
+
+CatBoostContinuousFieldConfig = CatBoostContinuousJointConfig
+CatBoostContinuousField = CatBoostContinuousJoint
