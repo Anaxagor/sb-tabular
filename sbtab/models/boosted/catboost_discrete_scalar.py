@@ -7,7 +7,7 @@ import numpy as np
 
 
 @dataclass
-class CatBoostScalarConfig:
+class CatBoostDiscreteScalarConfig:
     """
     CatBoost regressor config for scalar drift/velocity prediction.
     """
@@ -22,15 +22,16 @@ class CatBoostScalarConfig:
     random_seed: int = 0
     verbose: bool = False
     allow_writing_files: bool = False
+    feature_mode: str = "x_x0"
 
 
-class CatBoostTimeDiscretizedScalar:
+class CatBoostDiscreteScalar:
     """
     Holds a list of CatBoostRegressor models {f_k} over discrete times {t_k}.
     Each f_k predicts a scalar drift/velocity.
     """
 
-    def __init__(self, t_grid: np.ndarray, cfg: CatBoostScalarConfig):
+    def __init__(self, t_grid: np.ndarray, cfg: CatBoostDiscreteScalarConfig):
         self.t_grid = np.asarray(t_grid, dtype=np.float32)
         self.cfg = cfg
         self.models: list[object] = [None for _ in range(len(self.t_grid))]
@@ -48,7 +49,37 @@ class CatBoostTimeDiscretizedScalar:
             ) from e
         self._checked = True
 
-    def fit_step(self, k: int, X_feat: np.ndarray, y: np.ndarray) -> None:
+    def _build_features(
+        self,
+        x: np.ndarray,
+        *,
+        x0: Optional[np.ndarray] = None,
+        t: np.ndarray | float | None = None,
+    ) -> np.ndarray:
+        x_arr = np.asarray(x, dtype=np.float32).reshape(len(x), -1)
+        parts = [x_arr]
+        if x0 is not None:
+            x0_arr = np.asarray(x0, dtype=np.float32)
+            if x0_arr.size:
+                parts.append(x0_arr)
+        if t is not None and "t" in self.cfg.feature_mode:
+            if np.isscalar(t):
+                t_arr = np.full((x_arr.shape[0], 1), float(t), dtype=np.float32)
+            else:
+                t_arr = np.asarray(t, dtype=np.float32)
+                if t_arr.ndim == 1:
+                    t_arr = t_arr[:, None]
+            parts.append(t_arr)
+        return np.concatenate(parts, axis=1)
+
+    def fit_step(
+        self,
+        k: int,
+        X_feat: np.ndarray,
+        y: np.ndarray,
+        *,
+        x0: Optional[np.ndarray] = None,
+    ) -> None:
         """
         Fit model at time index k.
 
@@ -58,7 +89,10 @@ class CatBoostTimeDiscretizedScalar:
         self._check_deps()
         from catboost import CatBoostRegressor
 
-        X_feat = np.asarray(X_feat, dtype=np.float32)
+        if x0 is None:
+            X_feat = np.asarray(X_feat, dtype=np.float32)
+        else:
+            X_feat = self._build_features(X_feat, x0=x0, t=float(self.t_grid[k]))
         y = np.asarray(y).reshape(-1).astype(np.float32)
 
         model = CatBoostRegressor(
@@ -76,7 +110,13 @@ class CatBoostTimeDiscretizedScalar:
         model.fit(X_feat, y)
         self.models[k] = model
 
-    def predict_step(self, k: int, X_feat: np.ndarray) -> np.ndarray:
+    def predict_step(
+        self,
+        k: int,
+        X_feat: np.ndarray,
+        *,
+        x0: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         """
         Predict scalar drift/velocity at time index k.
 
@@ -86,6 +126,13 @@ class CatBoostTimeDiscretizedScalar:
         if model is None:
             raise RuntimeError(f"Scalar model for step k={k} is not fitted.")
 
-        X_feat = np.asarray(X_feat, dtype=np.float32)
+        if x0 is None:
+            X_feat = np.asarray(X_feat, dtype=np.float32)
+        else:
+            X_feat = self._build_features(X_feat, x0=x0, t=float(self.t_grid[k]))
         yhat = model.predict(X_feat)
-        return np.asarray(yhat, dtype=np.float32).reshape(-1)
+        return np.asarray(yhat, dtype=np.float32).reshape(-1, 1)
+
+
+CatBoostScalarConfig = CatBoostDiscreteScalarConfig
+CatBoostTimeDiscretizedScalar = CatBoostDiscreteScalar

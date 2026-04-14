@@ -24,6 +24,7 @@ class CatBoostContinuousScalarConfig:
     random_seed: int = 0
     verbose: bool = False
     allow_writing_files: bool = False
+    feature_mode: str = "x_x0_t"
 
 
 
@@ -70,9 +71,24 @@ class CatBoostContinuousScalar:
         parts.append(t_arr)
         return np.concatenate(parts, axis=1)
 
-    def fit(self, X_feat: np.ndarray, y: np.ndarray) -> None:
+    def fit(
+        self,
+        x: np.ndarray,
+        t: np.ndarray | float | None = None,
+        y: np.ndarray | None = None,
+        *,
+        x0: Optional[np.ndarray] = None,
+    ) -> None:
         self._check_deps()
         from catboost import CatBoostRegressor
+
+        if y is None:
+            X_feat = np.asarray(x, dtype=np.float32)
+            y_arr = np.asarray(t, dtype=np.float32).reshape(-1)
+        else:
+            ctx = np.empty((len(x), 0), dtype=np.float32) if x0 is None else np.asarray(x0, dtype=np.float32)
+            X_feat = self._build_features(x, ctx, t=t)
+            y_arr = np.asarray(y, dtype=np.float32).reshape(-1)
 
         boosting_type = "Plain" if self.cfg.task_type == "GPU" else "Ordered"
 
@@ -89,18 +105,19 @@ class CatBoostContinuousScalar:
             verbose=self.cfg.verbose,
             allow_writing_files=self.cfg.allow_writing_files,
         )
-        model.fit(np.asarray(X_feat, dtype=np.float32), np.asarray(y, dtype=np.float32).reshape(-1))
+        model.fit(np.asarray(X_feat, dtype=np.float32), y_arr)
         self.model = model
 
     def predict(
         self,
         x: np.ndarray,
-        ctx: np.ndarray,
+        t: np.ndarray | float = 0.0,
         *,
-        t: np.ndarray | float,
+        x0: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("Call fit() before predict().")
-        X_feat = self._build_features(x, ctx, t=t)
+        ctx_arr = np.empty((len(x), 0), dtype=np.float32) if x0 is None else np.asarray(x0, dtype=np.float32)
+        X_feat = self._build_features(x, ctx_arr, t=t)
         pred = self.model.predict(X_feat)
-        return np.asarray(pred, dtype=np.float32).reshape(-1)
+        return np.asarray(pred, dtype=np.float32).reshape(-1, 1)
