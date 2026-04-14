@@ -2,27 +2,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 import pandas as pd
 
 
 @dataclass(frozen=True)
 class TabularSchema:
     """
-    Schema for *fully continuous* tabular data.
+    Schema for tabular features: continuous columns and optional categorical columns.
 
-    Assumptions:
-      - All features are continuous (float-like).
-      - Target (if present) is also continuous.
+    Columns listed in ``categorical_cols`` must be a subset of ``feature_cols``.
+    All other feature columns are treated as continuous (numeric).
     """
     feature_cols: List[str]
     target_col: Optional[str] = None
     id_col: Optional[str] = None  # optional row identifier column
+    categorical_cols: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        feats = set(self.feature_cols)
+        for c in self.categorical_cols:
+            if c not in feats:
+                raise ValueError(
+                    f"categorical_cols contains '{c}' which is not in feature_cols"
+                )
 
     @property
     def continuous_cols(self) -> List[str]:
-        # Fully continuous setting: all features are continuous.
-        return list(self.feature_cols)
+        cat = set(self.categorical_cols)
+        return [c for c in self.feature_cols if c not in cat]
 
     @property
     def all_cols(self) -> List[str]:
@@ -43,14 +51,12 @@ class TabularSchema:
         if missing:
             raise ValueError(f"DataFrame is missing required columns: {missing}")
 
-        # In this project phase we assume continuous data; fail early if obviously non-numeric.
-        to_check = self.feature_cols + ([self.target_col] if self.target_col else [])
-        non_numeric = [c for c in to_check if not pd.api.types.is_numeric_dtype(df[c])]
-        if non_numeric:
-            raise TypeError(
-                "Non-numeric columns found in continuous-only setting: "
-                f"{non_numeric}. Please cast/encode beforehand."
-            )
+        for c in self.continuous_cols:
+            if not pd.api.types.is_numeric_dtype(df[c]):
+                raise TypeError(
+                    f"Continuous feature '{c}' must be numeric; "
+                    "add it to categorical_cols if it is categorical."
+                )
 
     @classmethod
     def infer_from_dataframe(
@@ -60,6 +66,8 @@ class TabularSchema:
         id_col: Optional[str] = None,
         feature_cols: Optional[Sequence[str]] = None,
         drop_non_numeric: bool = False,
+        categorical_cols: Optional[Sequence[str]] = None,
+        infer_categorical: bool = False,
     ) -> "TabularSchema":
         """
         Infer schema from a DataFrame.
@@ -67,6 +75,13 @@ class TabularSchema:
         If feature_cols is None:
           - uses all columns except target_col and id_col
           - optionally drops non-numeric columns if drop_non_numeric=True
+
+        categorical_cols:
+          Explicit list of feature columns to treat as categorical.
+
+        infer_categorical:
+          If True and categorical_cols is None, columns with object/categorical/bool
+          dtype are marked categorical (heuristic).
         """
         cols = list(df.columns)
 
@@ -84,6 +99,23 @@ class TabularSchema:
         if drop_non_numeric:
             feats = [c for c in feats if pd.api.types.is_numeric_dtype(df[c])]
 
-        schema = cls(feature_cols=feats, target_col=target_col, id_col=id_col)
+        inferred_cat: Tuple[str, ...] = ()
+        if categorical_cols is not None:
+            inferred_cat = tuple(categorical_cols)
+        elif infer_categorical:
+            inferred_cat = tuple(
+                c
+                for c in feats
+                if pd.api.types.is_object_dtype(df[c])
+                or pd.api.types.is_categorical_dtype(df[c])
+                or pd.api.types.is_bool_dtype(df[c])
+            )
+
+        schema = cls(
+            feature_cols=feats,
+            target_col=target_col,
+            id_col=id_col,
+            categorical_cols=inferred_cat,
+        )
         schema.validate(df)
         return schema

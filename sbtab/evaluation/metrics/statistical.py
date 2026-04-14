@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from scipy.spatial.distance import cdist
 from scipy.stats import wasserstein_distance
 from scipy import stats
-from typing import List, Tuple, Optional
+from typing import Dict, List, Optional
+
+from sbtab.data.schema import TabularSchema
 
 def sliced_wasserstein(X: np.ndarray, Y: np.ndarray, n_proj: int = 256) -> float:
     """
@@ -34,7 +39,164 @@ def sliced_wasserstein(X: np.ndarray, Y: np.ndarray, n_proj: int = 256) -> float
     return float(sw2 / n_proj)
 
 def avg_wd(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
+    """Mean 1D Wasserstein over the given numeric columns (no scaling)."""
     return float(np.mean([wasserstein_distance(real[c].to_numpy(), synth[c].to_numpy()) for c in cols]))
+
+
+def _hist_prob(values: np.ndarray, bins: np.ndarray, eps: float) -> np.ndarray:
+    hist, _ = np.histogram(values, bins=bins)
+    probs = hist.astype(np.float64) + eps
+    probs /= probs.sum()
+    return probs
+
+
+def _sorted_union_categories(r: pd.Series, s: pd.Series) -> List:
+    combined = pd.concat([r, s], ignore_index=True).dropna()
+    u = combined.unique().tolist()
+    return sorted(u, key=lambda x: (str(type(x).__name__), repr(x)))
+
+
+def category_levels_mixed(
+    real: pd.DataFrame, synth: pd.DataFrame, schema: TabularSchema
+) -> Dict[str, List]:
+    """Category level lists per categorical feature (union of real and synthetic)."""
+    return {c: _sorted_union_categories(real[c], synth[c]) for c in schema.categorical_cols}
+
+
+def mixed_to_numeric_matrix(
+    df: pd.DataFrame,
+    schema: TabularSchema,
+    category_levels: Dict[str, List],
+) -> np.ndarray:
+    """
+    Expand categorical columns to one-hot rows and stack continuous columns for correlation analysis.
+    """
+    n = len(df)
+    blocks: List[np.ndarray] = []
+    for c in schema.feature_cols:
+        if c in schema.categorical_cols:
+            levels = category_levels.get(c, [])
+            if not levels:
+                continue
+            codes = pd.Categorical(df[c], categories=levels).codes
+            k = len(levels)
+            block = np.zeros((n, k), dtype=np.float64)
+            valid = codes >= 0
+            if np.any(valid):
+                idx = np.flatnonzero(valid)
+                block[idx, codes[valid]] = 1.0
+            blocks.append(block)
+        else:
+            x = pd.to_numeric(df[c], errors="coerce").to_numpy(dtype=np.float64, copy=True)
+            x = np.nan_to_num(x, nan=0.0)
+            blocks.append(x.reshape(-1, 1))
+    if not blocks:
+        return np.zeros((n, 0), dtype=np.float64)
+    return np.hstack(blocks)
+
+
+def marginal_kl_mean(
+    real: pd.DataFrame,
+    synth: pd.DataFrame,
+    schema: TabularSchema,
+    n_bins: int = 50,
+    eps: float = 1e-8,
+) -> float:
+    """
+    Mean marginal KL(real || synth) over all feature columns.
+
+    Categorical columns use discrete distributions over the union of observed categories;
+    continuous columns use histogram density on bins spanning the real-data range.
+    """
+    kl_values: List[float] = []
+    for c in schema.feature_cols:
+        r, s = real[c], synth[c]
+
+        if c in schema.categorical_cols:
+            categories = _sorted_union_categories(r, s)
+            if not categories:
+                continue
+            r_counts = r.value_counts(dropna=False)
+            s_counts = s.value_counts(dropna=False)
+            r_probs = (
+                np.array([float(r_counts.get(cat, 0)) for cat in categories], dtype=np.float64) + eps
+            )
+            s_probs = (
+                np.array([float(s_counts.get(cat, 0)) for cat in categories], dtype=np.float64) + eps
+            )
+            r_probs /= r_probs.sum()
+            s_probs /= s_probs.sum()
+            kl_values.append(float(stats.entropy(r_probs, s_probs)))
+            continue
+
+        r_num = pd.to_numeric(r, errors="coerce").dropna()
+        s_num = pd.to_numeric(s, errors="coerce").dropna()
+        if r_num.empty or s_num.empty:
+            continue
+
+        r_min, r_max = float(r_num.min()), float(r_num.max())
+        if r_max == r_min:
+            kl_values.append(0.0)
+            continue
+        bins = np.linspace(r_min, r_max, n_bins + 1)
+        p = _hist_prob(r_num.to_numpy(), bins, eps)
+        q = _hist_prob(s_num.to_numpy(), bins, eps)
+        kl_values.append(float(stats.entropy(p, q)))
+
+    return float(np.mean(kl_values)) if kl_values else 0.0
+
+
+def frobenius_corr_diff_mixed(
+    real: pd.DataFrame,
+    synth: pd.DataFrame,
+    schema: TabularSchema,
+) -> float:
+    """Frobenius norm of (corr(real) - corr(synth)) on a mixed numeric + one-hot feature matrix."""
+    levels = category_levels_mixed(real, synth, schema)
+    real_mat = mixed_to_numeric_matrix(real, schema, levels)
+    synth_mat = mixed_to_numeric_matrix(synth, schema, levels)
+    if real_mat.shape[0] == 0 or synth_mat.shape[0] == 0 or real_mat.shape[1] == 0:
+        return 0.0
+    c_real = np.corrcoef(real_mat, rowvar=False)
+    c_syn = np.corrcoef(synth_mat, rowvar=False)
+    c_real = np.nan_to_num(c_real, nan=0.0)
+    c_syn = np.nan_to_num(c_syn, nan=0.0)
+    return float(np.linalg.norm(c_real - c_syn, ord="fro"))
+
+
+def avg_wasserstein_mean(
+    real: pd.DataFrame,
+    synth: pd.DataFrame,
+    schema: TabularSchema,
+    fit_scaler_on: str = "real",
+) -> float:
+    """
+    Mean 1D Wasserstein distance over continuous features in standardized space.
+
+    Categorical features are excluded. Scaler is fit on ``fit_scaler_on`` (``\"real\"`` or ``\"synth\"``).
+    """
+    cols = schema.continuous_cols
+    if not cols:
+        raise ValueError(
+            "No continuous columns in schema; cannot compute Wasserstein mean for categorical-only data."
+        )
+    if fit_scaler_on not in ("real", "synth"):
+        raise ValueError("fit_scaler_on must be 'real' or 'synth'")
+
+    from sklearn.preprocessing import StandardScaler
+
+    real_num = real[cols].astype(float)
+    synth_num = synth[cols].astype(float)
+    ref = real_num if fit_scaler_on == "real" else synth_num
+    scaler = StandardScaler()
+    scaler.fit(ref)
+    real_z = scaler.transform(real_num)
+    synth_z = scaler.transform(synth_num)
+    dists = [
+        float(wasserstein_distance(real_z[:, j], synth_z[:, j]))
+        for j in range(len(cols))
+    ]
+    return float(np.mean(dists)) if dists else 0.0
 
 def mmd_rbf(X: np.ndarray, Y: np.ndarray, sigma: Optional[float] = None) -> float:
     """Maximum average discrepancy in RBF units."""
@@ -55,7 +217,12 @@ def mmd_rbf(X: np.ndarray, Y: np.ndarray, sigma: Optional[float] = None) -> floa
     return float(k_xx + k_yy - 2 * k_xy)
 
 def calculate_marginal_kl(X_real: np.ndarray, X_syn: np.ndarray, bins: int = 50) -> float:
-    """The average KL is a divergence by all criteria (marginal fidelity)."""
+    """
+    Average marginal KL for a fully numeric feature matrix (continuous-only).
+
+    For mixed categorical and continuous columns in DataFrames, use ``marginal_kl_mean``
+    with a :class:`~sbtab.data.schema.TabularSchema` instead.
+    """
     vals = []
     epsilon = 1e-8 
     for j in range(X_real.shape[1]):
