@@ -1,283 +1,253 @@
 """
-K-fold evaluation: DSBM + Continuous-Time + MLP + Joint on **mixed** data.
+K-fold evaluation: DSBM + CT + MLP + Joint on mixed/categorical tabular data.
 
-Handles datasets with continuous, discrete, and categorical columns:
-  - Uses TabularSchema.infer_from_dataframe() for auto column classification
-  - Uses TransformPipeline.default_impute_scale_encode() for mixed data
-    (TypeAwareImputer -> ContinuousStandardScaler -> OneHotRepresentation)
-  - Falls back to default_dropna_and_scale() for continuous-only data
-  - Computes metrics in the encoded (numeric) space
-  - Additionally computes categorical accuracy after inverse_transform
+Follows the same pattern as light_sb_mixed_metrics.py:
+  - Uses datasets_mixed.pkl with df.attrs metadata
+    (feature_types, target_variable, task_type)
+  - Pipeline: TransformPipeline.default_impute_scale_encode() for mixed,
+    default_dropna_and_scale() for continuous-only
+  - DSBM is fitted on [encoded_features | numeric_target]
+  - After sampling, features are inverse_transformed to original space for metrics
+
+Final metrics per fold:
+  Mixed data:
+    avg_wd_cont       — Mean WD over continuous feature cols (original scale)
+    avg_kl_disc_cat   — Mean KL over discrete + categorical feature cols (original space)
+    corr_frob         — Frobenius norm of correlation-matrix difference (encoded space, all cols)
+    delta_r2_percent  — % change R2_synth vs R2_real  (regression)
+    delta_f1_percent  — % change F1_synth vs F1_real  (classification)
+
+  Pure discrete/categorical:
+    avg_kl_all        — Mean KL over all feature cols (original space)
+    corr_frob         — same as above
+    delta_f1_percent  — classification utility
+
+Usage:
+  python -m sbtab.experiments.dsbm_ct_mlp_mixed_metrics \\
+      --pickle sbtab/data/datasets/datasets_mixed.pkl \\
+      --best-json-dir dsbm_ct_mlp_mixed_optuna_results
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import pickle
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.spatial.distance import jensenshannon
 from scipy.stats import wasserstein_distance
-from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold
+from sklearn.preprocessing import LabelEncoder
 
 from sbtab.data.schema import TabularSchema
 from sbtab.transforms.pipeline import TransformPipeline
 from sbtab.solvers.continuous_time.joint_distribution.mlp.imf_dsbm.solver import (
-    IMFDSBMSolver,
     IMFDSBMConfig,
+    IMFDSBMSolver,
 )
-from sbtab.evaluation.metrics.statistical import sliced_wasserstein
 
 
-# ----------------------------
-# Dataset -> target column map
-# ----------------------------
-
-TARGET_COL_BY_DATASET: Dict[str, str] = {
-    "german_credit": "duration",
-    "online_news_popularity": " shares",
-    "covertype": "Horizontal_Distance_To_Hydrology",
-    "online_shoppers": "ProductRelated",
-    "bank_marketing": "pdays",
-    "bank_loan": "Income",
-    "diabetes": "target",
-    "california_housing": "MedHouseVal",
-    "king_county_housing": "price",
-}
-
-
-# ----------------------------
-# Utility regressor (R2)
-# ----------------------------
-
-def make_regressor(random_state: int):
-    try:
-        from catboost import CatBoostRegressor
-        return CatBoostRegressor(
-            depth=8, learning_rate=0.1, iterations=500,
-            loss_function="RMSE", random_seed=random_state, verbose=False,
-        )
-    except ImportError:
-        from sklearn.ensemble import HistGradientBoostingRegressor
-        return HistGradientBoostingRegressor(
-            random_state=random_state, max_depth=8, learning_rate=0.1, max_iter=500,
-        )
-
-
-# ----------------------------
-# Transform pipeline builder
-# ----------------------------
-
-def build_transforms(schema: TabularSchema, *, missing_strategy: str) -> TransformPipeline:
-    """
-    Select the appropriate pipeline based on schema content.
-    """
-    if schema.has_categorical:
-        if missing_strategy == "drop":
-            raise ValueError(
-                "missing_strategy='drop' is not supported for mixed/categorical datasets. "
-                "Use 'impute'."
-            )
-        return TransformPipeline.default_impute_scale_encode()
-
-    if missing_strategy == "impute":
-        return TransformPipeline.default_impute_and_scale()
-    return TransformPipeline.default_dropna_and_scale()
-
-
-# ----------------------------
-# Metrics
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Metric helpers
+# ---------------------------------------------------------------------------
 
 def avg_wd(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
-    """Average 1-D Wasserstein distance across numeric columns."""
+    """Mean marginal Wasserstein-1 over continuous cols (original scale)."""
+    if not cols:
+        return float("nan")
     return float(np.mean([
         wasserstein_distance(real[c].to_numpy(), synth[c].to_numpy()) for c in cols
     ]))
 
 
-def avg_kl_hist(
-    real: pd.DataFrame, synth: pd.DataFrame, cols: List[str],
-    n_bins: int = 50, eps: float = 1e-12,
-) -> float:
-    kls: List[float] = []
-    for c in cols:
-        r, s = real[c].to_numpy(), synth[c].to_numpy()
-        lo = float(np.min([np.min(r), np.min(s)]))
-        hi = float(np.max([np.max(r), np.max(s)]))
-        if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
-            kls.append(0.0)
-            continue
-        bins = np.linspace(lo, hi, n_bins + 1)
-        pr, _ = np.histogram(r, bins=bins, density=False)
-        ps, _ = np.histogram(s, bins=bins, density=False)
-        pr = pr.astype(np.float64) + eps
-        ps = ps.astype(np.float64) + eps
-        pr /= pr.sum()
-        ps /= ps.sum()
-        kls.append(float(np.sum(pr * (np.log(pr) - np.log(ps)))))
-    return float(np.mean(kls))
+def _kl_col(real_s: pd.Series, synth_s: pd.Series, eps: float = 1e-12) -> float:
+    all_cats = sorted(set(real_s.astype(str).unique()) | set(synth_s.astype(str).unique()))
+    rc = real_s.astype(str).value_counts()
+    sc = synth_s.astype(str).value_counts()
+    p = np.array([rc.get(c, 0) for c in all_cats], dtype=float) + eps
+    q = np.array([sc.get(c, 0) for c in all_cats], dtype=float) + eps
+    p /= p.sum()
+    q /= q.sum()
+    return float(np.sum(p * (np.log(p) - np.log(q))))
+
+
+def avg_kl_discrete(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
+    """Mean KL(real||synth) over discrete/categorical cols in original-value space."""
+    if not cols:
+        return float("nan")
+    return float(np.mean([_kl_col(real[c], synth[c]) for c in cols]))
 
 
 def corr_frobenius(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
-    rc = real[cols].corr().fillna(0).to_numpy()
-    sc = synth[cols].corr().fillna(0).to_numpy()
+    """Frobenius norm of the difference between Pearson correlation matrices."""
+    rc = real[cols].corr().fillna(0.0).to_numpy()
+    sc = synth[cols].corr().fillna(0.0).to_numpy()
     return float(np.linalg.norm(rc - sc, ord="fro"))
 
 
-def categorical_match_rate(
-    real: pd.DataFrame, synth: pd.DataFrame, cat_cols: List[str],
-) -> float:
-    """
-    For each categorical column, compute the fraction of synthetic values
-    that belong to the set of categories observed in the real data.
-    Returns the average across all categorical columns.
-    """
-    if not cat_cols:
-        return float("nan")
-    rates: List[float] = []
-    for c in cat_cols:
-        if c not in real.columns or c not in synth.columns:
-            continue
-        real_cats = set(real[c].dropna().unique())
-        if not real_cats:
-            rates.append(1.0)
-            continue
-        synth_vals = synth[c].dropna()
-        if len(synth_vals) == 0:
-            rates.append(0.0)
-            continue
-        match = synth_vals.isin(real_cats).sum()
-        rates.append(float(match) / float(len(synth_vals)))
-    return float(np.mean(rates)) if rates else float("nan")
+# ---------------------------------------------------------------------------
+# Utility metrics
+# ---------------------------------------------------------------------------
+
+def _make_classifier(random_state: int):
+    try:
+        from catboost import CatBoostClassifier  # type: ignore
+        return CatBoostClassifier(
+            depth=6, learning_rate=0.1, iterations=300,
+            random_seed=random_state, verbose=False,
+        )
+    except Exception:
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        return HistGradientBoostingClassifier(
+            max_depth=6, learning_rate=0.1, max_iter=300, random_state=random_state,
+        )
+
+
+def _make_regressor(random_state: int):
+    try:
+        from catboost import CatBoostRegressor  # type: ignore
+        return CatBoostRegressor(
+            depth=8, learning_rate=0.1, iterations=500,
+            loss_function="RMSE", random_seed=random_state, verbose=False,
+        )
+    except Exception:
+        from sklearn.ensemble import HistGradientBoostingRegressor
+        return HistGradientBoostingRegressor(
+            max_depth=8, learning_rate=0.1, max_iter=500, random_state=random_state,
+        )
+
+
+def utility_delta_f1_percent(
+    X_train_real: np.ndarray, X_test_real: np.ndarray, X_train_synth: np.ndarray,
+    y_train_real: np.ndarray, y_test_real: np.ndarray, y_train_synth: np.ndarray,
+    seed: int,
+) -> Tuple[float, float, float]:
+    from sklearn.metrics import f1_score
+
+    clf_real = _make_classifier(seed)
+    clf_real.fit(X_train_real, y_train_real.astype(int))
+    f1_real = float(f1_score(
+        y_test_real.astype(int), clf_real.predict(X_test_real),
+        average="macro", zero_division=0,
+    ))
+
+    clf_syn = _make_classifier(seed + 1)
+    clf_syn.fit(X_train_synth, y_train_synth.astype(int))
+    f1_syn = float(f1_score(
+        y_test_real.astype(int), clf_syn.predict(X_test_real),
+        average="macro", zero_division=0,
+    ))
+
+    delta = (f1_syn - f1_real) / (abs(f1_real) + 1e-12) * 100.0
+    return float(delta), float(f1_real), float(f1_syn)
 
 
 def utility_delta_r2_percent(
-    train_real: pd.DataFrame, test_real: pd.DataFrame, train_synth: pd.DataFrame,
-    feature_cols: List[str], target_col: str, seed: int,
+    X_train_real: np.ndarray, X_test_real: np.ndarray, X_train_synth: np.ndarray,
+    y_train_real: np.ndarray, y_test_real: np.ndarray, y_train_synth: np.ndarray,
+    seed: int,
 ) -> Tuple[float, float, float]:
-    Xtr, ytr = train_real[feature_cols].to_numpy(), train_real[target_col].to_numpy()
-    Xte, yte = test_real[feature_cols].to_numpy(), test_real[target_col].to_numpy()
+    from sklearn.metrics import r2_score
 
-    reg_real = make_regressor(seed)
-    reg_real.fit(Xtr, ytr)
-    r2_real = float(r2_score(yte, reg_real.predict(Xte)))
+    reg_real = _make_regressor(seed)
+    reg_real.fit(X_train_real, y_train_real)
+    r2_real = float(r2_score(y_test_real, reg_real.predict(X_test_real)))
 
-    Xs, ys = train_synth[feature_cols].to_numpy(), train_synth[target_col].to_numpy()
-    reg_syn = make_regressor(seed + 1)
-    reg_syn.fit(Xs, ys)
-    r2_syn = float(r2_score(yte, reg_syn.predict(Xte)))
+    reg_syn = _make_regressor(seed + 1)
+    reg_syn.fit(X_train_synth, y_train_synth)
+    r2_syn = float(r2_score(y_test_real, reg_syn.predict(X_test_real)))
 
     delta = (r2_syn - r2_real) / (abs(r2_real) + 1e-12) * 100.0
     return float(delta), float(r2_real), float(r2_syn)
 
 
-# ----------------------------
-# Params loading -> Config
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
 
-def load_best_params(best_json_path: Path) -> Dict:
-    data = json.loads(best_json_path.read_text(encoding="utf-8"))
-    if "best_params" in data:
-        return dict(data["best_params"])
-    return {k: v for k, v in data.items() if isinstance(v, (int, float, str, bool))}
+def load_best_params(best_json_dir: Optional[str], ds_name: str) -> Optional[Dict]:
+    if not best_json_dir:
+        return None
+    p = Path(best_json_dir) / f"{ds_name}_best.json"
+    if not p.exists():
+        print(f"  [INFO] Best-params file not found: {p}")
+        return None
+    data = json.loads(p.read_text(encoding="utf-8"))
+    return data.get("best_params", {})
 
 
-def build_config_from_best(best: Dict, seed: int, device: str) -> IMFDSBMConfig:
-    imf_len = int(best.get("imf_len", 5))
+def build_cfg(args, best_params: Optional[Dict], seed: int) -> IMFDSBMConfig:
+    bp = best_params or {}
+
+    def _get(key, default):
+        return bp[key] if key in bp else default
+
+    imf_len = int(_get("imf_len", args.imf_len))
     if imf_len % 2 == 0:
         imf_len += 1
     fb_sequence = tuple("b" if i % 2 == 0 else "f" for i in range(imf_len))
 
-    return IMFDSBMConfig(
-        fb_sequence=fb_sequence,
-        num_steps=int(best.get("num_steps", 1000)),
-        sigma=float(best.get("sigma", 0.10)),
-        eps=float(best.get("eps", 1e-3)),
-        first_coupling=str(best.get("first_coupling", "ref")),
-        inner_iters=int(best.get("inner_iters", 2000)),
-        batch_size=int(best.get("batch_size", 256)),
-        lr=float(best.get("lr", 1e-4)),
-        weight_decay=float(best.get("weight_decay", 0.0)),
-        grad_clip=float(best.get("grad_clip", 1.0)),
-        noise=bool(best.get("noise", True)),
-        device=device,
-        seed=seed,
-    )
-
-
-def build_config(args, seed: int) -> IMFDSBMConfig:
-    imf_len = int(args.imf_len)
-    if imf_len % 2 == 0:
-        imf_len += 1
-    fb_sequence = tuple("b" if i % 2 == 0 else "f" for i in range(imf_len))
+    grad_clip_val = float(_get("grad_clip", args.grad_clip))
+    grad_clip = grad_clip_val if grad_clip_val > 0 else None
 
     return IMFDSBMConfig(
         fb_sequence=fb_sequence,
-        num_steps=int(args.num_steps),
-        sigma=float(args.sigma),
-        eps=float(args.eps),
-        first_coupling=args.first_coupling,
-        inner_iters=int(args.inner_iters),
-        batch_size=int(args.batch_size),
-        lr=float(args.lr),
-        weight_decay=float(args.weight_decay),
-        grad_clip=float(args.grad_clip) if args.grad_clip > 0 else None,
-        noise=bool(args.noise),
+        num_steps=int(_get("num_steps", args.num_steps)),
+        sigma=float(_get("sigma", args.sigma)),
+        eps=float(_get("eps", args.eps)),
+        first_coupling=str(_get("first_coupling", args.first_coupling)),
+        inner_iters=int(_get("inner_iters", args.inner_iters)),
+        batch_size=int(_get("batch_size", args.batch_size)),
+        lr=float(_get("lr", args.lr)),
+        weight_decay=float(_get("weight_decay", args.weight_decay)),
+        grad_clip=grad_clip,
+        noise=bool(_get("noise", args.noise)),
         device=args.device,
         seed=seed,
     )
 
 
-# ----------------------------
-# Main experiment
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="K-fold evaluation: DSBM+CT+MLP+joint on mixed data"
+        description="K-fold evaluation: DSBM+CT+MLP+joint on mixed/categorical tabular data"
     )
-    ap.add_argument("--pickle", type=str, required=True,
-                    help="Path to pickle with Dict[str, pd.DataFrame]")
+    ap.add_argument("--pickle", type=str,
+                    default="sbtab/data/datasets/datasets_mixed.pkl")
     ap.add_argument("--outdir", type=str, default="dsbm_ct_mlp_mixed_kfold_eval")
     ap.add_argument("--best-json-dir", type=str, default=None, dest="best_json_dir",
-                    help="Directory with {dataset}_best.json from tuning. "
-                         "If provided, params are loaded from there; CLI hyperparams are ignored.")
-    ap.add_argument("--datasets", type=str, default=",".join(TARGET_COL_BY_DATASET.keys()))
+                    help="Directory with {dataset}_best.json from tuning.")
+    ap.add_argument("--datasets", type=str, default="ALL")
     ap.add_argument("--n-splits", type=int, default=5)
     ap.add_argument("--shuffle", action="store_true", default=True)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--n-bins-kl", type=int, default=20)
-    ap.add_argument("--max-train-size", type=int, default=20000, dest="max_train_size",
-                    help="Max training samples per fold (subsample if exceeded).")
-    ap.add_argument("--max-folds", type=int, default=0,
-                    help="Max folds to run per dataset (0 = all)")
-    ap.add_argument("--missing-strategy", type=str, default="impute",
-                    choices=["impute", "drop"], dest="missing_strategy",
-                    help="How to handle missing values. 'impute' required for categorical data.")
+    ap.add_argument("--max-train-size", type=int, default=0, dest="max_train_size",
+                    help="Subsample train fold to at most N rows (0 = no limit).")
 
-    # Solver hyperparameters (used when --best-json-dir is not provided)
+    # IMFDSBMConfig hyperparameters
     ap.add_argument("--sigma", type=float, default=0.10)
     ap.add_argument("--num-steps", type=int, default=1000, dest="num_steps")
     ap.add_argument("--eps", type=float, default=1e-3)
-    ap.add_argument("--imf-len", type=int, default=5, dest="imf_len",
-                    help="IMF sequence length (will be forced to odd)")
+    ap.add_argument("--imf-len", type=int, default=5, dest="imf_len")
     ap.add_argument("--first-coupling", type=str, default="ref", dest="first_coupling",
                     choices=["ref", "ind"])
     ap.add_argument("--noise", type=lambda x: x.lower() != "false", default=True)
-
-    # MLP training hyperparameters
     ap.add_argument("--inner-iters", type=int, default=2000, dest="inner_iters")
     ap.add_argument("--batch-size", type=int, default=256, dest="batch_size")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=0.0, dest="weight_decay")
     ap.add_argument("--grad-clip", type=float, default=1.0, dest="grad_clip",
                     help="Gradient clipping norm (0 to disable)")
-    ap.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
+    ap.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda", "auto"])
+    ap.add_argument("--verbose-every", type=int, default=0, dest="verbose_every")
 
     args = ap.parse_args()
 
@@ -285,237 +255,269 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     with open(args.pickle, "rb") as f:
-        my_data: Dict[str, pd.DataFrame] = pickle.load(f)
+        all_data: Dict[str, pd.DataFrame] = pickle.load(f)
 
-    ds_list = [d.strip() for d in args.datasets.split(",") if d.strip()]
-    missing_ds = [d for d in ds_list if d not in my_data]
-    if missing_ds:
-        raise KeyError(f"Missing dataset keys in pickle: {missing_ds}")
-
-    missing_targets = [d for d in ds_list if d not in TARGET_COL_BY_DATASET]
-    if missing_targets:
-        raise KeyError(f"Target column not specified for: {missing_targets}")
+    if args.datasets.strip().upper() == "ALL":
+        ds_list = list(all_data.keys())
+    else:
+        ds_list = [d.strip() for d in args.datasets.split(",") if d.strip()]
+        missing = [d for d in ds_list if d not in all_data]
+        if missing:
+            raise KeyError(f"Datasets not found in pickle: {missing}")
 
     global_rows: List[Dict] = []
-    max_folds = args.max_folds if args.max_folds > 0 else args.n_splits
 
     for ds_name in ds_list:
-        existing_csv = outdir / f"{ds_name}_fold_metrics.csv"
-        if existing_csv.is_file():
-            print(f"\n[SKIP] {ds_name}: {existing_csv} already exists")
-            prev = pd.read_csv(existing_csv)
-            summary_mean = prev.mean(numeric_only=True).to_dict()
-            global_rows.append({
-                "dataset": ds_name,
-                "avg_kl_mean": summary_mean.get("avg_kl", 0),
-                "avg_wd_mean": summary_mean.get("avg_wd", 0),
-                "swd_mean": summary_mean.get("swd", 0),
-                "corr_frob_mean": summary_mean.get("corr_frob", 0),
-                "cat_match_rate_mean": summary_mean.get("cat_match_rate", float("nan")),
-                "delta_r2_percent_mean": summary_mean.get("delta_r2_percent", 0),
-                "r2_real_mean": summary_mean.get("r2_real", 0),
-                "r2_synth_mean": summary_mean.get("r2_synth", 0),
-            })
-            continue
-
         print("\n" + "=" * 100)
-        print(f"DATASET: {ds_name}  [DSBM+CT+MLP+joint mixed-data]")
+        print(f"DATASET: {ds_name}  [DSBM+CT+MLP+joint mixed]")
         print("=" * 100)
 
-        df = my_data[ds_name].copy()
+        df_raw = all_data[ds_name].copy()
 
-        target_col = TARGET_COL_BY_DATASET[ds_name]
-        if target_col not in df.columns:
-            raise ValueError(
-                f"Target column '{target_col}' not found in '{ds_name}'. "
-                f"Available: {df.columns.tolist()}"
-            )
+        # --- Feature type info from attrs ---
+        feature_types = df_raw.attrs.get("feature_types", {})
+        target_col: str = df_raw.attrs.get("target_variable", df_raw.columns[-1])
+        task_type: str = df_raw.attrs.get("task_type", "regression")
 
-        # Infer schema with auto column classification
-        schema = TabularSchema.infer_from_dataframe(df, target_col=target_col)
-        print(f"  continuous : {schema.continuous_cols}")
-        print(f"  discrete   : {schema.discrete_cols}")
-        print(f"  categorical: {schema.categorical_cols}")
-        print(f"  target     : {schema.target_col}")
+        continuous_cols: List[str] = list(feature_types.get("continuous", []))
+        discrete_cols: List[str] = list(feature_types.get("discrete", []))
+        categorical_cols: List[str] = list(feature_types.get("categorical", []))
+        feature_cols: List[str] = continuous_cols + discrete_cols + categorical_cols
+        disc_cat_cols = discrete_cols + categorical_cols
 
-        # Original categorical column names (before encoding)
-        original_cat_cols = list(schema.categorical_cols)
+        is_mixed = len(continuous_cols) > 0
 
-        # Build appropriate transform pipeline
-        transforms = build_transforms(schema, missing_strategy=args.missing_strategy)
+        print(
+            f"  target={target_col}  task={task_type}  "
+            f"cont={len(continuous_cols)}  disc={len(discrete_cols)}  "
+            f"cat={len(categorical_cols)}  rows={len(df_raw)}"
+        )
+        print(f"  is_mixed={is_mixed}")
 
-        if args.best_json_dir is not None:
-            best_json_path = Path(args.best_json_dir) / f"{ds_name}_best.json"
-            if not best_json_path.exists():
-                raise FileNotFoundError(f"Best params JSON not found: {best_json_path}")
-            best_params = load_best_params(best_json_path)
-            cfg = build_config_from_best(best_params, seed=args.seed, device=args.device)
-            print(f"  Loaded best params from: {best_json_path.name}")
+        if len(feature_cols) < 1:
+            print(f"[SKIP] No feature columns.")
+            continue
+
+        # --- Pre-encode target to numeric ---
+        target_le: Optional[LabelEncoder] = None
+        target_series = df_raw[target_col]
+        if (
+            pd.api.types.is_object_dtype(target_series)
+            or pd.api.types.is_bool_dtype(target_series)
+            or isinstance(target_series.dtype, pd.CategoricalDtype)
+        ):
+            target_le = LabelEncoder()
+            df_raw = df_raw.copy()
+            df_raw[target_col] = target_le.fit_transform(
+                target_series.astype(str)
+            ).astype(float)
+            if task_type == "regression":
+                task_type = "classification"
+                print(f"  [NOTE] target was non-numeric; overriding task_type to 'classification'")
         else:
-            cfg = build_config(args, seed=args.seed)
+            df_raw[target_col] = pd.to_numeric(df_raw[target_col], errors="coerce")
 
-        print(f"  Config: sigma={cfg.sigma}, num_steps={cfg.num_steps}, "
-              f"fb_seq={cfg.fb_sequence}, first_coupling={cfg.first_coupling}, "
-              f"noise={cfg.noise}, inner_iters={cfg.inner_iters}, "
-              f"batch_size={cfg.batch_size}, lr={cfg.lr}, device={cfg.device}")
+        n_classes = (
+            int(df_raw[target_col].dropna().nunique())
+            if task_type == "classification"
+            else None
+        )
 
+        # --- Schema (features only) ---
+        schema = TabularSchema(
+            continuous_cols=continuous_cols,
+            discrete_cols=discrete_cols,
+            categorical_cols=categorical_cols,
+        )
+
+        # --- Solver config ---
+        best_params = load_best_params(args.best_json_dir, ds_name)
+        cfg = build_cfg(args, best_params, seed=args.seed)
+
+        # --- K-Fold loop ---
         kf = KFold(n_splits=args.n_splits, shuffle=args.shuffle, random_state=args.seed)
-        idx = np.arange(len(df))
         fold_rows: List[Dict] = []
 
-        for fold_id, (train_idx, test_idx) in enumerate(kf.split(idx)):
-            if fold_id >= max_folds:
-                break
-            print(f"\n--- Fold {fold_id + 1}/{max_folds} ---")
+        for fold_id, (train_idx, test_idx) in enumerate(kf.split(np.arange(len(df_raw)))):
+            print(f"\n--- Fold {fold_id + 1}/{args.n_splits} ---")
 
-            df_train_raw = df.iloc[train_idx].copy()
-            df_test_raw = df.iloc[test_idx].copy()
+            df_train = df_raw.iloc[train_idx].copy().reset_index(drop=True)
+            df_test = df_raw.iloc[test_idx].copy().reset_index(drop=True)
 
-            # Fit pipeline on train, transform both
-            pipe = build_transforms(schema, missing_strategy=args.missing_strategy)
-            pipe.fit(df_train_raw, schema)
+            if args.max_train_size > 0 and len(df_train) > args.max_train_size:
+                rng = np.random.default_rng(args.seed + fold_id)
+                idx = rng.choice(len(df_train), size=args.max_train_size, replace=False)
+                df_train = df_train.iloc[idx].reset_index(drop=True)
 
-            train_scaled = pipe.transform(df_train_raw)
-            test_scaled = pipe.transform(df_test_raw)
+            # -- Transform features only (fit on train)
+            df_feat_train = df_train[feature_cols].copy()
+            df_feat_test = df_test[feature_cols].copy()
 
-            # After encoding, columns may have expanded (one-hot)
-            encoded_cols = list(train_scaled.columns)
-            print(f"  encoded cols={len(encoded_cols)}, "
-                  f"train={len(train_scaled)}, test={len(test_scaled)}")
-
-            # Determine feature columns in encoded space (exclude target if present)
-            if target_col in encoded_cols:
-                encoded_feature_cols = [c for c in encoded_cols if c != target_col]
+            if is_mixed or categorical_cols:
+                pipe = TransformPipeline.default_impute_scale_encode()
             else:
-                encoded_feature_cols = list(encoded_cols)
+                pipe = TransformPipeline.default_dropna_and_scale()
+            pipe.fit(df_feat_train, schema)
 
-            # Subsample training data if needed
-            if args.max_train_size > 0 and len(train_scaled) > args.max_train_size:
-                rng_sub = np.random.default_rng(args.seed + fold_id + 7777)
-                sub_idx = rng_sub.choice(len(train_scaled), size=args.max_train_size, replace=False)
-                train_for_model = train_scaled.iloc[sub_idx].reset_index(drop=True)
-                print(f"  [subsample] {len(train_scaled)} -> {args.max_train_size} rows for solver")
-            else:
-                train_for_model = train_scaled
+            train_feat_enc = pipe.transform(df_feat_train).reset_index(drop=True)
+            test_feat_enc = pipe.transform(df_feat_test).reset_index(drop=True)
+            encoded_feat_cols = list(train_feat_enc.columns)
 
-            # Train DSBM in encoded space
-            model = IMFDSBMSolver(dim=len(encoded_cols), cfg=cfg)
-            model.fit(train_for_model)
+            # -- Build solver input: encoded features + numeric target
+            train_target = df_train[target_col].to_numpy()
+            test_target = df_test[target_col].to_numpy()
 
-            x_synth = model.sample(n=len(test_scaled), seed=args.seed + 1000 + fold_id)
-            synth_scaled = pd.DataFrame(x_synth, columns=encoded_cols)
-
-            # --- Metrics in encoded space ---
-            m_kl = avg_kl_hist(test_scaled, synth_scaled, cols=encoded_cols, n_bins=args.n_bins_kl)
-            m_wd = avg_wd(test_scaled, synth_scaled, cols=encoded_cols)
-            m_corr = corr_frobenius(test_scaled, synth_scaled, cols=encoded_cols)
-            m_swd = sliced_wasserstein(
-                test_scaled[encoded_cols].to_numpy(),
-                synth_scaled[encoded_cols].to_numpy(),
+            train_enc = pd.concat(
+                [train_feat_enc, pd.DataFrame({target_col: train_target})], axis=1
             )
+            test_enc = pd.concat(
+                [test_feat_enc, pd.DataFrame({target_col: test_target})], axis=1
+            )
+            encoded_all_cols: List[str] = encoded_feat_cols + [target_col]
 
-            # --- Utility metric (R2) in encoded space ---
-            if target_col in encoded_cols:
-                util_delta, r2_real, r2_syn = utility_delta_r2_percent(
-                    train_real=train_scaled,
-                    test_real=test_scaled,
-                    train_synth=synth_scaled,
-                    feature_cols=encoded_feature_cols,
-                    target_col=target_col,
-                    seed=args.seed + fold_id,
-                )
-            else:
-                util_delta, r2_real, r2_syn = float("nan"), float("nan"), float("nan")
+            # -- Fit DSBM with per-fold seed
+            cfg_fold = build_cfg(args, best_params, seed=args.seed + fold_id)
+            dim = train_enc.shape[1]
+            solver = IMFDSBMSolver(dim=dim, cfg=cfg_fold)
+            solver.fit(train_enc)
 
-            # --- Categorical match rate (inverse transform to original space) ---
-            m_cat_match = float("nan")
-            if original_cat_cols:
-                try:
-                    test_inv = pipe.inverse_transform(test_scaled)
-                    synth_inv = pipe.inverse_transform(synth_scaled)
-                    m_cat_match = categorical_match_rate(test_inv, synth_inv, original_cat_cols)
-                except Exception as e:
-                    print(f"  [WARN] inverse_transform failed for cat_match_rate: {e}")
+            # -- Sample synthetic
+            x_synth = solver.sample(
+                n=len(test_enc),
+                seed=args.seed + 1000 + fold_id,
+            )
+            synth_enc = pd.DataFrame(x_synth, columns=encoded_all_cols)
 
-            fold_rows.append({
+            # -- Inverse-transform feature columns to original space
+            synth_feat_enc = synth_enc[encoded_feat_cols].copy()
+            test_feat_orig = pipe.inverse_transform(test_feat_enc)
+            synth_feat_orig = pipe.inverse_transform(synth_feat_enc)
+
+            # -- Corr distance in encoded space (all cols including target)
+            m_corr = corr_frobenius(test_enc, synth_enc, encoded_all_cols)
+
+            # -- Distribution metrics in original space
+            row: Dict = {
                 "dataset": ds_name,
                 "fold": fold_id,
-                "n_train": len(train_scaled),
-                "n_test": len(test_scaled),
-                "n_encoded_cols": len(encoded_cols),
-                "avg_kl": float(m_kl),
-                "avg_wd": float(m_wd),
-                "corr_frob": float(m_corr),
-                "swd": float(m_swd),
-                "cat_match_rate": float(m_cat_match),
-                "delta_r2_percent": float(util_delta),
-                "r2_real": float(r2_real),
-                "r2_synth": float(r2_syn),
-            })
+                "n_train": len(df_train),
+                "n_test": len(df_test),
+                "corr_frob": m_corr,
+            }
 
-            print(f"  avg_KL={m_kl:.6f}  avg_WD={m_wd:.6f}  SWD={m_swd:.4f}  "
-                  f"corr_F={m_corr:.6f}  cat_match={m_cat_match:.4f}  "
-                  f"deltaR2%={util_delta:.3f}")
+            if is_mixed:
+                row["avg_wd_cont"] = avg_wd(test_feat_orig, synth_feat_orig, continuous_cols)
+                row["avg_kl_disc_cat"] = avg_kl_discrete(test_feat_orig, synth_feat_orig, disc_cat_cols)
+            else:
+                row["avg_kl_all"] = avg_kl_discrete(test_feat_orig, synth_feat_orig, feature_cols)
 
+            # -- Utility metric
+            X_tr = train_feat_enc.to_numpy()
+            X_te = test_feat_enc.to_numpy()
+            X_sy = synth_feat_enc.to_numpy()
+            y_tr = train_target
+            y_te = test_target
+            y_sy = synth_enc[target_col].to_numpy()
+
+            if task_type == "classification":
+                y_sy_cls = np.clip(np.round(y_sy).astype(int), 0, n_classes - 1)
+                delta, score_real, score_syn = utility_delta_f1_percent(
+                    X_tr, X_te, X_sy,
+                    y_tr, y_te, y_sy_cls,
+                    seed=args.seed + fold_id,
+                )
+                row["delta_f1_percent"] = delta
+                row["f1_real"] = score_real
+                row["f1_synth"] = score_syn
+            else:
+                delta, score_real, score_syn = utility_delta_r2_percent(
+                    X_tr, X_te, X_sy,
+                    y_tr, y_te, y_sy,
+                    seed=args.seed + fold_id,
+                )
+                row["delta_r2_percent"] = delta
+                row["r2_real"] = score_real
+                row["r2_synth"] = score_syn
+
+            fold_rows.append(row)
+
+            _metric_str = ", ".join(
+                f"{k}={v:.4f}" for k, v in row.items() if isinstance(v, float)
+            )
+            print(f"  {_metric_str}")
+
+        # --- Aggregate and save ---
         fold_df = pd.DataFrame(fold_rows)
         fold_csv = outdir / f"{ds_name}_fold_metrics.csv"
         fold_df.to_csv(fold_csv, index=False)
 
-        def mean_std(s: pd.Series) -> Tuple[float, float]:
+        def _ms(s: pd.Series) -> Tuple[float, float]:
             return float(s.mean()), float(s.std(ddof=0))
 
-        summary = {
+        metric_cols_present = [
+            c for c in [
+                "avg_wd_cont", "avg_kl_disc_cat", "avg_kl_all",
+                "corr_frob",
+                "delta_f1_percent", "f1_real", "f1_synth",
+                "delta_r2_percent", "r2_real", "r2_synth",
+            ]
+            if c in fold_df.columns
+        ]
+
+        summary: Dict = {
             "dataset": ds_name,
             "target_col": target_col,
+            "task_type": task_type,
+            "is_mixed": is_mixed,
             "solver": "DSBM+CT+MLP+joint (mixed)",
-            "schema": {
-                "continuous": schema.continuous_cols,
-                "discrete": schema.discrete_cols,
-                "categorical": schema.categorical_cols,
-            },
-            "n_splits": int(args.n_splits),
-            "shuffle": bool(args.shuffle),
-            "seed": int(args.seed),
+            "n_splits": args.n_splits,
+            "shuffle": args.shuffle,
+            "seed": args.seed,
+            "best_params_source": args.best_json_dir,
             "config": asdict(cfg),
             "metrics_mean": {},
             "metrics_std": {},
         }
-
-        metric_keys = [
-            "avg_kl", "avg_wd", "corr_frob", "swd",
-            "cat_match_rate", "delta_r2_percent", "r2_real", "r2_synth",
-        ]
-        for key in metric_keys:
-            mu, sd = mean_std(fold_df[key])
+        for key in metric_cols_present:
+            mu, sd = _ms(fold_df[key])
             summary["metrics_mean"][key] = mu
             summary["metrics_std"][key] = sd
 
         summary_json = outdir / f"{ds_name}_kfold_summary.json"
-        summary_json.write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+        summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-        global_rows.append({
+        global_row: Dict = {
             "dataset": ds_name,
             "target_col": target_col,
-            "n_continuous": len(schema.continuous_cols),
-            "n_discrete": len(schema.discrete_cols),
-            "n_categorical": len(schema.categorical_cols),
-            **{f"{k}_mean": summary["metrics_mean"][k] for k in metric_keys},
-            **{f"{k}_std": summary["metrics_std"][k] for k in metric_keys},
-            "fold_csv": str(fold_csv),
-            "summary_json": str(summary_json),
-        })
+            "task_type": task_type,
+            "is_mixed": is_mixed,
+        }
+        for key in metric_cols_present:
+            global_row[f"{key}_mean"] = summary["metrics_mean"][key]
+            global_row[f"{key}_std"] = summary["metrics_std"][key]
+        global_row["fold_csv"] = str(fold_csv)
+        global_row["summary_json"] = str(summary_json)
+        global_rows.append(global_row)
 
-        print(f"\n  Saved fold metrics:    {fold_csv}")
-        print(f"  Saved dataset summary: {summary_json}")
+        print(f"\nSaved: {fold_csv}")
+        print(f"Saved: {summary_json}")
 
-    global_df = pd.DataFrame(global_rows).sort_values("avg_wd_mean", ascending=True)
-    global_csv = outdir / "kfold_summary_all_datasets.csv"
-    global_df.to_csv(global_csv, index=False)
-
-    print("\n" + "=" * 100)
-    print("DONE. Global summary saved:")
-    print(global_csv)
-    print("=" * 100)
+    if global_rows:
+        sort_col = next(
+            (c for c in ["avg_wd_cont_mean", "avg_kl_disc_cat_mean", "avg_kl_all_mean"]
+             if c in global_rows[0]),
+            None,
+        )
+        global_df = pd.DataFrame(global_rows)
+        if sort_col:
+            global_df = global_df.sort_values(sort_col, ascending=True)
+        global_csv = outdir / "kfold_summary_all_datasets.csv"
+        global_df.to_csv(global_csv, index=False)
+        print("\n" + "=" * 100)
+        print(f"DONE. Global summary: {global_csv}")
+        print("=" * 100)
+    else:
+        print("\nNo datasets evaluated.")
 
 
 if __name__ == "__main__":
