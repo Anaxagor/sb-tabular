@@ -15,6 +15,7 @@ class MixedSBMConfig:
 
     num_steps: int = 100
     sigma: float = 0.1
+    alpha: float = 0.01
     lambda_num: float = 0.8
     lambda_cat: float = 0.2
     eps: float = 1e-3

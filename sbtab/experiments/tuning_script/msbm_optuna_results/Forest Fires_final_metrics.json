@@ -1,0 +1,28 @@
+{
+    "dataset": "Forest Fires",
+    "best_trial": 11,
+    "n_trials": 50,
+    "elapsed_sec": 163.26580476760864,
+    "best_params": {
+        "cat_emb_dim": 9,
+        "hidden_dim": 512,
+        "time_dim": 96,
+        "n_layers": 2,
+        "num_steps": 20,
+        "sigma": 0.07115214301611134,
+        "alpha": 0.8496521610955922,
+        "lambda_num": 0.9299066077512835,
+        "lambda_cat": 0.7518599197378126,
+        "imf_len": 5,
+        "lr": 0.0010710265733318135,
+        "batch_size": 128,
+        "epochs_per_direction": 20,
+        "grad_clip": 0.9980952316526708
+    },
+    "Best_Tuning_Loss_Combined": 0.5905865097007826,
+    "Final_Mean_KL": 11.54583544428805,
+    "Corr_Distance": 3.4475865048618446,
+    "R2_real": -2.8913413617432164,
+    "R2_synth": -1.700179816496001,
+    "diff": -1.1911615452472155
+}

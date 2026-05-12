@@ -44,6 +44,12 @@ class MixedSBMUpdater:
         )
         pred_num, pred_logits_cat = self.model(x_t_num, x_t_cat, t)
 
+        if torch.isnan(pred_num).any() or torch.isnan(pred_logits_cat).any():
+            raise ValueError("Model output contains NaNs! Training is unstable.")
+
+        if torch.isinf(pred_logits_cat).any():
+            raise ValueError("Model output contains Infs!")
+
         dir_str = "forward" if direction == 'f' else "backward"
 
         loss = self.loss_fn(
@@ -59,6 +65,16 @@ class MixedSBMUpdater:
         loss.backward()
         if self.cfg.grad_clip:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip)
+
+        is_nan = False
+        for param in self.model.parameters():
+            if param.grad is not None and torch.isnan(param.grad).any():
+                is_nan = True
+                break
+
+        if is_nan:
+            raise ValueError("Exploding gradients: NaN detected")
+
         self.optimizer.step()
         return loss.item()
 

@@ -1,0 +1,28 @@
+{
+    "dataset": "Adult",
+    "best_trial": 35,
+    "n_trials": 50,
+    "elapsed_sec": 16219.268758773804,
+    "best_params": {
+        "cat_emb_dim": 27,
+        "hidden_dim": 128,
+        "time_dim": 128,
+        "n_layers": 5,
+        "num_steps": 100,
+        "sigma": 0.9379383103567887,
+        "alpha": 0.8769030891793366,
+        "lambda_num": 0.812757409000278,
+        "lambda_cat": 0.5078419631706927,
+        "imf_len": 3,
+        "lr": 0.001013911327564498,
+        "batch_size": 128,
+        "epochs_per_direction": 17,
+        "grad_clip": 0.8767873491059364
+    },
+    "Best_Tuning_Loss_Combined": 0.25583525896967035,
+    "Final_Mean_KL": 5.947086658072986,
+    "Corr_Distance": 2.026472845337129,
+    "R2_real": 0.349619788501214,
+    "R2_synth": -0.12037199337977578,
+    "diff": 0.4699917818809898
+}

@@ -23,7 +23,7 @@ class MixedSBMSolver:
             cardinalities=cardinalities,
             is_ordered=is_ordered,
             total_number_of_q_powers=cfg.num_steps,
-            alpha=0.01,
+            alpha=cfg.alpha,
             device=self.device,
         )
         self.integrator = EulerMaruyama(noise=True, sigma=cfg.sigma)

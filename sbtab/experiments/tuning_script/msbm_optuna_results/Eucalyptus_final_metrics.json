@@ -1,0 +1,28 @@
+{
+    "dataset": "Eucalyptus",
+    "best_trial": 35,
+    "n_trials": 50,
+    "elapsed_sec": 465.0978422164917,
+    "best_params": {
+        "cat_emb_dim": 25,
+        "hidden_dim": 256,
+        "time_dim": 96,
+        "n_layers": 4,
+        "num_steps": 40,
+        "sigma": 0.6252495854860209,
+        "alpha": 0.5117978020681506,
+        "lambda_num": 0.9527029232304437,
+        "lambda_cat": 0.3424439664175679,
+        "imf_len": 7,
+        "lr": 0.0008491137306275696,
+        "batch_size": 128,
+        "epochs_per_direction": 20,
+        "grad_clip": 0.38095033950774965
+    },
+    "Best_Tuning_Loss_Combined": 4.390510608974606,
+    "Final_Mean_KL": 8.131706681207344,
+    "Corr_Distance": 5.426646901140104,
+    "F1_real": 0.6116372617262797,
+    "F1_synth": 0.22208255926820175,
+    "diff": 0.389554702458078
+}

@@ -1,0 +1,28 @@
+{
+    "dataset": "Online Shoppers",
+    "best_trial": 37,
+    "n_trials": 50,
+    "elapsed_sec": 3680.8733627796173,
+    "best_params": {
+        "cat_emb_dim": 11,
+        "hidden_dim": 128,
+        "time_dim": 64,
+        "n_layers": 3,
+        "num_steps": 100,
+        "sigma": 0.8606210464963808,
+        "alpha": 0.09193783408584841,
+        "lambda_num": 0.4269319202816045,
+        "lambda_cat": 0.2765591217150917,
+        "imf_len": 7,
+        "lr": 0.0010367794898132321,
+        "batch_size": 128,
+        "epochs_per_direction": 20,
+        "grad_clip": 0.8891155929901461
+    },
+    "Best_Tuning_Loss_Combined": 0.37722974553233135,
+    "Final_Mean_KL": 9.706841608861067,
+    "Corr_Distance": 2.0977554978342767,
+    "F1_real": 0.9036238249552541,
+    "F1_synth": 0.7764346095034765,
+    "diff": 0.12718921545177753
+}

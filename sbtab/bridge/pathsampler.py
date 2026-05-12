@@ -184,6 +184,14 @@ class MixedPathSampler:
                     x_t=x_cat,
                     n=k
                 )
+
+            probs_step = torch.nan_to_num(probs_step, nan=0.0)
+
+            row_sums = probs_step.sum(dim=-1, keepdim=True)
+            if (row_sums <= 0).any():
+                print("Some sums of probs equal to 0!")
+                probs_step = probs_step + 1e-10
+
             x_cat = self.reference.sample_from_probs(probs_step)
 
             if return_path:
