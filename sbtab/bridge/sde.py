@@ -22,6 +22,7 @@ class EulerMaruyama:
       - Works across torch versions by avoiding randn_like(generator=...).
     """
     noise: bool = True
+    sigma: float = 1.0
 
     def step(
         self,
@@ -39,5 +40,5 @@ class EulerMaruyama:
                 dtype=x.dtype,
                 generator=generator,
             )
-            return x + drift * gamma + torch.sqrt(gamma) * eps
+            return x + drift * gamma + self.sigma * torch.sqrt(gamma) * eps
         return x + drift * gamma

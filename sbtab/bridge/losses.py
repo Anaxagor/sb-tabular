@@ -6,6 +6,7 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
 from sbtab.bridge.reference import CategoricalReference
 
@@ -77,3 +78,49 @@ class CSBMLoss:
         simple_term = F.cross_entropy(ce_input, ce_target)
 
         return kl_term + self.lmbda * simple_term
+
+class MixedSBMLoss(nn.Module):
+    def __init__(
+            self,
+            reference: CategoricalReference,
+            lambda_num: float = 0.5,
+            lambda_cat: float = 0.5,
+            ce_lambda: float = 0.001
+    ):
+        super().__init__()
+        self.num_loss_fn = RegressionLoss(kind="mse", reduction="mean")
+        self.cat_loss_fn = CSBMLoss(reference=reference, lmbda=ce_lambda)
+
+        self.lambda_num = lambda_num
+        self.lambda_cat = lambda_cat
+
+    def forward(
+            self,
+            pred_num: torch.Tensor,
+            target_num: torch.Tensor,
+            pred_logits_cat: torch.Tensor,
+            true_cat: torch.Tensor,
+            x_t_cat: torch.Tensor,
+            n: torch.Tensor,
+            K: int = None,
+            direction: str = "forward"
+    ) -> torch.Tensor:
+
+        l_num = self.num_loss_fn(pred_num, target_num)
+
+        if direction == "forward":
+            l_cat = self.cat_loss_fn.forward_loss(pred_logits_cat, true_cat, x_t_cat, n, K)
+        elif direction == "backward":
+            l_cat = self.cat_loss_fn.backward_loss(pred_logits_cat, true_cat, x_t_cat, n)
+        else:
+            raise ValueError("direction must be 'forward' or 'backward'")
+
+        # It's supposed that pred_logits_cat has shape of (Batch size, Number of categories, Max possible category)
+        # If the shape is different we get back to just C = 1 for stability reasons
+        C = pred_logits_cat.shape[1] if pred_logits_cat.ndim == 3 else 1
+
+        l_cat_normalized = (1.0 / C) * l_cat
+
+        total_loss = self.lambda_num * l_num + self.lambda_cat * l_cat_normalized
+
+        return total_loss
