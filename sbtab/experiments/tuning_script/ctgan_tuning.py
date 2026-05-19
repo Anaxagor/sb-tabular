@@ -49,7 +49,6 @@ DEFAULT_DATASETS = [
     "bank_loan",
     "bank_marketing",
     "online_shoppers",
-    "covertype",
     "german_credit",
     "california_housing",
 ]
@@ -214,7 +213,7 @@ def main() -> None:
     ap.add_argument(
         "--missing-strategy",
         type=str,
-        default="impute",
+        default="drop",
         choices=["impute", "drop"],
         help="Which TransformPipeline variant to use. "
              "'impute' -> default_impute_and_scale/default_impute_scale_encode; "
@@ -248,7 +247,7 @@ def main() -> None:
         if df.shape[1] < 2:
             raise ValueError(f"Dataset '{ds_name}' has <2 columns; cannot tune CTGAN.")
 
-        schema = TabularSchema.infer_from_dataframe(df, target_col=TARGET_COL_BY_DATASET[ds_name])
+        schema = TabularSchema.infer_from_dataframe(df)
         transforms = build_transforms(schema, missing_strategy=args.missing_strategy)
 
         dm = TabularDataModule(

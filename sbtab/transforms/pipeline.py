@@ -99,6 +99,30 @@ class TransformPipeline:
                 ),
             ]
         )
+    @classmethod
+    def default_impute_scale_integer_encode(cls) -> "TransformPipeline":
+        return cls(
+            transforms=[
+                TypeAwareImputer(),
+                ContinuousStandardScaler(),
+                CategoricalRepresentationTransform(
+                    representation_name="integer_code_representation",
+                    representation_kwargs={"handle_unknown": "ignore", "unknown_value": -1},
+                ),
+            ]
+        )
+    @classmethod
+    def default_drop_scale_integer_encode(cls) -> "TransformPipeline":
+        return cls(
+            transforms=[
+                DropMissingRows(),
+                ContinuousStandardScaler(),
+                CategoricalRepresentationTransform(
+                    representation_name="integer_code_representation",
+                    representation_kwargs={"handle_unknown": "ignore", "unknown_value": -1},
+                ),
+            ]
+        )
 
 
 def _is_fitted(transform: BaseTransform) -> bool:

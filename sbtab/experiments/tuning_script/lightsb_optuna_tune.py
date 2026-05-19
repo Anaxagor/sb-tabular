@@ -4,26 +4,28 @@ import argparse
 import json
 import pickle
 import time
+from math import ceil
 from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
-import pandas as pd
 import optuna
-from optuna.samplers import TPESampler
+import pandas as pd
 from optuna.pruners import MedianPruner
-
+from optuna.samplers import TPESampler
 from scipy.stats import wasserstein_distance
 
-from sbtab.data.schema import TabularSchema
 from sbtab.data.datamodule import TabularDataModule
+from sbtab.data.schema import TabularSchema
 from sbtab.data.splits import SplitConfigHoldout
 from sbtab.transforms.pipeline import TransformPipeline
-from sbtab.solvers.continuous_time.joint_distribution.mlp.ipf_dsb.solver import (
-    IPFDSBSolver,
-    IPFDSBConfig,
-)
-from math import ceil
+
+
+
+from sbtab.models.sb.light_sb import LightSBPotentialConfig
+from sbtab.solvers.light_sb.config import LightSBConfig
+from sbtab.solvers.light_sb.solver import LightSBSolver
+
 
 DEFAULT_DATASETS = [
     "diabetes",
@@ -37,25 +39,14 @@ DEFAULT_DATASETS = [
     "california_housing",
 ]
 
-TARGET_COL_BY_DATASET: Dict[str, str] = {
-    "german_credit":'duration',
-    "online_news_popularity": " shares",
-    "covertype": "Horizontal_Distance_To_Hydrology",
-    "online_shoppers": "ProductRelated",
-    "bank_marketing": "pdays",
-    "bank_loan": "Income",
-    "diabetes": "target",
-    "california_housing": "MedHouseVal",
-    "king_county_housing": "price"
-    
 
-}
 def average_wd(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> float:
     """Average 1D Wasserstein distance across columns."""
     wds = []
     for c in cols:
         wds.append(float(wasserstein_distance(real[c].to_numpy(), synth[c].to_numpy())))
     return float(np.mean(wds))
+
 
 
 def export_trials_csv(study: optuna.Study, out_csv: Path) -> None:
@@ -74,73 +65,103 @@ def export_trials_csv(study: optuna.Study, out_csv: Path) -> None:
     pd.DataFrame(rows).to_csv(out_csv, index=False)
 
 
+
+def _suggest_n_potentials(trial: optuna.Trial, n_features: int) -> int:
+    """
+    Feature-dimension-aware mixture size.
+
+    Lower-dimensional tabular data tends to benefit from more mixture components,
+    while wider data typically prefers fewer components for stability.
+    """
+    if n_features <= 16:
+        return int(trial.suggest_categorical("potential_n_potentials", [32, 64, 128]))
+    if n_features <= 64:
+        return int(trial.suggest_categorical("potential_n_potentials", [16, 32, 64]))
+    return int(trial.suggest_categorical("potential_n_potentials", [8, 16, 32]))
+
+
+
 def make_objective_for_dataset(
     train_scaled: pd.DataFrame,
     test_scaled: pd.DataFrame,
-    inv_pipe: TransformPipeline,
     cols: List[str],
     seed: int,
     device: str,
 ):
     """
-    Objective function factory for IPF-DSB tuning.
-    Uses fixed train/test split and fixed preprocessing.
+    Objective function factory for LightSB tuning.
+    Uses a fixed train/test split and fixed preprocessing.
     """
+    n_train = len(train_scaled)
+    n_features = len(cols)
+
     def objective(trial: optuna.Trial) -> float:
-        # --- hyperparameter search space (DSB spec) ---
-        ipf_iters = trial.suggest_categorical("ipf_iters", [1, 2, 4, 8])
-        num_steps = trial.suggest_categorical("num_steps", [16, 24, 32, 48])
-        alpha_ou = trial.suggest_categorical("alpha_ou", [0.1, 0.25, 0.5, 1.0])
+        # --- hyperparameter search space (LightSB spec) ---
+        n_potentials = _suggest_n_potentials(trial, n_features=n_features)
+        epsilon = float(trial.suggest_categorical("potential_epsilon", [0.03, 0.1, 0.3, 1.0]))
 
-        lr = trial.suggest_categorical("lr", [1e-4, 3e-4, 1e-3])
-        hidden_units = trial.suggest_categorical("hidden_units", [128, 256, 384])
-        time_features = trial.suggest_categorical("time_features", [16, 32, 64])
+        # Keep LR unconditional to avoid Optuna dynamic-space issues.
+        lr = float(trial.suggest_categorical("lr", [3e-4, 1e-3, 3e-3, 1e-2]))
+        weight_decay = float(trial.suggest_categorical("weight_decay", [0.0, 1e-6, 1e-5, 1e-4]))
+        batch_size = int(trial.suggest_categorical("batch_size", [128, 256, 512]))
 
-        batch_size = trial.suggest_categorical("batch_size", [256, 512, 1024])
-        cache_batches = trial.suggest_categorical("cache_batches", [1, 4, 8])
+        train_passes = float(trial.suggest_categorical("train_passes", [25, 50, 100]))
+        max_iter = int(min(20_000, max(1, ceil(train_passes * n_train / batch_size))))
 
-        steps_per_phase_multiplier = trial.suggest_categorical(
-            "steps_per_phase_multiplier", [0.5, 1.0, 2.0]
+        grad_clip_choice = trial.suggest_categorical("grad_clip", ["none", "1.0", "5.0"])
+        grad_clip = None if grad_clip_choice == "none" else float(grad_clip_choice)
+
+        s_diagonal_init = float(
+            trial.suggest_categorical("potential_S_diagonal_init", [0.03, 0.1, 0.3])
         )
-        steps_per_phase = max(1, ceil(steps_per_phase_multiplier * len(train_scaled) / batch_size))
 
-        cfg = IPFDSBConfig(
-            ipf_iters=int(ipf_iters),
-            num_steps=int(num_steps),
-            alpha_ou=float(alpha_ou),
-            batch_size=int(batch_size),
-            cache_batches=int(cache_batches),
-            steps_per_phase=int(steps_per_phase),
+        cfg = LightSBConfig(
+            potential=LightSBPotentialConfig(
+                n_potentials=int(n_potentials),
+                epsilon=float(epsilon),
+                is_diagonal=True,
+                sampling_batch_size=int(min(batch_size, 256)),
+                S_diagonal_init=float(s_diagonal_init),
+            ),
             lr=float(lr),
-            hidden_units=int(hidden_units),
-            time_features=int(time_features),
+            weight_decay=float(weight_decay),
+            batch_size=int(batch_size),
+            max_iter=int(max_iter),
+            grad_clip=grad_clip,
+            init_r_from_data=True,
+            use_sde_sampling=False,
+            n_euler_steps=100,
             device=device,
             seed=seed,
+            verbose_every=1000,
         )
 
-        # try:
-        model = IPFDSBSolver(dim=len(cols), cfg=cfg)
+
+        model = LightSBSolver(dim=n_features, cfg=cfg)
         model.fit(train_scaled)
 
         n_synth = len(test_scaled)
         x_synth = model.sample(n=n_synth, seed=seed + 123)
-        synth_scaled = pd.DataFrame(x_synth, columns=cols)
 
+        if hasattr(x_synth, "detach"):
+            x_synth = x_synth.detach().cpu().numpy()
+        else:
+            x_synth = np.asarray(x_synth)
+
+        synth_scaled = pd.DataFrame(x_synth, columns=cols)
         score = average_wd(test_scaled, synth_scaled, cols)
 
+        # Report a single final metric; if you expose iterative losses later,
+        # you can call `trial.report(...)` multiple times for richer pruning.
         trial.report(score, step=0)
         if trial.should_prune():
             raise optuna.TrialPruned()
 
-        return score
+        return float(score)
 
-        # except optuna.TrialPruned:
-        #     raise
-        # except Exception as e:
-        #     trial.set_user_attr("exception", repr(e))
-        #     return float("inf")
 
     return objective
+
 
 
 def main() -> None:
@@ -157,11 +178,20 @@ def main() -> None:
 
     ap.add_argument("--n-trials", type=int, default=50)
     ap.add_argument("--timeout", type=int, default=0, help="Seconds per dataset (0 => no timeout)")
-    ap.add_argument("--storage", type=str, default="sqlite:///ipf_dsb_optuna.db")
-    ap.add_argument("--study-prefix", type=str, default="ipf_dsb")
+    ap.add_argument("--storage", type=str, default="sqlite:///lightsb_optuna.db")
+    ap.add_argument("--study-prefix", type=str, default="lightsb")
 
-    ap.add_argument("--outdir", type=str, default="ipf_dsb_optuna_results", help="Folder for CSV summaries")
-    ap.add_argument("--export-trials", action="store_true", help="Export per-trial CSV for each dataset")
+    ap.add_argument(
+        "--outdir",
+        type=str,
+        default="lightsb_optuna_results",
+        help="Folder for CSV summaries",
+    )
+    ap.add_argument(
+        "--export-trials",
+        action="store_true",
+        help="Export per-trial CSV for each dataset",
+    )
 
     args = ap.parse_args()
 
@@ -190,7 +220,7 @@ def main() -> None:
         cols = list(df.columns)
 
         if len(cols) < 2:
-            raise ValueError(f"Dataset '{ds_name}' has <2 columns; cannot tune IPF-DSB.")
+            raise ValueError(f"Dataset '{ds_name}' has <2 columns; cannot tune LightSB.")
 
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -199,17 +229,17 @@ def main() -> None:
         transforms = TransformPipeline.default_dropna_and_scale()
 
         dm = TabularDataModule(df=df, schema=schema, transforms=transforms, reset_index=True)
-        dm.prepare_holdout(SplitConfigHoldout(val_size=args.test_size, shuffle=True, random_state=args.seed))
+        dm.prepare_holdout(
+            SplitConfigHoldout(
+                val_size=args.test_size,
+                shuffle=True,
+                random_state=args.seed,
+            )
+        )
         holdout = dm.get_holdout()
 
         train_scaled = holdout.train
         test_scaled = holdout.val
-
-        sp = dm._holdout_split  # type: ignore[attr-defined]
-        train_raw = dm.df_clean.iloc[sp.train_idx].copy()  # type: ignore[attr-defined]
-
-        inv_pipe = TransformPipeline.default_dropna_and_scale()
-        inv_pipe.fit(train_raw, schema)
 
         print(f"Columns: {len(cols)}")
         print(f"Train size (scaled): {len(train_scaled)}")
@@ -228,7 +258,6 @@ def main() -> None:
         objective = make_objective_for_dataset(
             train_scaled=train_scaled,
             test_scaled=test_scaled,
-            inv_pipe=inv_pipe,
             cols=cols,
             seed=args.seed,
             device=args.device,
@@ -261,7 +290,10 @@ def main() -> None:
             "elapsed_sec": float(elapsed),
             "best_params": dict(best.params),
         }
-        (outdir / f"{ds_name}_best.json").write_text(json.dumps(best_json, indent=2), encoding="utf-8")
+        (outdir / f"{ds_name}_best.json").write_text(
+            json.dumps(best_json, indent=2),
+            encoding="utf-8",
+        )
 
         if args.export_trials:
             export_trials_csv(study, outdir / f"{ds_name}_trials.csv")
@@ -278,7 +310,7 @@ def main() -> None:
         )
 
     summary_df = pd.DataFrame(summary_rows).sort_values("best_avg_wd", ascending=True)
-    out_csv = outdir / "ipf_dsb_optuna_summary.csv"
+    out_csv = outdir / "lightsb_optuna_summary.csv"
     summary_df.to_csv(out_csv, index=False)
 
     print("\n" + "=" * 90)
