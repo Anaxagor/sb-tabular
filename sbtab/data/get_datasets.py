@@ -44,8 +44,27 @@ def load_kaggle_csv(handle):
     return pd.read_csv(csv_path, sep=sep)
 
 def main():
+    TARGET_COL_BY_DATASET = {
+        "german_credit": 'duration',
+        "online_news_popularity": " shares",
+        "covertype": "Horizontal_Distance_To_Hydrology",
+        "online_shoppers": "ProductRelated",
+        "bank_marketing": "pdays",
+        "bank_loan": "Income",
+        "diabetes": "target",
+        "california_housing": "MedHouseVal",
+        "king_county_housing": "price"
+
+    }
+
+    cont_datasets = {}
     cat_disc_datasets = {}
     mixed_datasets = {}
+
+    print("Adding attributes to continuous data pkl...")
+    dfs_cont_dict = pd.read_pickle("datasets/datasets_continuous_only.pkl")
+    for ds_name, df in dfs_cont_dict.items():
+        cont_datasets[ds_name] = prepare_smart_df(df, TARGET_COL_BY_DATASET[ds_name], "regression")
 
     print("Downloading Categorical Datasets")
 
@@ -84,7 +103,7 @@ def main():
     print("Fetching Adult...")
     adult = fetch_ucirepo(id=2)
     df_adult = pd.concat([adult.data.features, adult.data.targets], axis=1)
-    mixed_datasets["Adult"] = prepare_smart_df(df_adult, "income", "regression")
+    mixed_datasets["Adult"] = prepare_smart_df(df_adult, "income", "classification")
 
     # 2. Credit Approval (UCI 27)
     print("Fetching Credit Approval...")
@@ -144,25 +163,19 @@ def main():
     df_diamonds = df_diamonds.drop(columns=['Unnamed: 0'], errors='ignore')
     mixed_datasets["Diamonds"] = prepare_smart_df(df_diamonds, "price", "regression")
 
-    # 12. Bike Sharing Daily (UCI 275)
-    print("Fetching Bike Sharing...")
-    bike_sharing = fetch_ucirepo(id=275)
-    df_bike = pd.concat([bike_sharing.data.features, bike_sharing.data.targets['cnt']], axis=1)
-    mixed_datasets["Bike Sharing"] = prepare_smart_df(df_bike, "cnt", "regression")
-
-    # 13. Real Estate (Kaggle)
+    # 12. Real Estate (Kaggle)
     print("Fetching Real Estate Valuation...")
     df_real_estate = load_kaggle_csv("quantbruce/real-estate-price-prediction")
     df_real_estate = df_real_estate.drop(columns=['No'], errors='ignore')
     mixed_datasets["Real Estate"] = prepare_smart_df(df_real_estate, "Y house price of unit area", "regression")
 
-    # 14. Stroke prediction (Kaggle)
+    # 13. Stroke prediction (Kaggle)
     print("Fetching Stroke Prediction...")
     df_stroke = load_kaggle_csv("fedesoriano/stroke-prediction-dataset")
     df_stroke = df_stroke.drop(columns=['id'])
     mixed_datasets["Stroke Prediction"] = prepare_smart_df(df_stroke, "stroke", "classification")
 
-    # 15. Palmer Penguins (Kaggle)
+    # 14. Palmer Penguins (Kaggle)
     print("Fetching Palmer Penguins...")
     df_penguins = load_kaggle_csv("parulpandey/palmer-archipelago-antarctica-penguin-data")
     df_penguins = df_penguins.drop(
@@ -170,6 +183,7 @@ def main():
     mixed_datasets["Palmer Penguins"] = prepare_smart_df(df_penguins, "Species", "classification")
 
     print("\nSaving files...")
+    save_pickle(cont_datasets, "datasets/datasets_continuous.pkl")
     save_pickle(cat_disc_datasets, 'datasets/datasets_categorical.pkl')
     save_pickle(mixed_datasets, 'datasets/datasets_mixed.pkl')
 
