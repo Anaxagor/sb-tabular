@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
+from sklearn.model_selection import StratifiedKFold
 
 
 @dataclass(frozen=True)
@@ -33,11 +34,22 @@ class HoldoutSplit:
     val_idx: np.ndarray
 
 
-def make_kfold_splits(n_samples: int, cfg: SplitConfigKFold) -> List[KFoldSplit]:
+def make_kfold_splits(
+    n_samples: int,
+    cfg: SplitConfigKFold,
+    labels: Optional[np.ndarray] = None
+) -> List[KFoldSplit]:
     if cfg.n_splits < 2:
         raise ValueError("n_splits must be at least 2.")
     if n_samples < cfg.n_splits:
         raise ValueError("n_samples must be greater than or equal to n_splits.")
+
+    if labels is not None:
+        skf = StratifiedKFold(n_splits=cfg.n_splits, shuffle=cfg.shuffle, random_state=cfg.random_state)
+        splits: List[KFoldSplit] = []
+        for fold_id, (train_idx, test_idx) in enumerate(skf.split(np.zeros(n_samples), labels)):
+            splits.append(KFoldSplit(fold_id=fold_id, train_idx=train_idx, test_idx=test_idx))
+        return splits
 
     indices = np.arange(n_samples)
     if cfg.shuffle:
