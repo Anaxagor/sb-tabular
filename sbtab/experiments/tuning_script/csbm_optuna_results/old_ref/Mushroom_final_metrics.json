@@ -5,7 +5,7 @@
     ],
     "best_trial": 10,
     "n_trials": 50,
-    "elapsed_sec": 9666.41779088974,
+    "elapsed_sec": 39417.20063471794,
     "best_params": {
         "emb_dim": 33,
         "hidden_dim": 60,
@@ -21,10 +21,10 @@
         "loss_lambda": 0.02,
         "alpha": 0.097
     },
-    "Best_Tuning_Loss_JS": 0.13998033875843544,
-    "Final_Mean_KL": 0.1340308645641951,
-    "Corr_Distance": 2.4951227287862086,
+    "Best_Tuning_Loss_JS": 0.14207662838728496,
+    "Final_Mean_KL": 0.14858977648685612,
+    "Corr_Distance": 2.523090719009433,
     "F1_real": 1.0,
-    "F1_synth": 0.9532959362627639,
-    "diff": 0.04670406373723612
+    "F1_synth": 0.9478869385199092,
+    "diff": 0.05211306148009076
 }

@@ -50,8 +50,19 @@ def average_kl(real: pd.DataFrame, synth: pd.DataFrame, cols: List[str]) -> floa
     return float(np.mean(kls))
 
 def correlation_distance(real: pd.DataFrame, synth: pd.DataFrame) -> float:
-    corr_real = real.corr(numeric_only=True).fillna(0).to_numpy()
-    corr_synth = synth.corr(numeric_only=True).fillna(0).to_numpy()
+    if real.empty or synth.empty:
+        return 0.0
+
+    corr_real_df = real.astype(float).corr(method="spearman").fillna(0)
+    corr_real_arr = corr_real_df.values.copy()
+    np.fill_diagonal(corr_real_arr, 1.0)
+    corr_real = corr_real_arr
+
+    corr_synth_df = synth.astype(float).corr(method="spearman").fillna(0)
+    corr_synth_arr = corr_synth_df.values.copy()
+    np.fill_diagonal(corr_synth_arr, 1.0)
+    corr_synth = corr_synth_arr
+
     return float(np.linalg.norm(corr_real - corr_synth, ord='fro'))
 
 def evaluate_ml_efficacy(train_real: pd.DataFrame,
