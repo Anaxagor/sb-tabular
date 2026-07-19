@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 
-import pandas as pd
-
 from sbtab.benchmark.contracts import TabularDataset, TaskType
 from sbtab.benchmark.validation import ContractViolation, validate_tabular_dataset
 
