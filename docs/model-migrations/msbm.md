@@ -1,6 +1,6 @@
 # MSBM migration note
 
-Status: adapter design approved by the shared benchmark contract; native CPU
+Status: adapter implemented with canonical/native boundary tests; native CPU
 smoke pending because the current development environment has no `torch`.
 
 ## Scope and implementation under review
@@ -58,6 +58,12 @@ The adapter mapping is fixed:
 
 Every tensor is placed on `RunContext.device` before the native call. The
 solver moves its model and references but does not move train tensors itself.
+
+Before native conversion, the adapter rejects continuous values that become
+non-finite in `float32`, state codes or cardinalities that cannot be represented
+by `torch.int64`, and train metadata whose declared cardinality is not realized
+by dense observed codes `0..K-1`. These checks prevent silent cast corruption
+and fictitious embedding states; they do not repair the prepared table.
 
 State columns follow canonical table order. They are not regrouped as
 "categorical then discrete". Data, cardinalities, and ordered flags always use
@@ -246,6 +252,12 @@ Static archaeology completed:
 - historical tuning/evaluation code was inspected through Git history;
 - current config/solver/updater were compared with `09d2592`;
 - consumed config fields and the unused `eps` field were traced.
+
+Fake-native adapter boundary tests cover canonical block order, target
+preservation, per-column state metadata, device and dtype conversion, context
+seed forwarding, schema identity, output shape/row/dtype/support validation,
+zero-row bypass, lifecycle failures, malformed prepared input, float/state cast
+overflow, and all documented compatibility rejections.
 
 Native construction, fit, and sample were not executed because importing
 `torch` currently raises `ModuleNotFoundError`. The migration cannot be called
