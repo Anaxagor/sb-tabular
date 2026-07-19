@@ -436,11 +436,13 @@ The v1 runner applies the missing policy once, creates common splits, and then
 compiles one fold-local model codec per model/fold:
 
 ```text
-run_dataset, missing_report = apply_missing_policy(
+missing_result = apply_missing_policy(
     dataset,
     config.missing_policy,
 )
-splits = make_splits(run_dataset, config.split, config.seed)
+run_dataset = missing_result.dataset
+missing_report = missing_result.report
+splits = make_splits(run_dataset, config.split)
 
 codec = compile_codec(run_dataset, adapter.input_spec)
 train_prepared = codec.fit_transform(train_raw)
@@ -497,6 +499,31 @@ V1 missing semantics are fixed:
 `IMPUTE`, reversible missingness preservation, and model-native missing values
 are not v1 enum values. They require separate future profiles, contract review,
 and result labels; adapters must not implement a private fallback.
+
+`apply_missing_policy` returns one immutable `MissingPolicyResult` containing
+the post-policy `TabularDataset` and its `MissingReport`. Under `ERROR`, modeled
+missing values raise `MissingValuesError` carrying that same report and no rows
+are removed. Reports snapshot modeled-column missing counts and applicable raw
+class counts; they never include the optional identifier.
+
+V1 split strategies are new benchmark-owned objects:
+
+- `KFoldConfig(n_splits, seed)` creates deterministic shuffled positional
+  folds without reading target values;
+- `StratifiedKFoldConfig(n_splits, seed)` requires a finite-state
+  classification target and preserves its proportions in every held-out fold;
+- stratification requires at least two observed classes. Raw finite-state
+  labels may be strings, numbers, or mixed hashable values: the splitter
+  factorizes them to temporary integer labels for scikit-learn without changing
+  the target column in `TabularDataset`;
+- every target class must contain at least `n_splits` post-policy rows;
+- split seeds are explicit non-negative 32-bit integers;
+- `FoldSplit` stores immutable train/test positions into the post-policy raw
+  frame, not pandas index labels.
+
+Splitters reject modeled missing values and instruct the caller to apply the
+global policy first. They do not import or extend the legacy `sbtab.data`
+splitter and do not preprocess train or held-out rows.
 
 Identifiers follow one global rule: they never enter the model. If a decoded
 output requires an identifier, the runner generates new identifiers after
