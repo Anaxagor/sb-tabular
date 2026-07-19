@@ -35,7 +35,10 @@ unresolved in the contract.
 - `sbtab/experiments/`: legacy tuning and evaluation entrypoints. Treat these
   as behavioral evidence, not automatically correct specifications.
 - `sbtab/evaluation/`: future home of model-independent evaluation.
-- `sbtab/benchmark/`: planned orchestration layer; it does not exist yet.
+- `sbtab/benchmark/`: greenfield benchmark core. Contracts, dataset
+  declarations, missing policy, splitting, and fold-local codec are implemented;
+  model adapters, runner, artifacts, and evaluation integration are migrating
+  incrementally.
 
 ## Target architecture
 

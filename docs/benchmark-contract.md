@@ -2,9 +2,11 @@
 
 Status: draft for maintainer and model-owner review.
 
-Evidence base: repository `main` at `52e86e0`. This document defines the
-target boundary. It does not describe an already implemented
-`sbtab.benchmark` package.
+Evidence base: repository `main` at `52e86e0`. This document defines the target
+boundary and records its incremental implementation. The greenfield contracts,
+dataset declaration, missing policy, splitting, codec, and adapter protocol now
+exist under `sbtab.benchmark`; model adapters, runner, artifacts, and evaluation
+integration remain migration work.
 
 ## Goal
 
@@ -367,6 +369,14 @@ creates a fresh codec and adapter for every fold; it must not reuse a fitted
 adapter with another fold's codec. This lifecycle removes the need for a public
 `codec_id` field.
 
+Adapter metadata can be checked without fitting through
+`validate_adapter_definition`. Sampling accepts a non-negative integer row
+count (including zero) and a non-negative 32-bit seed; shared callers use
+`validate_sample_request` before entering native code. Runtime structural
+validation confirms that `fit` and `sample` are callable, but Python protocols
+do not inspect their signatures; static annotations and adapter boundary tests
+remain required.
+
 An adapter may:
 
 - select and order columns using `PreparedSchema`;
@@ -430,6 +440,11 @@ class RunContext:
     device: str
     artifact_dir: Path
 ```
+
+`RunContext` validates non-empty run/device labels, a non-negative fold index,
+a non-negative 32-bit training seed, and a `Path` artifact destination. Merely
+constructing it never creates the directory; artifact lifecycle belongs to the
+runner.
 
 Sampling variants such as TabDDPM EMA, LightSB SDE mode, or integration steps
 belong in a typed config for that adapter. They must not leak into the shared

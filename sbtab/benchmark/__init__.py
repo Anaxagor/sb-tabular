@@ -6,6 +6,12 @@ The package is intentionally independent of the legacy ``sbtab.data``,
 
 from __future__ import annotations
 
+from sbtab.benchmark.adapter import (
+    ModelAdapter,
+    RunContext,
+    validate_adapter_definition,
+    validate_sample_request,
+)
 from sbtab.benchmark.contracts import (
     CategoricalView,
     ColumnKind,
@@ -57,9 +63,11 @@ __all__ = [
     "MissingPolicyResult",
     "MissingReport",
     "MissingValuesError",
+    "ModelAdapter",
     "ModelCodec",
     "PreparedSchema",
     "PreparedTable",
+    "RunContext",
     "SplitConfig",
     "StateColumn",
     "StratifiedKFoldConfig",
@@ -68,7 +76,9 @@ __all__ = [
     "apply_missing_policy",
     "compile_codec",
     "make_splits",
+    "validate_adapter_definition",
     "validate_input_spec",
     "validate_prepared_table",
+    "validate_sample_request",
     "validate_tabular_dataset",
 ]
