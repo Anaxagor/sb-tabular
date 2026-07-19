@@ -19,6 +19,7 @@ from sbtab.benchmark.contracts import (
     TabularDataset,
     TaskType,
 )
+from sbtab.benchmark.codec import ModelCodec, compile_codec
 from sbtab.benchmark.missing import (
     ClassCount,
     MissingPolicy,
@@ -56,6 +57,7 @@ __all__ = [
     "MissingPolicyResult",
     "MissingReport",
     "MissingValuesError",
+    "ModelCodec",
     "PreparedSchema",
     "PreparedTable",
     "SplitConfig",
@@ -64,6 +66,7 @@ __all__ = [
     "TabularDataset",
     "TaskType",
     "apply_missing_policy",
+    "compile_codec",
     "make_splits",
     "validate_input_spec",
     "validate_prepared_table",

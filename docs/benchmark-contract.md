@@ -336,10 +336,15 @@ The fitted codec, not `PreparedSchema`, owns reversible implementation state:
 
 - means and scales;
 - category-to-code and code-to-category mappings;
-- raw discrete supports;
-- original dtypes;
-- missing-value statistics;
-- decoded output ordering, including identifier restoration policy.
+- raw discrete and categorical supports;
+
+Physical pandas dtypes are not a model capability and are therefore not part
+of `InputSpec` or `PreparedSchema`. Decoding restores exact finite-state raw
+values and canonical modeled-column order. A standardized continuous column is
+decoded as real numeric values even when the source happened to use an integer
+storage dtype; the codec never rounds generated values merely to reproduce a
+pandas dtype. Missing-value evidence belongs to `MissingReport`, and any new
+identifier is added later by the runner, not by the codec.
 
 ## `ModelAdapter`: thin native translation
 
@@ -471,7 +476,8 @@ The codec must:
 4. fit all learned transformations and finite-state codebooks on train only;
 5. transform train for the adapter and inversely transform only model samples;
 6. emit one validated `PreparedTable` in canonical order;
-7. invert the prepared sample to raw schema and dtypes;
+7. invert the prepared sample to raw semantic values and canonical modeled
+   column order;
 8. reject invalid state codes instead of clipping them.
 
 Finite-state cardinality is the number of states observed in train. A category
@@ -479,6 +485,24 @@ seen only in raw test is not added to the model state space, mapped to a shared
 `UNKNOWN`, or treated as a codec failure. The raw evaluator includes it in the
 real support, where its absence from synthetic data is a legitimate quality
 signal.
+
+The v1 transforms are deterministic:
+
+- `STANDARD` uses the train population mean and standard deviation
+  (`ddof=0`); a constant train column uses scale `1.0`;
+- numeric discrete state codes follow ascending train-observed raw values;
+- explicitly ordinal categorical codes follow `ordered_values`, filtered to
+  values observed in train;
+- nominal categorical codes follow first appearance in train row order;
+- a generated `RAW_VALUES` discrete or categorical value must belong to that
+  column's train support.
+
+`ModelCodec` is single-use and intentionally exposes no transform operation for
+held-out data. `compile_codec` validates dataset declarations, while learned
+means, scales, supports, and mappings are created only by
+`fit_transform(train_raw)`. Inverse decoding also supports a valid zero-row
+`PreparedTable`; this keeps the data contract total even though official
+benchmark folds and pilot samples are non-empty.
 
 V1 missing semantics are fixed:
 

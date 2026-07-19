@@ -179,7 +179,10 @@ coordinating agent, not duplicated by every adapter:
   evaluation;
 - a state seen only in raw test does not change train cardinality and is not
   mapped to a generator `UNKNOWN` state;
-- encode/decode restores raw column order and expected dtypes;
+- encode/decode restores raw column order and semantic output dtypes: prepared
+  states are integer-coded, decoded states recover exact raw values, and
+  decoded standardized continuous values remain real-valued rather than being
+  rounded to an original pandas storage dtype;
 - finite-state codes round-trip through the train-fold mapping;
 - invalid finite-state codes fail with column/value evidence;
 - a fresh codec and adapter are created per fold;

@@ -94,7 +94,9 @@ evidence unless a separate, explicitly scoped migration task says otherwise.
   not transform held-out test data. Evaluation receives raw test and raw
   synthetic tables; utility evaluators own any downstream predictive pipeline.
 - The codec, not an adapter, owns generic scalers, imputers, encoders, inverse
-  transforms, raw dtypes, category maps, and discrete supports.
+  transforms, category maps, and train-observed finite-state supports. Physical
+  pandas storage dtype is not restored by rounding generated values; decoded
+  output follows the semantic dtype rules in `docs/benchmark-contract.md`.
 - Finite-state metadata is keyed by column name. Use real cardinality and order
   meaning for each column; never replace them with a shared maximum.
 - Invalid generated states fail validation. Do not clip, round, pad, or replace

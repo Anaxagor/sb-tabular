@@ -189,6 +189,23 @@ class TabularDatasetValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractViolation, "absent from ordered_values"):
             validate_tabular_dataset(dataset)
 
+    def test_ordered_timestamp_categories_preserve_raw_scalar_identity(self) -> None:
+        first = pd.Timestamp("2020-01-01")
+        second = pd.Timestamp("2020-02-01")
+        dataset = TabularDataset(
+            name="ordered-timestamps",
+            frame=pd.DataFrame({"period": [second, first]}),
+            columns=(
+                ColumnSpec(
+                    "period",
+                    ColumnKind.CATEGORICAL,
+                    ordered_values=(first, second),
+                ),
+            ),
+        )
+
+        validate_tabular_dataset(dataset)
+
 
 class InputAndPreparedValidationTests(unittest.TestCase):
     """Exercise semantic model views and canonical prepared-table checks."""

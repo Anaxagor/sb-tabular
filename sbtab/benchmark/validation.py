@@ -86,7 +86,7 @@ def _require_hashable_domain(
     for index, value in enumerate(values):
         if not isinstance(value, Hashable):
             raise ContractViolation(
-                f"{field_name}[{index}]={value!r} is not hashable."
+                f"{field_name}[{index}]={value!r} is unhashable."
             )
         try:
             is_missing = bool(pd.isna(value))
@@ -120,7 +120,7 @@ def _require_real_numeric_series(series: pd.Series, semantic_label: str) -> None
 
 def _require_hashable_series(series: pd.Series, semantic_label: str) -> None:
     try:
-        observed_values = tuple(pd.unique(series.dropna()).tolist())
+        observed_values = tuple(series.dropna().drop_duplicates().tolist())
     except TypeError as error:
         raise ContractViolation(
             f"{semantic_label} contains unhashable values."
@@ -176,7 +176,7 @@ def validate_column_spec(column: ColumnSpec, series: pd.Series | None = None) ->
     if series is None:
         return
 
-    observed_values = tuple(pd.unique(series.dropna()).tolist())
+    observed_values = tuple(series.dropna().drop_duplicates().tolist())
     observed_domain = _require_hashable_domain(
         observed_values,
         f"observed support for {column.name!r}",
