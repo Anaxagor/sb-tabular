@@ -274,6 +274,8 @@ class MSBMAdapterTests(unittest.TestCase):
         self.assertEqual(solver.train_cat.dtype, _FakeTorch.int64)
         self.assertEqual(solver.train_num.device, "cpu")
         self.assertEqual(solver.train_cat.device, "cpu")
+        self.assertTrue(solver.train_num.array.flags.writeable)
+        self.assertTrue(solver.train_cat.array.flags.writeable)
 
     def test_sample_reassembles_canonical_order_and_same_schema(self) -> None:
         table = _mixed_table()

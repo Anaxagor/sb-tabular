@@ -308,6 +308,7 @@ class MSBMAdapter:
         with np.errstate(over="ignore", invalid="ignore"):
             continuous_array = train.frame.loc[:, continuous_names].to_numpy(
                 dtype=np.float32,
+                copy=True,
             )
         unrepresentable = tuple(
             name
@@ -357,7 +358,10 @@ class MSBMAdapter:
                 f"{cardinalities_exceeding_rows!r}, "
                 f"missing_codes={missing_train_codes!r}."
             )
-        state_array = train.frame.loc[:, state_names].to_numpy(dtype=np.int64)
+        state_array = train.frame.loc[:, state_names].to_numpy(
+            dtype=np.int64,
+            copy=True,
+        )
         ordered_array = np.asarray(
             [train.schema.state_columns[name].ordered for name in state_names],
             dtype=np.bool_,
