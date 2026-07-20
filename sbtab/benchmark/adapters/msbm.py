@@ -20,11 +20,9 @@ direction. See ``docs/model-migrations/msbm.md`` for characterization evidence.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
-
 import numpy as np
 import pandas as pd
+import torch
 
 from sbtab.benchmark.adapter import (
     RunContext,
@@ -42,178 +40,11 @@ from sbtab.benchmark.validation import (
     ContractViolation,
     validate_prepared_table,
 )
+from sbtab.solvers.msbm import MixedSBMConfig, MixedSBMSolver
 
 
 class MSBMCompatibilityError(ContractViolation):
     """Raised when a valid prepared table cannot be modeled by current MSBM."""
-
-
-class MSBMDependencyError(ImportError):
-    """Raised when the native MSBM runtime cannot be imported."""
-
-
-class _NativeTensor(Protocol):
-    """Tensor operations used by the adapter without importing Torch eagerly."""
-
-    @property
-    def shape(self) -> tuple[int, ...]: ...
-
-    @property
-    def dtype(self) -> object: ...
-
-    def detach(self) -> _NativeTensor: ...
-
-    def cpu(self) -> _NativeTensor: ...
-
-    def numpy(self) -> np.ndarray: ...
-
-
-class _TorchAPI(Protocol):
-    """Small Torch surface needed for native boundary conversion."""
-
-    float32: object
-    int64: object
-    bool: object
-
-    def device(self, value: str) -> object: ...
-
-    def as_tensor(
-        self,
-        data: np.ndarray,
-        *,
-        dtype: object,
-        device: object,
-    ) -> _NativeTensor: ...
-
-
-class _NativeConfig(Protocol):
-    """Current native config fields required for fail-fast compatibility."""
-
-    fb_sequence: tuple[str, ...]
-    cat_emb_dim: int
-    hidden_dim: int
-    time_dim: int
-    n_layers: int
-    num_steps: int
-    batch_size: int
-    epochs_per_direction: int
-    device: str
-    seed: int
-
-
-class _NativeSolver(Protocol):
-    """Current native solver methods invoked by the adapter."""
-
-    def fit(
-        self,
-        train_num: _NativeTensor,
-        train_cat: _NativeTensor,
-    ) -> object: ...
-
-    def sample(
-        self,
-        n_samples: int,
-        seed: int,
-    ) -> tuple[_NativeTensor, _NativeTensor]: ...
-
-
-class _ConfigFactory(Protocol):
-    def __call__(self, *, device: str, seed: int) -> _NativeConfig: ...
-
-
-class _SolverFactory(Protocol):
-    def __call__(
-        self,
-        continuous_dim: int,
-        cardinalities: list[int],
-        is_ordered: _NativeTensor,
-        cfg: _NativeConfig,
-    ) -> _NativeSolver: ...
-
-
-@dataclass(frozen=True)
-class _NativeBindings:
-    """Lazily loaded native types, replaceable only in boundary tests."""
-
-    torch: _TorchAPI
-    config_factory: _ConfigFactory
-    solver_factory: _SolverFactory
-
-
-def _load_native_msbm() -> _NativeBindings:
-    """Import Torch and current MSBM only when a real fit is requested."""
-
-    try:
-        import torch
-        from sbtab.solvers.msbm import MixedSBMConfig, MixedSBMSolver
-    except ModuleNotFoundError as error:
-        if error.name == "torch":
-            raise MSBMDependencyError(
-                "MSBM requires the native 'torch' dependency, which is not "
-                "available in this environment."
-            ) from error
-        raise
-    return _NativeBindings(
-        torch=torch,
-        config_factory=MixedSBMConfig,
-        solver_factory=MixedSBMSolver,
-    )
-
-
-def _require_integer(
-    value: object,
-    field_name: str,
-    *,
-    minimum: int,
-) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise MSBMCompatibilityError(f"Native {field_name} must be an integer.")
-    if value < minimum:
-        raise MSBMCompatibilityError(
-            f"Native {field_name} must be >= {minimum}, got {value}."
-        )
-    return value
-
-
-def _validate_native_config(config: _NativeConfig, train_rows: int) -> None:
-    _require_integer(
-        config.cat_emb_dim,
-        "cat_emb_dim",
-        minimum=1,
-    )
-    _require_integer(config.hidden_dim, "hidden_dim", minimum=1)
-    time_dim = _require_integer(config.time_dim, "time_dim", minimum=1)
-    _require_integer(config.n_layers, "n_layers", minimum=1)
-    _require_integer(config.num_steps, "num_steps", minimum=2)
-    batch_size = _require_integer(config.batch_size, "batch_size", minimum=1)
-    epochs = _require_integer(
-        config.epochs_per_direction,
-        "epochs_per_direction",
-        minimum=0,
-    )
-    if time_dim % 2:
-        raise MSBMCompatibilityError(
-            f"Native time_dim must be even, got {time_dim}."
-        )
-    sequence = config.fb_sequence
-    if not isinstance(sequence, tuple) or not sequence:
-        raise MSBMCompatibilityError(
-            "Native fb_sequence must be a non-empty tuple."
-        )
-    invalid_directions = tuple(value for value in sequence if value not in {"f", "b"})
-    if invalid_directions:
-        raise MSBMCompatibilityError(
-            f"Native fb_sequence contains invalid directions {invalid_directions!r}."
-        )
-    if "b" not in sequence:
-        raise MSBMCompatibilityError(
-            "Native fb_sequence must contain a backward 'b' stage for sampling."
-        )
-    if epochs > 0 and train_rows < batch_size:
-        raise MSBMCompatibilityError(
-            "Current MSBM uses drop_last=True and would perform zero optimizer "
-            f"steps with train rows {train_rows} < batch_size {batch_size}."
-        )
 
 
 class MSBMAdapter:
@@ -229,8 +60,7 @@ class MSBMAdapter:
         self._schema: PreparedSchema | None = None
         self._continuous_names: tuple[str, ...] = ()
         self._state_names: tuple[str, ...] = ()
-        self._bindings: _NativeBindings | None = None
-        self._solver: _NativeSolver | None = None
+        self._solver: MixedSBMSolver | None = None
 
     @property
     def name(self) -> str:
@@ -370,36 +200,27 @@ class MSBMAdapter:
             train.schema.state_columns[name].cardinality for name in state_names
         ]
 
-        bindings = _load_native_msbm()
-        native_config = bindings.config_factory(
+        native_config = MixedSBMConfig(
             device=context.device,
             seed=context.seed,
         )
-        _validate_native_config(native_config, len(train.frame))
-        if native_config.device != context.device or native_config.seed != context.seed:
-            raise MSBMCompatibilityError(
-                "Native MSBM config must preserve RunContext device and seed; "
-                f"config=({native_config.device!r}, {native_config.seed!r}), "
-                f"context=({context.device!r}, {context.seed!r})."
-            )
-
-        device = bindings.torch.device(context.device)
-        train_num = bindings.torch.as_tensor(
+        device = torch.device(context.device)
+        train_num = torch.as_tensor(
             continuous_array,
-            dtype=bindings.torch.float32,
+            dtype=torch.float32,
             device=device,
         )
-        train_cat = bindings.torch.as_tensor(
+        train_cat = torch.as_tensor(
             state_array,
-            dtype=bindings.torch.int64,
+            dtype=torch.int64,
             device=device,
         )
-        is_ordered = bindings.torch.as_tensor(
+        is_ordered = torch.as_tensor(
             ordered_array,
-            dtype=bindings.torch.bool,
+            dtype=torch.bool,
             device=device,
         )
-        solver = bindings.solver_factory(
+        solver = MixedSBMSolver(
             continuous_dim=len(continuous_names),
             cardinalities=cardinalities,
             is_ordered=is_ordered,
@@ -410,14 +231,13 @@ class MSBMAdapter:
         self._schema = train.schema
         self._continuous_names = continuous_names
         self._state_names = state_names
-        self._bindings = bindings
         self._solver = solver
 
     def sample(self, n: int, seed: int) -> PreparedTable:
         """Generate and validate a complete canonical prepared MSBM sample."""
 
         validate_sample_request(n, seed)
-        if self._schema is None or self._bindings is None or self._solver is None:
+        if self._schema is None or self._solver is None:
             raise ContractViolation("Call MSBMAdapter.fit() before sample().")
         if n == 0:
             return self._empty_sample()
@@ -429,13 +249,13 @@ class MSBMAdapter:
         self._validate_native_output(
             generated_num,
             expected_shape=(n, len(self._continuous_names)),
-            expected_dtype=self._bindings.torch.float32,
+            expected_dtype=torch.float32,
             block_name="continuous",
         )
         self._validate_native_output(
             generated_state,
             expected_shape=(n, len(self._state_names)),
-            expected_dtype=self._bindings.torch.int64,
+            expected_dtype=torch.int64,
             block_name="state",
         )
 
@@ -458,10 +278,10 @@ class MSBMAdapter:
 
     @staticmethod
     def _validate_native_output(
-        tensor: _NativeTensor,
+        tensor: torch.Tensor,
         *,
         expected_shape: tuple[int, int],
-        expected_dtype: object,
+        expected_dtype: torch.dtype,
         block_name: str,
     ) -> None:
         actual_shape = tuple(tensor.shape)

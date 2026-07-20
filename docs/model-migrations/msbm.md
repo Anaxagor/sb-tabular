@@ -1,7 +1,8 @@
 # MSBM migration note
 
-Status: adapter implemented with canonical/native boundary tests; native CPU
-smoke pending because the current development environment has no `torch`.
+Status: adapter implemented with direct imports of `torch`, `MixedSBMConfig`,
+and `MixedSBMSolver`; canonical/native boundary tests and a native CPU smoke
+pass in the `lightning11` environment.
 
 ## Scope and implementation under review
 
@@ -253,16 +254,18 @@ Static archaeology completed:
 - current config/solver/updater were compared with `09d2592`;
 - consumed config fields and the unused `eps` field were traced.
 
-Fake-native adapter boundary tests cover canonical block order, target
-preservation, per-column state metadata, device and dtype conversion, context
-seed forwarding, schema identity, output shape/row/dtype/support validation,
-zero-row bypass, lifecycle failures, malformed prepared input, float/state cast
-overflow, and all documented compatibility rejections.
+Adapter boundary tests use real Torch tensors and the real `MixedSBMConfig`.
+The real `MixedSBMSolver` signature is autospecced so unit tests can inspect the
+boundary without performing model training. They cover canonical block order,
+target preservation, per-column state metadata, device and dtype conversion,
+context seed forwarding, schema identity, output shape/row/dtype/support
+validation, zero-row bypass, lifecycle failures, malformed prepared input, and
+float/state cast overflow.
 
-Native construction, fit, and sample were not executed because importing
-`torch` currently raises `ModuleNotFoundError`. The migration cannot be called
-fully characterized until a real CPU smoke covers native tensor shapes, dtypes,
-devices, finite continuous output, and state support.
+A CPU smoke in `lightning11` exercised the adapter with the real
+`MixedSBMSolver`: construction, one backward training stage, sampling, and
+canonical table assembly completed successfully. The generated continuous and
+state blocks had the required `torch.float32` and `torch.int64` dtypes.
 
 ## Questions for the model owner
 
