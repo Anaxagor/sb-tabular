@@ -44,6 +44,18 @@ class CategoricalReference:
     dtype: torch.dtype = torch.float32
 
     def __post_init__(self):
+        if not self.cardinalities:
+            raise ValueError("CategoricalReference requires a finite-state block.")
+        singleton_nominal = [
+            index
+            for index, cardinality in enumerate(self.cardinalities)
+            if cardinality == 1 and not bool(self.is_ordered[index].item())
+        ]
+        if singleton_nominal:
+            raise ValueError(
+                "CategoricalReference does not support singleton nominal "
+                f"dimensions: {singleton_nominal!r}."
+            )
         self.S = torch.tensor(self.cardinalities, device=self.device)
         self.is_ordered = self.is_ordered.clone().detach().to(device=self.device, dtype=torch.bool)
         self.S_max = int(self.S.max().item())

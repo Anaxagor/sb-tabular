@@ -12,6 +12,8 @@ from sbtab.solvers.msbm import MixedSBMUpdater
 class MixedSBMSolver:
     def __init__(self, continuous_dim: int, cardinalities: List[int],
                  is_ordered: torch.Tensor, cfg: "MixedSBMConfig"):
+        if continuous_dim < 1:
+            raise ValueError("MixedSBMSolver requires a continuous block.")
         self.cont_dim = continuous_dim
         self.cardinalities = cardinalities
         self.cfg = cfg
@@ -91,6 +93,8 @@ class MixedSBMSolver:
         """
         Train the model according to the sequence of directions in cfg.fb_sequence.
         """
+        if not bool(torch.isfinite(train_num).all()):
+            raise ValueError("MSBM continuous training data must be finite.")
         N = train_num.shape[0]
         prior_num = self.ref_gauss.sample(N, seed=self.cfg.seed + 999).to(self.device)
         prior_cat = torch.stack([
