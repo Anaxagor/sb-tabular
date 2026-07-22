@@ -117,7 +117,8 @@ features and return the complete prepared schema.
 Implementation rules:
 
 1. Accept only the canonical `PreparedTable`.
-2. Run the common prepared-table validator before native model construction.
+2. Assume the codec/runner has validated the canonical `PreparedTable`; do not
+   duplicate generic schema, missing-value, support, or row checks.
 3. Select columns exclusively through `PreparedSchema`; do not guess from
    pandas dtype or dataset name.
 4. Perform native layout and dtype conversion locally in the adapter.
@@ -130,6 +131,11 @@ Implementation rules:
 9. Return a `PreparedTable` carrying the same prepared schema received by
    `fit`.
 10. Keep sampling variants in a typed adapter config, not common `**kwargs`.
+
+The shared runner validates requested row count and the returned
+`PreparedTable` before codec decoding. The codec rejects invalid generated state
+codes. Native mathematical restrictions belong to the native model, not to an
+adapter compatibility layer.
 
 Allowed adapter-local work includes:
 
@@ -198,14 +204,16 @@ coordinating agent, not duplicated by every adapter:
 Every adapter must test:
 
 - its declared `InputSpec` exactly matches the approved values;
-- malformed `PreparedTable` columns fail before the native call;
 - the adapter selects native columns in deterministic order;
 - native arrays/tensors receive the required shape and dtype;
 - temporary `X`/`y` extraction, when required, is reassembled into the full
   sampled table;
 - native sample output is returned in `PreparedSchema.column_order`;
-- the returned prepared schema is unchanged;
-- invalid native row count or state values are rejected, not repaired.
+- the returned prepared schema is unchanged.
+
+Malformed prepared input, requested/returned row-count mismatches, and invalid
+generated states are shared codec/runner tests. Do not duplicate those cases in
+every adapter suite.
 
 ### Model smoke tests
 

@@ -370,12 +370,17 @@ adapter with another fold's codec. This lifecycle removes the need for a public
 `codec_id` field.
 
 Adapter metadata can be checked without fitting through
-`validate_adapter_definition`. Sampling accepts a non-negative integer row
-count (including zero) and a non-negative 32-bit seed; shared callers use
+`validate_adapter_definition`. Official benchmark sampling uses a positive
+integer row count and a non-negative 32-bit seed; the runner uses
 `validate_sample_request` before entering native code. Runtime structural
 validation confirms that `fit` and `sample` are callable, but Python protocols
 do not inspect their signatures; static annotations and adapter boundary tests
 remain required.
+
+The codec validates prepared train data before returning it to the runner.
+Adapters trust that boundary and do not repeat generic schema, missing-value,
+support, or row validation. After sampling, the runner validates the requested
+row count and the returned prepared table before codec decoding.
 
 An adapter may:
 
@@ -467,7 +472,9 @@ splits = make_splits(run_dataset, config.split)
 codec = compile_codec(run_dataset, adapter.input_spec)
 train_prepared = codec.fit_transform(train_raw)
 adapter.fit(train_prepared, run_context)
+validate_sample_request(n, sample_seed)
 sample_prepared = adapter.sample(n, sample_seed)
+validate_prepared_table(sample_prepared, expected_rows=n)
 sample_raw = codec.inverse_transform(sample_prepared)
 
 report = evaluate(

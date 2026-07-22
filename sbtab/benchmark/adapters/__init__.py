@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from sbtab.benchmark.adapters.msbm import (
-    MSBMAdapter,
-    MSBMCompatibilityError,
-)
+from sbtab.benchmark.adapters.msbm import MSBMAdapter
 
 __all__ = [
     "MSBMAdapter",
-    "MSBMCompatibilityError",
 ]

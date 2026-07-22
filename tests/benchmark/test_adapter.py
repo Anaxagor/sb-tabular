@@ -87,11 +87,13 @@ class AdapterContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractViolation, "range"):
             RunContext("pilot", 0, 2**32, "cpu", Path("artifacts"))
 
-    def test_sample_request_accepts_zero_and_rejects_implicit_values(self) -> None:
-        validate_sample_request(n=0, seed=0)
+    def test_sample_request_requires_positive_explicit_values(self) -> None:
+        validate_sample_request(n=1, seed=0)
         with self.assertRaisesRegex(ContractViolation, "n must be an integer"):
             validate_sample_request(n=True, seed=0)
-        with self.assertRaisesRegex(ContractViolation, "non-negative"):
+        with self.assertRaisesRegex(ContractViolation, "positive"):
+            validate_sample_request(n=0, seed=0)
+        with self.assertRaisesRegex(ContractViolation, "positive"):
             validate_sample_request(n=-1, seed=0)
         with self.assertRaisesRegex(ContractViolation, "seed must be an integer"):
             validate_sample_request(n=1, seed=True)

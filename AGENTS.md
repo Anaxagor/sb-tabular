@@ -100,10 +100,12 @@ evidence unless a separate, explicitly scoped migration task says otherwise.
   transforms, category maps, and train-observed finite-state supports. Physical
   pandas storage dtype is not restored by rounding generated values; decoded
   output follows the semantic dtype rules in `docs/benchmark-contract.md`.
+- The codec validates its prepared train output. Adapters consume that trusted
+  boundary without repeating generic schema, support, missing, or row checks.
 - Finite-state metadata is keyed by column name. Use real cardinality and order
   meaning for each column; never replace them with a shared maximum.
-- Invalid generated states fail validation. Do not clip, round, pad, or replace
-  them to make a run succeed.
+- Invalid generated states fail at the shared runner/codec decoding boundary.
+  Do not clip, round, pad, or replace them to make a run succeed.
 - A fresh codec and adapter instance are created for every fold.
 - MSBM is the approved pilot adapter with `STANDARD` continuous values and
   `FINITE_STATE_CODES` for discrete and categorical values.
@@ -113,6 +115,8 @@ evidence unless a separate, explicitly scoped migration task says otherwise.
 An adapter may select/reorder columns, split/concatenate native blocks, convert
 to backend tensors and dtypes, construct native loaders/reference processes,
 call existing `fit`/`sample`, and reassemble native output in canonical order.
+It does not duplicate validation already owned by the codec, runner, or native
+model.
 
 An adapter must not split the dataset, fit generic preprocessing, decode raw
 values, calculate metrics, infer dataset semantics by name, or change model
@@ -135,8 +139,8 @@ with separate characterization evidence.
    scripts to make the new benchmark work. Implement the required shared
    behavior in `sbtab/benchmark/`; migrate or remove legacy entrypoints only in
    separately reviewed tasks.
-8. Raise a precise compatibility error for unsupported semantics instead of
-   silently coercing or dropping data.
+8. Let the codec or native model raise a precise error for unsupported
+   semantics instead of duplicating compatibility logic in every adapter.
 9. Keep model-specific training and sampling controls in typed adapter config,
    not unrestricted `**kwargs`.
 10. Preserve unrelated user changes and keep generated results out of source

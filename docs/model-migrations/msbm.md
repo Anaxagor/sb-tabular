@@ -60,11 +60,9 @@ The adapter mapping is fixed:
 Every tensor is placed on `RunContext.device` before the native call. The
 solver moves its model and references but does not move train tensors itself.
 
-Before native conversion, the adapter rejects continuous values that become
-non-finite in `float32`, state codes or cardinalities that cannot be represented
-by `torch.int64`, and train metadata whose declared cardinality is not realized
-by dense observed codes `0..K-1`. These checks prevent silent cast corruption
-and fictitious embedding states; they do not repair the prepared table.
+The codec has already produced validated, dense train-observed state codes.
+The adapter does not revalidate that shared contract. After conversion, native
+`MixedSBMSolver.fit` rejects non-finite continuous tensors.
 
 State columns follow canonical table order. They are not regrouped as
 "categorical then discrete". Data, cardinalities, and ordered flags always use
@@ -80,14 +78,13 @@ Native output is expected to contain:
 The adapter moves both blocks to CPU, labels them with their selected canonical
 column names, and reassembles one DataFrame in
 `PreparedSchema.column_order`. The returned `PreparedTable` carries the exact
-schema object received by `fit`. The adapter checks native block ranks, widths,
-row counts, and dtypes before DataFrame assembly. Shared prepared-table
-validation then rejects missing/non-finite continuous values and out-of-range
-state codes. Neither layer clips, rounds, pads, or replaces output.
+schema object received by `fit`. The shared runner checks requested row count,
+and codec decoding rejects missing/non-finite values or out-of-range state
+codes. The adapter does not duplicate those checks or repair native output.
 
-The native Gaussian reference rejects `n=0`. The shared adapter contract allows
-a zero-row request, so MSBM returns an empty valid prepared table without
-calling the native solver in that case.
+Official benchmark sampling is always positive. The native Gaussian reference
+continues to reject `n=0`; the adapter does not add a separate empty-sample
+path.
 
 ## Target handling
 
@@ -103,32 +100,30 @@ The adapter never separates or conditions on `y`.
 
 ## Supported and rejected prepared schemas
 
-The current native implementation requires both blocks to be non-empty:
+The current native implementation requires both blocks to be non-empty and now
+owns those errors directly:
 
-- an empty state block fails inside `CategoricalReference`;
-- an empty continuous block can produce a `NaN` numeric loss.
+- `CategoricalReference` rejects an empty state block;
+- `MixedSBMSolver` rejects an empty continuous block.
 
-The adapter therefore supports mixed prepared tables only and reports a precise
-compatibility error for pure-continuous or pure-state schemas. This is
-adapter-local capability evidence, not a new field in `InputSpec`.
+The adapter therefore remains a mechanical mapping for mixed prepared tables;
+it does not restate model capabilities as compatibility checks or new
+`InputSpec` fields.
 
-A nominal state with train cardinality one is also rejected under the current
-default reference profile. With `alpha=0.01`, the uniform reference obtains
-`b=10000`; precomputing 100 transition powers overflows at power 78. A shorter
-time grid may avoid that constructor failure, so this is a current-profile
-compatibility rule rather than a universal statement about singleton states.
-The old pipeline silently removed constant columns; the new path must not
-change the dataset without review. Ordered singleton support is not rejected
-by this specific check.
+A nominal state with train cardinality one is rejected directly by
+`CategoricalReference`. With `alpha=0.01`, the uniform reference obtains
+`b=10000`; precomputing 100 transition powers overflows at power 78. The old
+pipeline silently removed constant columns; the new path does not change the
+dataset to make the model run. Ordered singleton support remains allowed.
 
 The updater uses `DataLoader(..., drop_last=True)`. When `N < batch_size`, it
-performs no optimizer steps but still marks the solver fitted. The adapter
-rejects that configuration instead of silently reporting an untrained run, and
-it never changes `batch_size` to make the call succeed.
+performs no optimizer steps but still marks the solver fitted. This is a known
+native-model issue; the adapter neither changes `batch_size` nor adds a second
+configuration validator. Official pilot folds exceed the default batch size.
 
 Online Shoppers satisfies the structural requirements: its approved
-declaration has seven continuous and eleven state columns. Actual fold support
-and row-count checks still run before every native fit.
+declaration has seven continuous and eleven state columns. The codec derives
+actual fold support before every native fit.
 
 ## State order semantics
 
@@ -182,18 +177,9 @@ The repository does not pin a Torch version, so the migration does not claim a
 numeric default it cannot verify. The adapter must not reinterpret either
 behavior.
 
-Before native construction, the adapter validates the instantiated config
-instead of relying on downstream tensor errors:
-
-- `time_dim` is positive and even;
-- `num_steps >= 2` and `batch_size > 0`;
-- embedding, hidden, layer, and continuous dimensions are positive where the
-  mixed solver requires them;
-- `epochs_per_direction` is non-negative;
-- `fb_sequence` is non-empty, contains only `"f"`/`"b"`, and includes at least
-  one backward stage required by `sample`;
-- when epochs are positive, `N >= batch_size` so `drop_last=True` cannot create
-  a zero-step fit.
+The adapter does not validate native hyperparameters. `MixedSBMConfig` and the
+solver own their configuration semantics; duplicating those fields in each
+adapter would create a second source of truth.
 
 ## Algorithmic invariants left unchanged
 
@@ -256,11 +242,11 @@ Static archaeology completed:
 
 Adapter boundary tests use real Torch tensors and the real `MixedSBMConfig`.
 The real `MixedSBMSolver` signature is autospecced so unit tests can inspect the
-boundary without performing model training. They cover canonical block order,
-target preservation, per-column state metadata, device and dtype conversion,
-context seed forwarding, schema identity, output shape/row/dtype/support
-validation, zero-row bypass, lifecycle failures, malformed prepared input, and
-float/state cast overflow.
+boundary without performing model training. They cover the approved
+`InputSpec`, canonical block order, target preservation, per-column state
+metadata, device and dtype conversion, context seed forwarding, schema identity,
+and native output reassembly. Shared codec tests cover invalid generated states.
+Native tests cover the three model-owned input restrictions.
 
 A CPU smoke in `lightning11` exercised the adapter with the real
 `MixedSBMSolver`: construction, one backward training stage, sampling, and
@@ -275,12 +261,12 @@ state blocks had the required `torch.float32` and `torch.int64` dtypes.
 2. Is full `sample(seed)` determinism intended? If yes, native categorical and
    training RNG need a model-owned fix.
 3. Should singleton nominal states become mathematically supported natively,
-   or remain an explicit compatibility rejection?
+   or remain an explicit native rejection?
 4. Is `drop_last=True` intentional when a fold has fewer than `batch_size`
-   rows? The adapter will reject zero-step training rather than change it.
+   rows? The native solver currently permits a zero-step fit.
 5. Is the unused `eps` field intentional in the current config?
 
-## Required native smoke after Torch is available
+## Native smoke profile
 
 Use CPU, one backward stage, small even `time_dim`, `num_steps=2`,
 `batch_size=2`, and two mixed train rows. Verify:

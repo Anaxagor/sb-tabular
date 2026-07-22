@@ -113,6 +113,6 @@ def validate_sample_request(n: int, seed: int) -> None:
 
     if isinstance(n, bool) or not isinstance(n, int):
         raise ContractViolation("sample n must be an integer.")
-    if n < 0:
-        raise ContractViolation("sample n must be non-negative.")
+    if n <= 0:
+        raise ContractViolation("sample n must be positive.")
     _validate_seed(seed, "sample seed")

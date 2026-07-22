@@ -84,9 +84,9 @@ Documentation is part of the implementation, not optional polish.
   details.
 - Test names state the behavior and expected result.
 - Every bug fix first gains a narrow regression test when the runtime permits.
-- Boundary tests cover column order, target preservation, state support,
-  cardinality/order metadata, row count, train-only fitting, and explicit
-  rejection paths relevant to the change.
+- Shared contract and codec tests cover malformed prepared data, state support,
+  row counts, and train-only fitting. Adapter tests focus on column order,
+  target preservation, cardinality/order metadata, and native conversion.
 - Fakes may verify adapter translation, but they cannot be the only evidence
   that a native model can be constructed and sampled when its dependency is
   available.
