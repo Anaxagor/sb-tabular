@@ -1,0 +1,6 @@
+dataset,model,Continuous_Mean_WD_summary,Continuous_Mean_KL_50bins_summary,Continuous_Corr_Pearson_summary,mmd_summary,Discrete_Mean_KL_summary,Discrete_Corr_Spearman_summary,Categorical_Mean_KL_summary,Categorical_NMI_summary,fit_time_summary,tstr_f1_real_summary,tstr_f1_synth_summary,tstr_f1_deviation_%_summary,tstr_f1_diff_raw_summary
+Breast cancer,csbm,nan ± nan,nan ± nan,nan ± nan,nan ± nan,1.6470 ± 0.2673,0.0000 ± 0.0000,1.3070 ± 0.0550,0.8721 ± 0.0440,14.9117 ± 0.3136,0.6349 ± 0.0578,0.0000 ± 0.0000,100.0000 ± 0.0000,0.6349 ± 0.0578
+Car Evaluation,csbm,nan ± nan,nan ± nan,nan ± nan,nan ± nan,nan ± nan,nan ± nan,0.1236 ± 0.0013,0.3664 ± 0.0171,457.3491 ± 6.3888,0.9776 ± 0.0278,0.2066 ± 0.0027,78.8526 ± 0.7242,0.7711 ± 0.0285
+Lymphography,csbm,nan ± nan,nan ± nan,nan ± nan,nan ± nan,0.2934 ± 0.1689,1.0158 ± 0.1868,0.1254 ± 0.0754,1.7859 ± 0.3596,17.4765 ± 0.0608,0.6212 ± 0.2395,0.2637 ± 0.1442,57.7797 ± 11.7379,0.3575 ± 0.1592
+Mushroom,csbm,nan ± nan,nan ± nan,nan ± nan,nan ± nan,nan ± nan,nan ± nan,0.1341 ± 0.0024,4.4658 ± 0.0373,94.6150 ± 1.0686,1.0000 ± 0.0000,0.4434 ± 0.0533,55.6569 ± 5.3338,0.5566 ± 0.0533
+Student Perf,csbm,0.7403 ± 0.0603,25.4280 ± 2.0012,0.0000 ± 0.0000,0.2873 ± 0.0401,0.3541 ± 0.0597,3.5735 ± 0.1910,0.0292 ± 0.0034,0.3841 ± 0.0724,56.0408 ± 6.3629,0.3376 ± 0.0303,0.0463 ± 0.0110,86.3702 ± 2.4796,0.2913 ± 0.0231
