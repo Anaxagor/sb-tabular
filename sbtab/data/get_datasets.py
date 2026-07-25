@@ -1,5 +1,7 @@
+import os
 import pickle
 import pandas as pd
+import kagglehub
 
 from sklearn.datasets import fetch_openml
 from ucimlrepo import fetch_ucirepo
@@ -25,11 +27,46 @@ def save_pickle(data_dict, file_path):
         pickle.dump(data_dict, f)
     print(f"File {file_path} is successfully saved.")
 
+def load_kaggle_csv(handle):
+    """Downloads a Kaggle dataset and returns the main CSV as a DataFrame."""
+    path = kagglehub.dataset_download(handle)
+    csv_files = [f for f in os.listdir(path) if f.endswith('.csv')]
+    if not csv_files:
+        raise FileNotFoundError(f"No CSV found in {path}")
+
+    csv_files.sort(key=lambda x: os.path.getsize(os.path.join(path, x)), reverse=True)
+    csv_path = os.path.join(path, csv_files[0])
+
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        first_line = f.readline()
+        sep = ';' if ';' in first_line and ',' not in first_line else ','
+
+    return pd.read_csv(csv_path, sep=sep)
+
 def main():
+    TARGET_COL_BY_DATASET = {
+        "german_credit": 'duration',
+        "online_news_popularity": " shares",
+        "covertype": "Horizontal_Distance_To_Hydrology",
+        "online_shoppers": "ProductRelated",
+        "bank_marketing": "pdays",
+        "bank_loan": "Income",
+        "diabetes": "target",
+        "california_housing": "MedHouseVal",
+        "king_county_housing": "price"
+
+    }
+
+    cont_datasets = {}
     cat_disc_datasets = {}
     mixed_datasets = {}
 
-    print("\nDownloading Only Categorical Datasets...")
+    print("Adding attributes to continuous data pkl...")
+    dfs_cont_dict = pd.read_pickle("datasets/datasets_continuous_only.pkl")
+    for ds_name, df in dfs_cont_dict.items():
+        cont_datasets[ds_name] = prepare_smart_df(df, TARGET_COL_BY_DATASET[ds_name], "regression")
+
+    print("Downloading Categorical Datasets")
 
     # 1. Student Perf (UCI 320)
     print("Fetching Student Performance...")
@@ -60,13 +97,13 @@ def main():
     df_mush = pd.concat([mushroom.data.features, mushroom.data.targets], axis=1)
     cat_disc_datasets["Mushroom"] = prepare_smart_df(df_mush, "poisonous", "classification")
 
-    print("\nDownloading mixed datasets...")
+    print("\nDownloading Mixed Datasets")
 
     # 1. Adult (UCI 2)
     print("Fetching Adult...")
     adult = fetch_ucirepo(id=2)
     df_adult = pd.concat([adult.data.features, adult.data.targets], axis=1)
-    mixed_datasets["Adult"] = prepare_smart_df(df_adult, "income", "regression")
+    mixed_datasets["Adult"] = prepare_smart_df(df_adult, "income", "classification")
 
     # 2. Credit Approval (UCI 27)
     print("Fetching Credit Approval...")
@@ -91,7 +128,62 @@ def main():
     df_fires = pd.concat([fires.data.features, fires.data.targets], axis=1)
     mixed_datasets["Forest Fires"] = prepare_smart_df(df_fires, "area", "regression")
 
+    # 6. Insurance (Kaggle)
+    print("Fetching Insurance...")
+    df_insurance = load_kaggle_csv("mirichoi0218/insurance")
+    mixed_datasets["Insurance"] = prepare_smart_df(df_insurance, "charges", "regression")
+
+    # 7. House Sales in King County (Kaggle)
+    print("Fetching House Sales in King County...")
+    df_houses = load_kaggle_csv("harlfoxem/housesalesprediction")
+    df_houses = df_houses.drop(columns=['id'])
+    mixed_datasets["House Sales"] = prepare_smart_df(df_houses, "price", "regression")
+
+    # 8. Cardiovascular Disease (Kaggle)
+    print("Fetching Cardiovascular Disease...")
+    df_cardio = load_kaggle_csv("sulianova/cardiovascular-disease-dataset")
+    df_cardio = df_cardio.drop(columns=['id'])
+    mixed_datasets["Cardiovascular Disease"] = prepare_smart_df(df_cardio, "cardio", "classification")
+
+    # 9. Churn Modelling (Kaggle)
+    print("Fetching Churn Modelling...")
+    df_churn = load_kaggle_csv("shrutimechlearn/churn-modelling")
+    df_churn = df_churn.drop(columns=['RowNumber', 'CustomerId', 'Surname'])
+    mixed_datasets["Churn Modelling"] = prepare_smart_df(df_churn, "Exited", "classification")
+
+    # 10. Auto MPG (Regression)
+    print("Fetching Auto MPG...")
+    auto_mpg = fetch_ucirepo(id=9)
+    df_auto_mpg = pd.concat([auto_mpg.data.features, auto_mpg.data.targets], axis=1)
+    mixed_datasets["Auto MPG"] = prepare_smart_df(df_auto_mpg, "mpg", "regression")
+
+    # 11. Diamonds (Kaggle)
+    print("Fetching Diamonds...")
+    df_diamonds = load_kaggle_csv("shivam2503/diamonds")
+    df_diamonds = df_diamonds.drop(columns=['Unnamed: 0'], errors='ignore')
+    mixed_datasets["Diamonds"] = prepare_smart_df(df_diamonds, "price", "regression")
+
+    # 12. Real Estate (Kaggle)
+    print("Fetching Real Estate Valuation...")
+    df_real_estate = load_kaggle_csv("quantbruce/real-estate-price-prediction")
+    df_real_estate = df_real_estate.drop(columns=['No'], errors='ignore')
+    mixed_datasets["Real Estate"] = prepare_smart_df(df_real_estate, "Y house price of unit area", "regression")
+
+    # 13. Stroke prediction (Kaggle)
+    print("Fetching Stroke Prediction...")
+    df_stroke = load_kaggle_csv("fedesoriano/stroke-prediction-dataset")
+    df_stroke = df_stroke.drop(columns=['id'])
+    mixed_datasets["Stroke Prediction"] = prepare_smart_df(df_stroke, "stroke", "classification")
+
+    # 14. Palmer Penguins (Kaggle)
+    print("Fetching Palmer Penguins...")
+    df_penguins = load_kaggle_csv("parulpandey/palmer-archipelago-antarctica-penguin-data")
+    df_penguins = df_penguins.drop(
+        columns=['studyName', 'Sample Number', 'Individual ID', 'Region', 'Stage', 'Comments'], errors='ignore')
+    mixed_datasets["Palmer Penguins"] = prepare_smart_df(df_penguins, "Species", "classification")
+
     print("\nSaving files...")
+    save_pickle(cont_datasets, "datasets/datasets_continuous.pkl")
     save_pickle(cat_disc_datasets, 'datasets/datasets_categorical.pkl')
     save_pickle(mixed_datasets, 'datasets/datasets_mixed.pkl')
 
