@@ -8,12 +8,14 @@ import pandas as pd
 from .base import BaseTransform, TransformPipelineState
 from .categorical import CategoricalRepresentationTransform
 from .continuous import ContinuousStandardScaler
+from .drop_cols import DropDataCols
 from .missing import DropMissingRows, TypeAwareImputer
 from sbtab.data.schema import TabularSchema
 
 
 _TRANSFORM_REGISTRY: Dict[str, Type[object]] = {
     "drop_missing_rows": DropMissingRows,
+    "drop_data_cols": DropDataCols,
     "type_aware_imputer": TypeAwareImputer,
     "continuous_standard_scaler": ContinuousStandardScaler,
     "categorical_representation_transform": CategoricalRepresentationTransform,
@@ -78,6 +80,10 @@ class TransformPipeline:
             transform_cls = _TRANSFORM_REGISTRY[transform_state.name]
             transforms.append(transform_cls.from_state(transform_state))  # type: ignore[attr-defined]
         return cls(transforms=transforms)
+
+    @classmethod
+    def default_drop_data_cols(cls) -> "TransformPipeline":
+        return cls(transforms=[DropDataCols()])
 
     @classmethod
     def default_dropna_and_scale(cls) -> "TransformPipeline":

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+import numpy as np
 import pandas as pd
 
 from .schema import TabularSchema
@@ -70,8 +71,8 @@ class TabularDataModule:
         self._kfold_splits: Optional[list[KFoldSplit]] = None
         self._holdout_split: Optional[HoldoutSplit] = None
 
-    def prepare_kfold(self, cfg: SplitConfigKFold) -> None:
-        self._kfold_splits = make_kfold_splits(self.n_samples, cfg)
+    def prepare_kfold(self, cfg: SplitConfigKFold, labels: Optional[np.ndarray] = None) -> None:
+        self._kfold_splits = make_kfold_splits(self.n_samples, cfg, labels=labels)
 
     def get_fold(self, fold_id: int) -> FoldData:
         if self._kfold_splits is None:
