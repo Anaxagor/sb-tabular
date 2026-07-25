@@ -1,4 +1,3 @@
-.idea
 .DS_Store
 examples/sbtab
 sbtab/__pycache__/__init__.cpython-311.pyc
@@ -14,3 +13,15 @@ sbtab/experiments/calculating_metrics/sbtab/
 sbtab/experiments/tuning_script/sbtab/
 sbtab/experiments/tuning_script/sbtab
 sbtab/experiments/calculating_metrics/sbtab
+ipf_dsb_optuna_results/bank_loan_best.json
+ipf_dsb_optuna_results/
+lightsb_optuna_results/bank_loan_best.json
+lightsb_optuna_results/
+mixedsbm_uci_optuna_results/uci_1_abalone_best.json
+mixedsbm_uci_optuna_results/
+ipf_dsb_optuna.db
+*.db
+tabddpm_uci_optuna_results/uci_1_abalone_best.json
+tabddpm_uci_optuna_results/
+adult_mixedsbm_processed.csv
+*.csv
