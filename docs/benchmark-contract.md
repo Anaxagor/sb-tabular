@@ -10,7 +10,8 @@ under `sbtab.benchmark`; MSBM-owned tuning and the common tuning objective are
 also implemented. The create-only cross-validation generation artifact is
 implemented, as is the create-only MSBM tuning artifact. Final evaluation
 integration, other model-owned tuners, and further model adapters remain
-migration work.
+migration work. A human-owned Online Shoppers pilot entrypoint now connects
+tuning, frozen config, final five-fold generation, and both artifact writers.
 
 ## Goal
 

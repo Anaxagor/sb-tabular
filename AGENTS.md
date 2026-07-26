@@ -41,8 +41,9 @@ unresolved in the contract.
   and fixed-configuration holdout/cross-validation runners are implemented.
   The common tuning objective and model-owned MSBM Optuna study are implemented.
   Create-only cross-validation generation and MSBM tuning artifacts are
-  implemented. Final evaluation integration, other tuners, and further
-  adapters are migrating incrementally.
+  implemented. The Online Shoppers pilot entrypoint connects tuning to final
+  generation. Final evaluation integration, other tuners, and further adapters
+  are migrating incrementally.
 
 ## Target architecture
 

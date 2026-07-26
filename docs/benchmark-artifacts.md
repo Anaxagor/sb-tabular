@@ -68,3 +68,11 @@ configured.
 
 Final metric artifacts will use a separate manifest and version number. They
 must reference the generation artifact rather than silently rewriting it.
+
+## Online Shoppers pilot root
+
+The MSBM Online Shoppers entrypoint creates `pilot-manifest.json` only after
+the tuning and five-fold generation manifests both exist. Its status is
+`pre_evaluation`; the file links the two child artifact roots and records the
+canonical UCI ID, target, best trial, and tuning score. A missing root manifest
+means the pilot stopped before completing its generation handoff.

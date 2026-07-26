@@ -196,6 +196,21 @@ per-column score evidence are stored as Optuna trial attributes.
 reference holdout controls, missing report, seeds, and timings into a
 create-only local handoff directory without exposing the Optuna storage URI.
 
+The human-owned Online Shoppers entrypoint is:
+
+```bash
+python -m sbtab.benchmark.pilots.msbm_online_shoppers \
+  --output-dir artifacts/msbm-online-shoppers \
+  --n-trials 50 \
+  --device cpu
+```
+
+Omitting `--csv` fetches canonical UCI dataset 468 through `ucimlrepo`; passing
+`--csv path/to/raw.csv` performs no network acquisition. The output root must
+not already exist. The entrypoint writes tuning and five-fold generation
+artifacts and a root `pilot-manifest.json` with status `pre_evaluation`. It
+does not claim final benchmark metrics before the separate evaluation stage.
+
 The current provisional search space is:
 
 | Native field | Optuna domain |
