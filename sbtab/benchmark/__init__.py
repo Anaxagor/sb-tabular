@@ -45,6 +45,12 @@ from sbtab.benchmark.splitting import (
     make_holdout,
     make_splits,
 )
+from sbtab.benchmark.runner import (
+    BenchmarkConfig,
+    CrossValidationResult,
+    FoldResult,
+    run_cross_validation,
+)
 from sbtab.benchmark.validation import (
     ContractViolation,
     validate_input_spec,
@@ -54,13 +60,16 @@ from sbtab.benchmark.validation import (
 
 __all__ = [
     "CategoricalView",
+    "BenchmarkConfig",
     "ColumnKind",
     "ColumnSpec",
     "ContinuousView",
     "ContractViolation",
+    "CrossValidationResult",
     "ClassCount",
     "DiscreteView",
     "FoldSplit",
+    "FoldResult",
     "HoldoutConfig",
     "HoldoutSplit",
     "InputSpec",
@@ -84,6 +93,7 @@ __all__ = [
     "compile_codec",
     "make_holdout",
     "make_splits",
+    "run_cross_validation",
     "validate_adapter_definition",
     "validate_input_spec",
     "validate_prepared_table",

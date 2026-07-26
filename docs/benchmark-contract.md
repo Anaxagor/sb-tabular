@@ -4,9 +4,10 @@ Status: draft for maintainer and model-owner review.
 
 Evidence base: repository `main` at `52e86e0`. This document defines the target
 boundary and records its incremental implementation. The greenfield contracts,
-dataset declaration, missing policy, splitting, codec, and adapter protocol now
-exist under `sbtab.benchmark`; model adapters, runner, artifacts, and evaluation
-integration remain migration work.
+dataset declaration, missing policy, splitting, codec, adapter protocol, MSBM
+adapter, and fixed-configuration cross-validation runner now exist under
+`sbtab.benchmark`; tuning, artifacts, evaluation integration, and further model
+adapters remain migration work.
 
 ## Goal
 

@@ -253,6 +253,13 @@ A CPU smoke in `lightning11` exercised the adapter with the real
 canonical table assembly completed successfully. The generated continuous and
 state blocks had the required `torch.float32` and `torch.int64` dtypes.
 
+`tests/benchmark/test_runner_msbm.py` additionally exercises the complete
+pre-evaluation path for two folds: shared split, fresh codec and adapter, real
+native solver construction and sampling, shared output validation, and raw
+decoding. It replaces only the native config constructor with a typed
+lightweight config (one backward stage, two integration steps, one training
+epoch); it does not replace the solver or its sampling implementation.
+
 ## Questions for the model owner
 
 1. Should the benchmark wrap the current `09d2592`-equivalent solver, or should
