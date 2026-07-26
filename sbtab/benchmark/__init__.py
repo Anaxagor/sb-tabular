@@ -54,6 +54,10 @@ from sbtab.benchmark.runner import (
     run_cross_validation,
     run_holdout_trial,
 )
+from sbtab.benchmark.artifacts import (
+    CROSS_VALIDATION_ARTIFACT_VERSION,
+    write_cross_validation_artifacts,
+)
 from sbtab.benchmark.validation import (
     ContractViolation,
     validate_input_spec,
@@ -64,6 +68,7 @@ from sbtab.benchmark.validation import (
 __all__ = [
     "CategoricalView",
     "BenchmarkConfig",
+    "CROSS_VALIDATION_ARTIFACT_VERSION",
     "ColumnKind",
     "ColumnSpec",
     "ContinuousView",
@@ -105,4 +110,5 @@ __all__ = [
     "validate_prepared_table",
     "validate_sample_request",
     "validate_tabular_dataset",
+    "write_cross_validation_artifacts",
 ]

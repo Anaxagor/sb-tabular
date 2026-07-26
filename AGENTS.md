@@ -40,7 +40,8 @@ unresolved in the contract.
   declarations, missing policy, splitting, fold-local codec, the MSBM adapter,
   and fixed-configuration holdout/cross-validation runners are implemented.
   The common tuning objective and model-owned MSBM Optuna study are implemented.
-  Artifacts, final evaluation integration, other tuners, and further adapters
+  Create-only cross-validation generation artifacts are implemented. Tuning
+  artifacts, final evaluation integration, other tuners, and further adapters
   are migrating incrementally.
 
 ## Target architecture

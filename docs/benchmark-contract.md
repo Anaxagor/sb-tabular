@@ -7,7 +7,8 @@ boundary and records its incremental implementation. The greenfield contracts,
 dataset declaration, missing policy, splitting, codec, adapter protocol, MSBM
 adapter, and fixed-configuration holdout/cross-validation runners now exist
 under `sbtab.benchmark`; MSBM-owned tuning and the common tuning objective are
-also implemented. Artifacts, final evaluation integration, other model-owned
+also implemented. The create-only cross-validation generation artifact is
+implemented. Tuning artifacts, final evaluation integration, other model-owned
 tuners, and further model adapters remain migration work.
 
 ## Goal
