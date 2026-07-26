@@ -78,7 +78,7 @@ class MSBMOnlineShoppersPilotTests(unittest.TestCase):
             pilot_manifest = json.loads(
                 result.manifest_path.read_text(encoding="utf-8")
             )
-            self.assertEqual(pilot_manifest["status"], "pre_evaluation")
+            self.assertEqual(pilot_manifest["status"], "complete")
             self.assertEqual(pilot_manifest["uci_id"], 468)
             self.assertEqual(len(result.tuning.study.trials), 1)
             self.assertEqual(len(result.final.folds), 5)
@@ -94,6 +94,14 @@ class MSBMOnlineShoppersPilotTests(unittest.TestCase):
             )
             self.assertTrue(
                 (output_dir / pilot_manifest["generation_manifest"]).is_file()
+            )
+            self.assertTrue(
+                (output_dir / pilot_manifest["evaluation_manifest"]).is_file()
+            )
+            self.assertEqual(len(result.evaluation.folds), 5)
+            self.assertEqual(
+                result.evaluation.summary.utility.metric.value,
+                "macro_f1",
             )
             for fold in result.final.folds:
                 self.assertEqual(len(fold.train_raw), 16)

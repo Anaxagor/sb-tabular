@@ -101,6 +101,7 @@ class CrossValidationArtifactTests(unittest.TestCase):
             self.assertEqual(manifest["config"]["split"]["type"], "KFoldConfig")
             self.assertEqual(manifest["config"]["training_seed"], 42)
             self.assertEqual(manifest["missing_report"]["rows_after"], 8)
+            self.assertEqual(len(manifest["real_sha256"]), 64)
 
             stored_real = pd.read_csv(output_dir / manifest["real_path"])
             self.assertEqual(tuple(stored_real.columns), tuple(result.dataset.frame))
@@ -123,6 +124,7 @@ class CrossValidationArtifactTests(unittest.TestCase):
                     fold_entry["test_positions"],
                     list(fold.split.test_positions),
                 )
+                self.assertEqual(len(fold_entry["synthetic_sha256"]), 64)
 
     def test_writer_refuses_to_overwrite_existing_directory(self) -> None:
         result = _result()

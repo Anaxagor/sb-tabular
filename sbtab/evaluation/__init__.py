@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sbtab.evaluation.artifacts import write_evaluation_artifacts
 from sbtab.evaluation.final import (
     CategoricalQualitySummary,
     ContinuousQualitySummary,
@@ -58,4 +59,5 @@ __all__ = [
     "evaluate_quality",
     "evaluate_tuning_score",
     "evaluate_utility",
+    "write_evaluation_artifacts",
 ]

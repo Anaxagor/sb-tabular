@@ -11,6 +11,7 @@ directory for every run; benchmark code never overwrites prior evidence.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import fields, is_dataclass
@@ -26,6 +27,10 @@ from sbtab.benchmark.validation import ContractViolation
 
 
 CROSS_VALIDATION_ARTIFACT_VERSION = 1
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _json_value(value: object) -> object:
@@ -160,6 +165,7 @@ def write_cross_validation_artifacts(
                 "fit_seconds": fold.fit_seconds,
                 "sample_seconds": fold.sample_seconds,
                 "synthetic_path": str(synthetic_path.relative_to(output_dir)),
+                "synthetic_sha256": _sha256_file(synthetic_path),
             }
         )
 
@@ -171,6 +177,7 @@ def write_cross_validation_artifacts(
         "config": _config_manifest(result),
         "missing_report": _json_value(result.missing_report),
         "real_path": str(real_path.relative_to(output_dir)),
+        "real_sha256": _sha256_file(real_path),
         "folds": fold_entries,
     }
     manifest_path = output_dir / "manifest.json"

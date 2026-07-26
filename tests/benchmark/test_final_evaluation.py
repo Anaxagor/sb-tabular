@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 import pandas as pd
@@ -13,6 +15,7 @@ from sbtab.benchmark import (
     ColumnKind,
     ColumnSpec,
     ContinuousView,
+    ContractViolation,
     DiscreteView,
     InputSpec,
     KFoldConfig,
@@ -23,10 +26,12 @@ from sbtab.benchmark import (
     TabularDataset,
     TaskType,
     run_cross_validation,
+    write_cross_validation_artifacts,
 )
 from sbtab.evaluation import (
     UtilityMetric,
     evaluate_cross_validation,
+    write_evaluation_artifacts,
 )
 
 
@@ -150,6 +155,50 @@ class FinalEvaluationTests(unittest.TestCase):
         self.assertIsNone(result.summary.discrete)
         self.assertIsNone(result.summary.categorical)
         self.assertIsNone(result.summary.utility)
+
+    def test_artifact_links_exact_generation_and_refuses_overwrite(self) -> None:
+        generation = _generation()
+        evaluation = evaluate_cross_validation(generation)
+        with TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            generation_manifest = write_cross_validation_artifacts(
+                generation,
+                root / "generation",
+            )
+
+            evaluation_manifest = write_evaluation_artifacts(
+                evaluation,
+                root / "evaluation",
+                generation_manifest=generation_manifest,
+            )
+
+            manifest = json.loads(
+                evaluation_manifest.read_text(encoding="utf-8")
+            )
+            metrics = json.loads(
+                (
+                    evaluation_manifest.parent / manifest["metrics_path"]
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                manifest["artifact_type"],
+                "cross_validation_evaluation",
+            )
+            self.assertEqual(manifest["adapter_name"], "evaluation-echo")
+            self.assertEqual(
+                manifest["generation_manifest"],
+                "../generation/manifest.json",
+            )
+            self.assertEqual(len(manifest["generation_manifest_sha256"]), 64)
+            self.assertEqual(len(metrics["folds"]), 2)
+            self.assertIn("summary", metrics)
+
+            with self.assertRaisesRegex(ContractViolation, "already exists"):
+                write_evaluation_artifacts(
+                    evaluation,
+                    root / "evaluation",
+                    generation_manifest=generation_manifest,
+                )
 
 
 if __name__ == "__main__":

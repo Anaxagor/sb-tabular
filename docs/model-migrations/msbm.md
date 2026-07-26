@@ -208,8 +208,9 @@ python -m sbtab.benchmark.pilots.msbm_online_shoppers \
 Omitting `--csv` fetches canonical UCI dataset 468 through `ucimlrepo`; passing
 `--csv path/to/raw.csv` performs no network acquisition. The output root must
 not already exist. The entrypoint writes tuning and five-fold generation
-artifacts and a root `pilot-manifest.json` with status `pre_evaluation`. It
-does not claim final benchmark metrics before the separate evaluation stage.
+artifacts, evaluates decoded folds with the shared statistical/TSTR protocol,
+and writes a root `pilot-manifest.json` with status `complete` only after all
+three child manifests succeed.
 
 The current provisional search space is:
 

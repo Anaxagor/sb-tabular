@@ -36,16 +36,16 @@ unresolved in the contract.
 - `sbtab/baselines/`: baseline generators and current wrappers.
 - `sbtab/experiments/`: legacy tuning and evaluation entrypoints. Treat these
   as behavioral evidence, not automatically correct specifications.
-- `sbtab/evaluation/`: model-independent raw-space evaluation. The common
-  tuning objective is implemented; final quality and utility metrics remain.
+- `sbtab/evaluation/`: model-independent raw-space tuning, final quality,
+  TSTR, cross-fold aggregation, and linked evaluation artifacts.
 - `sbtab/benchmark/`: greenfield benchmark core. Contracts, dataset
   declarations, missing policy, splitting, fold-local codec, the MSBM adapter,
   and fixed-configuration holdout/cross-validation runners are implemented.
   The common tuning objective and model-owned MSBM Optuna study are implemented.
   Create-only cross-validation generation and MSBM tuning artifacts are
-  implemented. The Online Shoppers pilot entrypoint connects tuning to final
-  generation. Final evaluation integration, other tuners, and further adapters
-  are migrating incrementally.
+  implemented. The Online Shoppers pilot entrypoint connects tuning, final
+  generation, evaluation, and linked artifacts. Other tuners and further
+  adapters are migrating incrementally.
 
 ## Target architecture
 

@@ -2,9 +2,8 @@
 
 The pilot performs the approved model-owned tuning holdout, freezes the best
 native ``MixedSBMConfig``, runs final five-fold generation, and writes
-create-only tuning and generation artifacts. Final quality/TSTR evaluation is
-not hidden in this entrypoint and will consume the generation artifact through
-its own reviewed stage.
+create-only tuning, generation, and final-evaluation artifacts. Quality/TSTR
+remains a model-independent stage over decoded fold results.
 """
 
 from __future__ import annotations
@@ -45,6 +44,11 @@ from sbtab.benchmark.splitting import (
     StratifiedKFoldConfig,
 )
 from sbtab.benchmark.validation import ContractViolation
+from sbtab.evaluation import (
+    CrossValidationEvaluation,
+    evaluate_cross_validation,
+    write_evaluation_artifacts,
+)
 from sbtab.solvers.msbm import MixedSBMConfig
 
 
@@ -94,13 +98,16 @@ class MSBMOnlineShoppersPilotResult:
         Model-owned Optuna study and selected native config.
     final:
         Five-fold raw/synthetic generation result using the selected config.
+    evaluation:
+        Model-independent statistical quality and TSTR results for all folds.
     manifest_path:
-        Root manifest written last after both child artifact sets succeed.
+        Root manifest written last after all three child artifact sets succeed.
     """
 
     dataset: TabularDataset
     tuning: MSBMTuningResult
     final: CrossValidationResult
+    evaluation: CrossValidationEvaluation
     manifest_path: Path
 
 
@@ -213,11 +220,17 @@ def run_msbm_online_shoppers_pilot(
         final,
         config.output_dir / "generation",
     )
+    evaluation = evaluate_cross_validation(final)
+    evaluation_manifest = write_evaluation_artifacts(
+        evaluation,
+        config.output_dir / "evaluation",
+        generation_manifest=generation_manifest,
+    )
 
     manifest = {
         "artifact_type": "msbm_online_shoppers_pilot",
         "artifact_version": MSBM_ONLINE_SHOPPERS_PILOT_VERSION,
-        "status": "pre_evaluation",
+        "status": "complete",
         "dataset": dataset.name,
         "uci_id": ONLINE_SHOPPERS_UCI_ID,
         "target": ONLINE_SHOPPERS_TARGET,
@@ -229,6 +242,9 @@ def run_msbm_online_shoppers_pilot(
         "generation_manifest": str(
             generation_manifest.relative_to(config.output_dir)
         ),
+        "evaluation_manifest": str(
+            evaluation_manifest.relative_to(config.output_dir)
+        ),
     }
     manifest_path = config.output_dir / "pilot-manifest.json"
     manifest_path.write_text(
@@ -239,6 +255,7 @@ def run_msbm_online_shoppers_pilot(
         dataset=dataset,
         tuning=tuning,
         final=final,
+        evaluation=evaluation,
         manifest_path=manifest_path,
     )
 

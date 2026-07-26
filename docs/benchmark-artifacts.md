@@ -1,7 +1,7 @@
 # Benchmark artifact format
 
-Status: implemented for pre-evaluation cross-validation generation runs and
-MSBM tuning studies.
+Status: implemented for cross-validation generation, MSBM tuning, and final
+evaluation runs.
 
 `write_cross_validation_artifacts(result, output_dir)` creates a new local
 directory. It refuses to overwrite an existing path. The manifest is written
@@ -31,7 +31,8 @@ contains only modeled columns in canonical order.
 - train/test positional indices for every fold;
 - real and synthetic row counts;
 - native adapter fit/sample timings;
-- relative paths to all stored tables.
+- relative paths to all stored tables;
+- SHA-256 digests for the stored real table and every synthetic table.
 
 Real train and test tables are not duplicated per fold. A reviewer reconstructs
 them exactly with positional indexing:
@@ -66,13 +67,17 @@ The Optuna storage URI is deliberately not written because it may contain
 credentials. The manifest records only whether persistent storage was
 configured.
 
-Final metric artifacts will use a separate manifest and version number. They
-must reference the generation artifact rather than silently rewriting it.
+Final metrics use a separate create-only `evaluation/` artifact. Its
+`metrics.json` preserves every fold, per-column value, and population summary.
+Its `manifest.json` records both a relative path and SHA-256 digest for the
+exact generation manifest. That source manifest in turn records every table
+digest, so the linkage reaches the exact CSV bytes. Evaluation does not
+rewrite generated tables.
 
 ## Online Shoppers pilot root
 
 The MSBM Online Shoppers entrypoint creates `pilot-manifest.json` only after
-the tuning and five-fold generation manifests both exist. Its status is
-`pre_evaluation`; the file links the two child artifact roots and records the
-canonical UCI ID, target, best trial, and tuning score. A missing root manifest
-means the pilot stopped before completing its generation handoff.
+the tuning, five-fold generation, and final-evaluation manifests all exist.
+Its status is `complete`; the file links the three child artifact roots and
+records the canonical UCI ID, target, best trial, and tuning score. A missing
+root manifest means the pilot stopped before completing the benchmark.

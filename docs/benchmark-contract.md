@@ -7,11 +7,12 @@ boundary and records its incremental implementation. The greenfield contracts,
 dataset declaration, missing policy, splitting, codec, adapter protocol, MSBM
 adapter, and fixed-configuration holdout/cross-validation runners now exist
 under `sbtab.benchmark`; MSBM-owned tuning and the common tuning objective are
-also implemented. The create-only cross-validation generation artifact is
-implemented, as is the create-only MSBM tuning artifact. Final evaluation
-integration, other model-owned tuners, and further model adapters remain
-migration work. A human-owned Online Shoppers pilot entrypoint now connects
-tuning, frozen config, final five-fold generation, and both artifact writers.
+also implemented. The create-only cross-validation generation and MSBM tuning
+artifacts are implemented. Final statistical/TSTR evaluation, aggregation,
+and linked create-only artifacts are also implemented. Other model-owned
+tuners and further model adapters remain migration work. A human-owned Online
+Shoppers pilot entrypoint connects the complete tuning, frozen-config,
+five-fold generation, evaluation, and artifact lifecycle.
 Final metric formulas are fixed separately in
 [`benchmark-metrics.md`](benchmark-metrics.md).
 
