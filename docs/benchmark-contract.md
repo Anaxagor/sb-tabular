@@ -425,14 +425,20 @@ class MissingPolicy(Enum):
 @dataclass(frozen=True)
 class BenchmarkConfig:
     split: SplitConfig
-    seed: int
     missing_policy: MissingPolicy = MissingPolicy.ERROR
+    run_id: str = "benchmark"
+    training_seed: int = 42
+    sample_seed: int = 10_042
+    device: str = "cpu"
+    artifact_dir: Path = Path("artifacts")
 ```
 
 `MissingPolicy` belongs to `BenchmarkConfig`, not `TabularDataset`,
 `ColumnSpec`, `InputSpec`, or an adapter. The same dataset may be run under a
 different named profile, while every model inside one comparison must receive
-the same policy and resulting rows.
+the same policy and resulting rows. `split` selects the final cross-validation
+protocol. The remaining fields provide fold-local runtime controls; the runner
+derives fold seeds by adding `fold_id` to each base seed.
 
 Per-fold runtime controls are separate from both the dataset and model config:
 
@@ -554,6 +560,10 @@ class counts; they never include the optional identifier.
 
 V1 split strategies are new benchmark-owned objects:
 
+- `HoldoutConfig(validation_fraction=0.2, seed=5)` creates the shuffled
+  train/validation split used to tune a fixed model family;
+- `StratifiedHoldoutConfig(validation_fraction=0.2, seed=5)` creates the same
+  tuning split while preserving classification-target proportions;
 - `KFoldConfig(n_splits, seed)` creates deterministic shuffled positional
   folds without reading target values;
 - `StratifiedKFoldConfig(n_splits, seed)` requires a finite-state
@@ -574,6 +584,35 @@ splitter and do not preprocess train or held-out rows.
 Identifiers follow one global rule: they never enter the model. If a decoded
 output requires an identifier, the runner generates new identifiers after
 sampling. It never resamples training identifiers.
+
+## Reference experimental lifecycle
+
+Tuning and final comparison are separate phases. They must not share fitted
+codec or model state:
+
+1. Apply the experiment's `MissingPolicy` once to the declared dataset.
+2. For model-family tuning, create one shuffled 80/20 train/validation holdout
+   with seed 5. Classification uses the stratified variant.
+3. For every tuning trial, create a fresh codec and adapter, fit the codec only
+   on the holdout train partition, train the generator, and generate exactly
+   `len(validation_raw)` rows. The validation table remains raw and is used
+   only by the tuning evaluator.
+4. Select and freeze one typed adapter configuration. The selection procedure,
+   search space, objective, and resulting configuration belong to tuning
+   artifacts, not `InputSpec`.
+5. For final comparison, create five shuffled folds with seed 42.
+   Classification uses target stratification.
+6. For every final fold, create a fresh codec and adapter, fit only on that
+   fold's train partition, and generate exactly `len(train_raw)` rows with the
+   frozen adapter configuration.
+7. Decode the generated table and give raw train, raw held-out test, and raw
+   synthetic tables to model-independent evaluation.
+
+The first runner increment implements only steps 5--7 for an already fixed
+adapter configuration. It deliberately has no Optuna dependency, metric
+selection, or hidden tuning behavior. The holdout splitter is introduced now
+so the later tuning layer can implement steps 2--4 without changing the split
+contract.
 
 ## Provisional family specifications
 
@@ -658,13 +697,14 @@ The benchmark protocol is one reproducible five-fold comparison:
 - create a new target-stratified five-fold split with shuffle and base seed 42;
 - create a fresh codec and MSBM adapter for every fold;
 - use fold run seed `42 + fold_id`;
-- generate exactly `len(test_raw)` rows with sample seed `10_042 + fold_id`;
+- generate exactly `len(train_raw)` rows with sample seed `10_042 + fold_id`;
 - decode the sample to the raw schema and pass raw train, raw held-out test, and
   raw synthetic tables to evaluation;
 - never transform or pass held-out test to MSBM.
 
-The pilot does not tune MSBM. It records the native defaults currently under
-model-owner review:
+The current vertical-slice runner does not tune MSBM: it accepts one fixed
+typed adapter configuration. Its first smoke run records the native defaults
+currently under model-owner review:
 
 ```python
 MixedSBMConfig(
@@ -693,6 +733,11 @@ them into the existing native configuration. The current native config exposes
 `eps`, but the MSBM implementation does not consume it. The run artifact must
 not claim that `eps` affects training; whether to remove or implement it is a
 separate model-owner decision.
+
+Before an official benchmark result is reported, the fixed MSBM configuration
+must come from the reference 80/20 tuning lifecycle above (or be explicitly
+declared as an untuned baseline). A smoke run with native defaults validates
+integration only; it is not a quality result.
 
 ## Resolved architectural decisions
 
