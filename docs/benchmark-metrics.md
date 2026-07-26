@@ -109,8 +109,11 @@ For each fold:
 Both predictors use the same fold seed. CatBoost model hyperparameters remain
 at library defaults; only reproducibility and side-effect controls are set:
 `random_seed`, disabled verbose output, disabled file writing, and one worker
-thread. Categorical feature names come from categorical `ColumnSpec` entries
-other than the target. Discrete columns remain numeric features.
+thread. The classifier additionally enables `allow_const_label`: a synthetic
+sample containing one target class remains a valid but poor generator output
+and therefore produces a constant downstream prediction instead of aborting
+the benchmark. Categorical feature names come from categorical `ColumnSpec`
+entries other than the target. Discrete columns remain numeric features.
 
 Classification reports macro-F1 with `zero_division=0`. Regression reports
 R². The artifact retains:

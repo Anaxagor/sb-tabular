@@ -17,6 +17,11 @@ from sbtab.evaluation.tuning import (
     TuningScore,
     evaluate_tuning_score,
 )
+from sbtab.evaluation.utility import (
+    UtilityMetric,
+    UtilityScore,
+    evaluate_utility,
+)
 
 __all__ = [
     "CategoricalQuality",
@@ -28,6 +33,9 @@ __all__ = [
     "QualityScore",
     "TuningMetric",
     "TuningScore",
+    "UtilityMetric",
+    "UtilityScore",
     "evaluate_quality",
     "evaluate_tuning_score",
+    "evaluate_utility",
 ]
