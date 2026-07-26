@@ -192,6 +192,9 @@ import Optuna. Every trial constructs a real `MixedSBMConfig`, passes it to a
 fresh `MSBMAdapter`, executes the common reference holdout, and minimizes the
 common raw-space tuning score. The complete native config and per-group,
 per-column score evidence are stored as Optuna trial attributes.
+`write_msbm_tuning_artifacts` writes those trials, the best native config,
+reference holdout controls, missing report, seeds, and timings into a
+create-only local handoff directory without exposing the Optuna storage URI.
 
 The current provisional search space is:
 

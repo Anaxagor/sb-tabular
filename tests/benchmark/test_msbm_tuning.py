@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import math
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import optuna
 import pandas as pd
@@ -13,6 +15,7 @@ from sbtab.benchmark import (
     BenchmarkConfig,
     ColumnKind,
     ColumnSpec,
+    ContractViolation,
     HoldoutRunConfig,
     MissingPolicy,
     StratifiedHoldoutConfig,
@@ -26,6 +29,7 @@ from sbtab.benchmark.adapters.msbm_tuning import (
     MSBMTuningConfig,
     suggest_msbm_config,
     tune_msbm,
+    write_msbm_tuning_artifacts,
 )
 from sbtab.solvers.msbm import MixedSBMConfig
 
@@ -121,6 +125,8 @@ class MSBMTuningTests(unittest.TestCase):
         )
 
         self.assertEqual(len(tuning.study.trials), 2)
+        self.assertIs(tuning.config.run.missing_policy, MissingPolicy.COMPLETE_CASE)
+        self.assertIs(tuning.dataset, dataset)
         self.assertTrue(math.isfinite(tuning.best_score))
         self.assertIn(tuning.best_config.hidden_dim, (4, 8))
         for trial in tuning.study.trials:
@@ -148,6 +154,36 @@ class MSBMTuningTests(unittest.TestCase):
                 tuple(fold.synthetic_raw.columns),
                 dataset.column_order,
             )
+
+        with TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir) / "tuning"
+            manifest_path = write_msbm_tuning_artifacts(
+                tuning,
+                output_dir,
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            best_config = json.loads(
+                (output_dir / "best-config.json").read_text(encoding="utf-8")
+            )
+            trials = json.loads(
+                (output_dir / "trials.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(manifest["artifact_type"], "msbm_tuning")
+            self.assertEqual(manifest["artifact_version"], 1)
+            self.assertEqual(manifest["dataset"]["name"], dataset.name)
+            self.assertEqual(manifest["missing_report"]["rows_before"], 16)
+            self.assertEqual(manifest["missing_report"]["rows_after"], 16)
+            self.assertEqual(manifest["study"]["requested_trials"], 2)
+            self.assertEqual(manifest["study"]["completed_trials"], 2)
+            self.assertFalse(manifest["study"]["storage_configured"])
+            self.assertNotIn("storage", manifest["study"])
+            self.assertEqual(best_config["hidden_dim"], tuning.best_config.hidden_dim)
+            self.assertEqual(len(trials), 2)
+            self.assertIn("column_scores", trials[0]["user_attrs"])
+
+            with self.assertRaisesRegex(ContractViolation, "already exists"):
+                write_msbm_tuning_artifacts(tuning, output_dir)
 
 
 if __name__ == "__main__":

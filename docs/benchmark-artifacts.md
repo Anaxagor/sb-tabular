@@ -1,6 +1,7 @@
 # Benchmark artifact format
 
-Status: implemented for pre-evaluation cross-validation generation runs.
+Status: implemented for pre-evaluation cross-validation generation runs and
+MSBM tuning studies.
 
 `write_cross_validation_artifacts(result, output_dir)` creates a new local
 directory. It refuses to overwrite an existing path. The manifest is written
@@ -44,6 +45,26 @@ This is a review and evaluation handoff format, not a pandas dtype-preserving
 archive. Semantic dtypes come from the manifest's column declarations; CSV
 storage must not be treated as a replacement dataset contract.
 
-Tuning-study artifacts and final metric artifacts will use separate manifests
-and version numbers. They must reference this generation artifact rather than
-silently rewriting it.
+## MSBM tuning study
+
+`write_msbm_tuning_artifacts(result, output_dir)` creates:
+
+```text
+<output_dir>/
+├── manifest.json
+├── best-config.json
+└── trials.json
+```
+
+The version 1 manifest records dataset semantics, reference holdout controls,
+all seeds, study direction and sampler type, best trial and score, and paths to
+the complete best native config and trial evidence. `trials.json` retains every
+trial's state, value, suggested parameters, component scores, column scores,
+and fit/sample timings.
+
+The Optuna storage URI is deliberately not written because it may contain
+credentials. The manifest records only whether persistent storage was
+configured.
+
+Final metric artifacts will use a separate manifest and version number. They
+must reference the generation artifact rather than silently rewriting it.

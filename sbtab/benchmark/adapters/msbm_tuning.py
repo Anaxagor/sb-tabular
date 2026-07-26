@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
+import json
+from pathlib import Path
 
 import optuna
 
@@ -23,9 +25,13 @@ from sbtab.benchmark.runner import (
     HoldoutRunConfig,
     run_holdout_trial,
 )
+from sbtab.benchmark.missing import MissingReport
 from sbtab.benchmark.validation import ContractViolation
 from sbtab.evaluation import evaluate_tuning_score
 from sbtab.solvers.msbm import MixedSBMConfig
+
+
+MSBM_TUNING_ARTIFACT_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -104,6 +110,11 @@ class MSBMTuningResult:
     ----------
     study:
         Native Optuna study containing trial states, parameters, and evidence.
+    config:
+        Study, holdout, seed, device, and persistence controls used by the run.
+    dataset:
+        Raw declared dataset used by every trial. It is retained for artifact
+        schema metadata and treated as read-only.
     best_config:
         Complete ``MixedSBMConfig`` recorded by the best completed trial.
         Final K-fold adapters receive this configuration directly.
@@ -112,6 +123,8 @@ class MSBMTuningResult:
     """
 
     study: optuna.Study
+    config: MSBMTuningConfig
+    dataset: TabularDataset
     best_config: MixedSBMConfig
     best_score: float
 
@@ -185,6 +198,31 @@ def _config_from_payload(payload: object) -> MixedSBMConfig:
         ) from error
 
 
+def _missing_report_payload(report: MissingReport) -> dict[str, object]:
+    def class_counts(counts):
+        if counts is None:
+            return None
+        return [
+            {
+                "label_repr": repr(item.label),
+                "label_type": type(item.label).__name__,
+                "count": item.count,
+            }
+            for item in counts
+        ]
+
+    return {
+        "policy": report.policy.value,
+        "rows_before": report.rows_before,
+        "rows_after": report.rows_after,
+        "dropped_count": report.dropped_count,
+        "dropped_fraction": report.dropped_fraction,
+        "missing_by_column": dict(report.missing_by_column),
+        "class_counts_before": class_counts(report.class_counts_before),
+        "class_counts_after": class_counts(report.class_counts_after),
+    }
+
+
 def tune_msbm(
     dataset: TabularDataset,
     config: MSBMTuningConfig,
@@ -256,6 +294,10 @@ def tune_msbm(
         )
         trial.set_user_attr("fit_seconds", holdout.fit_seconds)
         trial.set_user_attr("sample_seconds", holdout.sample_seconds)
+        trial.set_user_attr(
+            "missing_report",
+            _missing_report_payload(holdout.missing_report),
+        )
         return score.total
 
     study.optimize(
@@ -271,6 +313,134 @@ def tune_msbm(
     )
     return MSBMTuningResult(
         study=study,
+        config=config,
+        dataset=dataset,
         best_config=best_config,
         best_score=float(best_trial.value),
     )
+
+
+def _run_payload(config: HoldoutRunConfig) -> dict[str, object]:
+    return {
+        "split": {
+            "type": type(config.split).__name__,
+            **asdict(config.split),
+        },
+        "missing_policy": config.missing_policy.value,
+        "run_id": config.run_id,
+        "training_seed": config.training_seed,
+        "sample_seed": config.sample_seed,
+        "device": config.device,
+        "artifact_dir": str(config.artifact_dir),
+    }
+
+
+def write_msbm_tuning_artifacts(
+    result: MSBMTuningResult,
+    output_dir: Path,
+) -> Path:
+    """Create a local review directory for one completed MSBM study.
+
+    The directory is create-only. It stores the complete best native config,
+    every Optuna trial's parameters and user evidence, and a manifest written
+    last. The storage URI is never persisted because it may contain
+    credentials.
+    """
+
+    if not isinstance(result, MSBMTuningResult):
+        raise ContractViolation("result must be MSBMTuningResult.")
+    if not isinstance(output_dir, Path):
+        raise ContractViolation("output_dir must be pathlib.Path.")
+    try:
+        output_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as error:
+        raise ContractViolation(
+            f"Artifact directory already exists: {output_dir}."
+        ) from error
+
+    best_config_path = output_dir / "best-config.json"
+    best_config_path.write_text(
+        json.dumps(
+            _config_payload(result.best_config),
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    trial_payloads = [
+        {
+            "number": trial.number,
+            "state": trial.state.name,
+            "value": trial.value,
+            "params": trial.params,
+            "user_attrs": trial.user_attrs,
+        }
+        for trial in result.study.trials
+    ]
+    trials_path = output_dir / "trials.json"
+    trials_path.write_text(
+        json.dumps(
+            trial_payloads,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    tuning_config = result.config
+    manifest = {
+        "artifact_type": "msbm_tuning",
+        "artifact_version": MSBM_TUNING_ARTIFACT_VERSION,
+        "dataset": {
+            "name": result.dataset.name,
+            "target": result.dataset.target,
+            "task": (
+                result.dataset.task.value
+                if result.dataset.task is not None
+                else None
+            ),
+            "columns": [
+                {"name": column.name, "kind": column.kind.value}
+                for column in result.dataset.columns
+            ],
+        },
+        "study": {
+            "name": result.study.study_name,
+            "direction": result.study.direction.name,
+            "sampler": type(result.study.sampler).__name__,
+            "sampler_seed": tuning_config.sampler_seed,
+            "requested_trials": tuning_config.n_trials,
+            "completed_trials": sum(
+                trial.state is optuna.trial.TrialState.COMPLETE
+                for trial in result.study.trials
+            ),
+            "timeout_seconds": tuning_config.timeout_seconds,
+            "storage_configured": tuning_config.storage is not None,
+            "load_if_exists": tuning_config.load_if_exists,
+        },
+        "holdout_run": _run_payload(tuning_config.run),
+        "missing_report": result.study.best_trial.user_attrs.get(
+            "missing_report"
+        ),
+        "best_trial": result.study.best_trial.number,
+        "best_score": result.best_score,
+        "best_config_path": best_config_path.name,
+        "trials_path": trials_path.name,
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            manifest,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return manifest_path
