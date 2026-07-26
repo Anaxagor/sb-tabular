@@ -13,6 +13,8 @@ into shared benchmark code.
   command exists before relying on it.
 - `docs/benchmark-contract.md` is the draft source of truth for the benchmark
   boundary.
+- `docs/benchmark-metrics.md` fixes the mathematical conventions for final
+  quality and TSTR numbers.
 - `docs/agent-model-migration.md` defines the evidence, implementation, testing,
   and review workflow for one model migration.
 - `docs/coding-standards.md` defines mandatory code, documentation, test, and

@@ -12,6 +12,8 @@ implemented, as is the create-only MSBM tuning artifact. Final evaluation
 integration, other model-owned tuners, and further model adapters remain
 migration work. A human-owned Online Shoppers pilot entrypoint now connects
 tuning, frozen config, final five-fold generation, and both artifact writers.
+Final metric formulas are fixed separately in
+[`benchmark-metrics.md`](benchmark-metrics.md).
 
 ## Goal
 
