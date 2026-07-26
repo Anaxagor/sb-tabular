@@ -34,12 +34,13 @@ unresolved in the contract.
 - `sbtab/baselines/`: baseline generators and current wrappers.
 - `sbtab/experiments/`: legacy tuning and evaluation entrypoints. Treat these
   as behavioral evidence, not automatically correct specifications.
-- `sbtab/evaluation/`: future home of model-independent evaluation.
+- `sbtab/evaluation/`: model-independent raw-space evaluation. The common
+  tuning objective is implemented; final quality and utility metrics remain.
 - `sbtab/benchmark/`: greenfield benchmark core. Contracts, dataset
   declarations, missing policy, splitting, fold-local codec, the MSBM adapter,
   and fixed-configuration holdout/cross-validation runners are implemented.
-  Model-owned tuning, artifacts, evaluation integration, and further adapters
-  are migrating incrementally.
+  Model-owned tuning, artifacts, final evaluation integration, and further
+  adapters are migrating incrementally.
 
 ## Target architecture
 

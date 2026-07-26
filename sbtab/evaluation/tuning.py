@@ -1,0 +1,203 @@
+"""Model-independent tuning objective for raw tabular generator samples.
+
+The objective follows the mixed-data experiment protocol after shared codec
+decoding. Continuous columns use one-dimensional Wasserstein distance.
+Discrete and categorical columns use empirical Jensen--Shannon divergence.
+The target participates according to its declared :class:`ColumnKind`, exactly
+like every other modeled column.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+import numpy as np
+import pandas as pd
+from scipy.stats import wasserstein_distance
+
+from sbtab.benchmark.contracts import ColumnKind, TabularDataset
+from sbtab.benchmark.validation import (
+    ContractViolation,
+    validate_tabular_dataset,
+)
+
+
+class TuningMetric(str, Enum):
+    """Per-column distance used by the reference tuning objective."""
+
+    WASSERSTEIN = "wasserstein"
+    JENSEN_SHANNON = "jensen_shannon"
+
+
+@dataclass(frozen=True)
+class ColumnTuningScore:
+    """One raw column's contribution before semantic-group averaging.
+
+    Parameters
+    ----------
+    column:
+        Declared modeled column name, including target when applicable.
+    kind:
+        Raw semantic kind that selected the distance formula.
+    metric:
+        Wasserstein for continuous data or Jensen--Shannon for finite data.
+    value:
+        Non-negative distance in raw decoded space.
+    """
+
+    column: str
+    kind: ColumnKind
+    metric: TuningMetric
+    value: float
+
+
+@dataclass(frozen=True)
+class TuningScore:
+    """Composite value minimized by every model-owned tuning study.
+
+    Parameters
+    ----------
+    total:
+        Sum of the semantic-group means that exist in the dataset.
+    mean_wasserstein:
+        Mean continuous-column distance, or ``None`` when there are no
+        continuous modeled columns.
+    mean_jensen_shannon:
+        Mean across all discrete and categorical columns, or ``None`` when
+        there are no finite modeled columns.
+    columns:
+        Per-column evidence in canonical modeled order.
+    """
+
+    total: float
+    mean_wasserstein: float | None
+    mean_jensen_shannon: float | None
+    columns: tuple[ColumnTuningScore, ...]
+
+
+def _validate_raw_table(
+    dataset: TabularDataset,
+    frame: pd.DataFrame,
+    *,
+    label: str,
+) -> None:
+    if not isinstance(frame, pd.DataFrame):
+        raise ContractViolation(f"{label} must be a pandas DataFrame.")
+    actual_columns = tuple(frame.columns.tolist())
+    if actual_columns != dataset.column_order:
+        raise ContractViolation(
+            f"{label} columns must match canonical modeled order; "
+            f"actual={actual_columns!r}, expected={dataset.column_order!r}."
+        )
+    if frame.empty:
+        raise ContractViolation(f"{label} must contain at least one row.")
+    missing = {
+        name: int(frame[name].isna().sum())
+        for name in dataset.column_order
+        if frame[name].isna().any()
+    }
+    if missing:
+        raise ContractViolation(f"{label} contains missing values: {missing!r}.")
+
+    validate_tabular_dataset(
+        TabularDataset(
+            name=f"{dataset.name}:{label}",
+            frame=frame,
+            columns=dataset.columns,
+            target=dataset.target,
+            task=dataset.task,
+        )
+    )
+
+
+def _jensen_shannon_divergence(
+    real: pd.Series,
+    synthetic: pd.Series,
+) -> float:
+    combined = pd.concat(
+        (real.reset_index(drop=True), synthetic.reset_index(drop=True)),
+        ignore_index=True,
+    )
+    codes, observed = pd.factorize(combined, sort=False)
+    cardinality = len(observed)
+    real_size = len(real)
+    p = np.bincount(codes[:real_size], minlength=cardinality).astype(np.float64)
+    q = np.bincount(codes[real_size:], minlength=cardinality).astype(np.float64)
+    p /= p.sum()
+    q /= q.sum()
+    midpoint = 0.5 * (p + q)
+
+    p_positive = p > 0.0
+    q_positive = q > 0.0
+    divergence = 0.5 * np.sum(
+        p[p_positive] * np.log(p[p_positive] / midpoint[p_positive])
+    )
+    divergence += 0.5 * np.sum(
+        q[q_positive] * np.log(q[q_positive] / midpoint[q_positive])
+    )
+    return float(divergence)
+
+
+def evaluate_tuning_score(
+    dataset: TabularDataset,
+    real_validation: pd.DataFrame,
+    synthetic: pd.DataFrame,
+) -> TuningScore:
+    """Calculate the common raw-space objective for one tuning trial.
+
+    Wasserstein distances are not rescaled across columns. Jensen--Shannon uses
+    natural logarithms and exact decoded finite values, without rounding or
+    coercing supports. The returned ``total`` is minimized.
+    """
+
+    validate_tabular_dataset(dataset)
+    _validate_raw_table(dataset, real_validation, label="real_validation")
+    _validate_raw_table(dataset, synthetic, label="synthetic")
+
+    continuous_scores: list[float] = []
+    finite_scores: list[float] = []
+    column_scores: list[ColumnTuningScore] = []
+    for column in dataset.columns:
+        if column.kind is ColumnKind.CONTINUOUS:
+            value = float(
+                wasserstein_distance(
+                    real_validation[column.name].to_numpy(dtype=np.float64),
+                    synthetic[column.name].to_numpy(dtype=np.float64),
+                )
+            )
+            metric = TuningMetric.WASSERSTEIN
+            continuous_scores.append(value)
+        else:
+            value = _jensen_shannon_divergence(
+                real_validation[column.name],
+                synthetic[column.name],
+            )
+            metric = TuningMetric.JENSEN_SHANNON
+            finite_scores.append(value)
+        column_scores.append(
+            ColumnTuningScore(
+                column=column.name,
+                kind=column.kind,
+                metric=metric,
+                value=value,
+            )
+        )
+
+    mean_wasserstein = (
+        float(np.mean(continuous_scores)) if continuous_scores else None
+    )
+    mean_jensen_shannon = (
+        float(np.mean(finite_scores)) if finite_scores else None
+    )
+    total = sum(
+        value
+        for value in (mean_wasserstein, mean_jensen_shannon)
+        if value is not None
+    )
+    return TuningScore(
+        total=float(total),
+        mean_wasserstein=mean_wasserstein,
+        mean_jensen_shannon=mean_jensen_shannon,
+        columns=tuple(column_scores),
+    )

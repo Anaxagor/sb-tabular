@@ -616,6 +616,24 @@ entrypoint defines its search space and creates one fresh fixed-config adapter
 per trial; it calls the common holdout runner and common semantic objective.
 The native model and adapter `fit()` remain unaware of Optuna.
 
+The reference tuning objective is model-independent and operates after raw
+decoding:
+
+- each continuous modeled column contributes one-dimensional Wasserstein
+  distance in its raw scale, without another normalization;
+- each discrete or categorical modeled column contributes empirical
+  Jensen--Shannon divergence using exact decoded values and natural logarithms;
+- target participates according to its declared `ColumnKind`;
+- `mean_wasserstein` averages continuous columns;
+- `mean_jensen_shannon` averages discrete and categorical columns together;
+- the minimized total is the sum of the group means that exist for the
+  dataset.
+
+This definition uses Jensen--Shannon *divergence*, not its square-root distance.
+It never rounds decoded discrete values to repair preprocessing noise.
+Per-column contributions are retained for review instead of reporting only the
+composite scalar.
+
 ## Provisional family specifications
 
 These rows are hypotheses for model-owner review, not compatibility claims.
