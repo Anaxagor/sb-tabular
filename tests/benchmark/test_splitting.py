@@ -1,4 +1,4 @@
-"""Tests for clean benchmark-owned K-fold strategies."""
+"""Tests for clean benchmark-owned holdout and K-fold strategies."""
 
 from __future__ import annotations
 
@@ -10,12 +10,15 @@ from sbtab.benchmark import (
     ColumnKind,
     ColumnSpec,
     ContractViolation,
+    HoldoutConfig,
     KFoldConfig,
     MissingPolicy,
+    StratifiedHoldoutConfig,
     StratifiedKFoldConfig,
     TabularDataset,
     TaskType,
     apply_missing_policy,
+    make_holdout,
     make_splits,
 )
 
@@ -54,6 +57,55 @@ class SplitStrategyTests(unittest.TestCase):
         for fold in first:
             labels = dataset.frame.iloc[list(fold.test_positions)]["label"]
             self.assertEqual(labels.value_counts().to_dict(), {"no": 2, "yes": 2})
+
+    def test_holdout_uses_reference_defaults_and_is_deterministic(self) -> None:
+        dataset = _classification_dataset()
+
+        first = make_holdout(dataset, HoldoutConfig())
+        second = make_holdout(dataset, HoldoutConfig())
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(first.train_positions), 16)
+        self.assertEqual(len(first.validation_positions), 4)
+        self.assertTrue(
+            set(first.train_positions).isdisjoint(first.validation_positions)
+        )
+        self.assertEqual(
+            sorted(first.train_positions + first.validation_positions),
+            list(range(20)),
+        )
+
+    def test_stratified_holdout_represents_each_class_in_validation(self) -> None:
+        dataset = _classification_dataset()
+
+        split = make_holdout(dataset, StratifiedHoldoutConfig())
+
+        validation_labels = dataset.frame.iloc[
+            list(split.validation_positions)
+        ]["label"]
+        self.assertEqual(
+            validation_labels.value_counts().to_dict(),
+            {"no": 2, "yes": 2},
+        )
+
+    def test_holdout_stores_positions_instead_of_dataframe_index_labels(self) -> None:
+        dataset = _classification_dataset()
+        frame = dataset.frame.copy()
+        frame.index = range(100, 120)
+        indexed = TabularDataset(
+            name=dataset.name,
+            frame=frame,
+            columns=dataset.columns,
+            target=dataset.target,
+            task=dataset.task,
+        )
+
+        split = make_holdout(indexed, HoldoutConfig())
+
+        self.assertEqual(
+            sorted(split.train_positions + split.validation_positions),
+            list(range(20)),
+        )
 
     def test_test_folds_partition_every_position_exactly_once(self) -> None:
         dataset = _classification_dataset()
@@ -172,6 +224,9 @@ class SplitStrategyTests(unittest.TestCase):
                 StratifiedKFoldConfig(n_splits=2, seed=42),
             )
 
+        with self.assertRaisesRegex(ContractViolation, "classification target"):
+            make_holdout(dataset, StratifiedHoldoutConfig())
+
     def test_each_class_must_represent_every_stratified_fold(self) -> None:
         dataset = TabularDataset(
             name="rare-class",
@@ -194,6 +249,9 @@ class SplitStrategyTests(unittest.TestCase):
                 dataset,
                 StratifiedKFoldConfig(n_splits=2, seed=42),
             )
+
+        with self.assertRaisesRegex(ContractViolation, "at least two rows"):
+            make_holdout(dataset, StratifiedHoldoutConfig())
 
     def test_split_rejects_missing_modeled_values_before_sklearn(self) -> None:
         dataset = _classification_dataset()
@@ -229,6 +287,12 @@ class SplitStrategyTests(unittest.TestCase):
                 KFoldConfig(n_splits=2, seed=True),  # type: ignore[arg-type]
             )
 
+        with self.assertRaisesRegex(ContractViolation, "seed must be an integer"):
+            make_holdout(
+                _classification_dataset(),
+                HoldoutConfig(seed=True),  # type: ignore[arg-type]
+            )
+
     def test_split_config_rejects_negative_seed_before_sklearn(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "range"):
             make_splits(
@@ -249,6 +313,30 @@ class SplitStrategyTests(unittest.TestCase):
             make_splits(
                 dataset,
                 StratifiedKFoldConfig(n_splits=2, seed=42),
+            )
+
+        with self.assertRaisesRegex(ContractViolation, "discrete or categorical"):
+            make_holdout(dataset, StratifiedHoldoutConfig())
+
+    def test_holdout_rejects_invalid_validation_fraction(self) -> None:
+        for fraction in (0.0, 1.0, -0.1):
+            with self.subTest(fraction=fraction):
+                with self.assertRaisesRegex(
+                    ContractViolation,
+                    "strictly between zero and one",
+                ):
+                    make_holdout(
+                        _classification_dataset(),
+                        HoldoutConfig(validation_fraction=fraction),
+                    )
+
+    def test_stratified_holdout_requires_room_for_each_class(self) -> None:
+        dataset = _classification_dataset()
+
+        with self.assertRaisesRegex(ContractViolation, "one row per class"):
+            make_holdout(
+                dataset,
+                StratifiedHoldoutConfig(validation_fraction=0.05),
             )
 
 

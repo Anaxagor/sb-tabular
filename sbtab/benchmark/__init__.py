@@ -36,9 +36,13 @@ from sbtab.benchmark.missing import (
 )
 from sbtab.benchmark.splitting import (
     FoldSplit,
+    HoldoutConfig,
+    HoldoutSplit,
     KFoldConfig,
     SplitConfig,
+    StratifiedHoldoutConfig,
     StratifiedKFoldConfig,
+    make_holdout,
     make_splits,
 )
 from sbtab.benchmark.validation import (
@@ -57,6 +61,8 @@ __all__ = [
     "ClassCount",
     "DiscreteView",
     "FoldSplit",
+    "HoldoutConfig",
+    "HoldoutSplit",
     "InputSpec",
     "KFoldConfig",
     "MissingPolicy",
@@ -70,11 +76,13 @@ __all__ = [
     "RunContext",
     "SplitConfig",
     "StateColumn",
+    "StratifiedHoldoutConfig",
     "StratifiedKFoldConfig",
     "TabularDataset",
     "TaskType",
     "apply_missing_policy",
     "compile_codec",
+    "make_holdout",
     "make_splits",
     "validate_adapter_definition",
     "validate_input_spec",
