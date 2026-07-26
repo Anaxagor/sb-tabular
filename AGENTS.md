@@ -37,9 +37,9 @@ unresolved in the contract.
 - `sbtab/evaluation/`: future home of model-independent evaluation.
 - `sbtab/benchmark/`: greenfield benchmark core. Contracts, dataset
   declarations, missing policy, splitting, fold-local codec, the MSBM adapter,
-  and the fixed-configuration cross-validation runner are implemented. Tuning,
-  artifacts, evaluation integration, and further adapters are migrating
-  incrementally.
+  and fixed-configuration holdout/cross-validation runners are implemented.
+  Model-owned tuning, artifacts, evaluation integration, and further adapters
+  are migrating incrementally.
 
 ## Target architecture
 

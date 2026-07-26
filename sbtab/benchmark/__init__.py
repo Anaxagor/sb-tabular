@@ -49,7 +49,10 @@ from sbtab.benchmark.runner import (
     BenchmarkConfig,
     CrossValidationResult,
     FoldResult,
+    HoldoutResult,
+    HoldoutRunConfig,
     run_cross_validation,
+    run_holdout_trial,
 )
 from sbtab.benchmark.validation import (
     ContractViolation,
@@ -71,6 +74,8 @@ __all__ = [
     "FoldSplit",
     "FoldResult",
     "HoldoutConfig",
+    "HoldoutResult",
+    "HoldoutRunConfig",
     "HoldoutSplit",
     "InputSpec",
     "KFoldConfig",
@@ -94,6 +99,7 @@ __all__ = [
     "make_holdout",
     "make_splits",
     "run_cross_validation",
+    "run_holdout_trial",
     "validate_adapter_definition",
     "validate_input_spec",
     "validate_prepared_table",

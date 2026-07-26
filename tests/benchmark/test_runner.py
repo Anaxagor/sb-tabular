@@ -15,16 +15,19 @@ from sbtab.benchmark import (
     ContinuousView,
     ContractViolation,
     DiscreteView,
+    HoldoutRunConfig,
     InputSpec,
     KFoldConfig,
     MissingPolicy,
     MissingValuesError,
     PreparedTable,
     RunContext,
+    StratifiedHoldoutConfig,
     StratifiedKFoldConfig,
     TabularDataset,
     TaskType,
     run_cross_validation,
+    run_holdout_trial,
 )
 
 
@@ -88,7 +91,7 @@ class _EchoAdapter:
         if self.train is None:
             raise RuntimeError("adapter was not fitted")
         self.sample_request = (n, seed)
-        frame = self.train.frame.copy()
+        frame = self.train.frame.iloc[:n].copy()
         if self.short_sample:
             frame = frame.iloc[:-1].copy()
         if self.invalid_state:
@@ -200,6 +203,54 @@ class CrossValidationRunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(factory_calls, 0)
+
+    def test_holdout_trial_samples_validation_size_without_using_validation(
+        self,
+    ) -> None:
+        created: list[_EchoAdapter] = []
+
+        def factory() -> _EchoAdapter:
+            adapter = _EchoAdapter()
+            created.append(adapter)
+            return adapter
+
+        config = HoldoutRunConfig(
+            split=StratifiedHoldoutConfig(),
+            missing_policy=MissingPolicy.COMPLETE_CASE,
+            run_id="holdout-test",
+            training_seed=5,
+            sample_seed=105,
+            artifact_dir=Path("unused-holdout-artifacts"),
+        )
+
+        result = run_holdout_trial(
+            _dataset(with_missing=True),
+            factory,
+            config,
+        )
+
+        self.assertEqual(result.adapter_name, "echo")
+        self.assertEqual(result.missing_report.rows_before, 18)
+        self.assertEqual(result.missing_report.rows_after, 17)
+        self.assertEqual(len(result.train_raw), 13)
+        self.assertEqual(len(result.validation_raw), 4)
+        self.assertEqual(len(result.synthetic_raw), 4)
+        self.assertEqual(
+            sorted(
+                result.split.train_positions
+                + result.split.validation_positions
+            ),
+            list(range(17)),
+        )
+        self.assertEqual(created[0].sample_request, (4, 105))
+        self.assertIsNotNone(created[0].train)
+        assert created[0].train is not None
+        self.assertAlmostEqual(created[0].train.frame["amount"].mean(), 0.0)
+        self.assertNotIn("row_id", result.validation_raw.columns)
+        self.assertEqual(
+            tuple(result.synthetic_raw.columns),
+            result.dataset.column_order,
+        )
 
     def test_runner_rejects_returned_row_count_before_decoding(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "row count"):

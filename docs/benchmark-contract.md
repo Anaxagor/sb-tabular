@@ -5,9 +5,9 @@ Status: draft for maintainer and model-owner review.
 Evidence base: repository `main` at `52e86e0`. This document defines the target
 boundary and records its incremental implementation. The greenfield contracts,
 dataset declaration, missing policy, splitting, codec, adapter protocol, MSBM
-adapter, and fixed-configuration cross-validation runner now exist under
-`sbtab.benchmark`; tuning, artifacts, evaluation integration, and further model
-adapters remain migration work.
+adapter, and fixed-configuration holdout/cross-validation runners now exist
+under `sbtab.benchmark`; model-owned tuning, artifacts, evaluation integration,
+and further model adapters remain migration work.
 
 ## Goal
 
@@ -609,11 +609,12 @@ codec or model state:
 7. Decode the generated table and give raw train, raw held-out test, and raw
    synthetic tables to model-independent evaluation.
 
-The first runner increment implements only steps 5--7 for an already fixed
-adapter configuration. It deliberately has no Optuna dependency, metric
-selection, or hidden tuning behavior. The holdout splitter is introduced now
-so the later tuning layer can implement steps 2--4 without changing the split
-contract.
+The shared runners implement the data lifecycle in step 3 and steps 5--7 for
+an already fixed adapter configuration. They deliberately have no Optuna
+dependency, metric selection, or hidden tuning behavior. A model-owned tuning
+entrypoint defines its search space and creates one fresh fixed-config adapter
+per trial; it calls the common holdout runner and common semantic objective.
+The native model and adapter `fit()` remain unaware of Optuna.
 
 ## Provisional family specifications
 
