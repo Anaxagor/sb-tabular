@@ -17,10 +17,8 @@ import pandas as pd
 from scipy.stats import wasserstein_distance
 
 from sbtab.benchmark.contracts import ColumnKind, TabularDataset
-from sbtab.benchmark.validation import (
-    ContractViolation,
-    validate_tabular_dataset,
-)
+from sbtab.benchmark.validation import validate_tabular_dataset
+from sbtab.evaluation._validation import validate_raw_table
 
 
 class TuningMetric(str, Enum):
@@ -76,41 +74,6 @@ class TuningScore:
     columns: tuple[ColumnTuningScore, ...]
 
 
-def _validate_raw_table(
-    dataset: TabularDataset,
-    frame: pd.DataFrame,
-    *,
-    label: str,
-) -> None:
-    if not isinstance(frame, pd.DataFrame):
-        raise ContractViolation(f"{label} must be a pandas DataFrame.")
-    actual_columns = tuple(frame.columns.tolist())
-    if actual_columns != dataset.column_order:
-        raise ContractViolation(
-            f"{label} columns must match canonical modeled order; "
-            f"actual={actual_columns!r}, expected={dataset.column_order!r}."
-        )
-    if frame.empty:
-        raise ContractViolation(f"{label} must contain at least one row.")
-    missing = {
-        name: int(frame[name].isna().sum())
-        for name in dataset.column_order
-        if frame[name].isna().any()
-    }
-    if missing:
-        raise ContractViolation(f"{label} contains missing values: {missing!r}.")
-
-    validate_tabular_dataset(
-        TabularDataset(
-            name=f"{dataset.name}:{label}",
-            frame=frame,
-            columns=dataset.columns,
-            target=dataset.target,
-            task=dataset.task,
-        )
-    )
-
-
 def _jensen_shannon_divergence(
     real: pd.Series,
     synthetic: pd.Series,
@@ -152,8 +115,8 @@ def evaluate_tuning_score(
     """
 
     validate_tabular_dataset(dataset)
-    _validate_raw_table(dataset, real_validation, label="real_validation")
-    _validate_raw_table(dataset, synthetic, label="synthetic")
+    validate_raw_table(dataset, real_validation, label="real_validation")
+    validate_raw_table(dataset, synthetic, label="synthetic")
 
     continuous_scores: list[float] = []
     finite_scores: list[float] = []
