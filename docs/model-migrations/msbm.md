@@ -146,8 +146,11 @@ must reject invalid generated codes before they can be accepted as output.
 
 ## Native configuration used by the pilot
 
-The pilot uses current native defaults, with only device and training seed
-supplied by `RunContext`:
+`MSBMAdapter` accepts one fixed native `MixedSBMConfig`; omitting it uses the
+current native defaults. Model-owned tuning may construct the fixed config
+without duplicating its fields in a benchmark contract. On every fold the
+adapter copies that config and replaces only device and training seed from
+`RunContext`:
 
 ```python
 MixedSBMConfig(
@@ -178,8 +181,8 @@ numeric default it cannot verify. The adapter must not reinterpret either
 behavior.
 
 The adapter does not validate native hyperparameters. `MixedSBMConfig` and the
-solver own their configuration semantics; duplicating those fields in each
-adapter would create a second source of truth.
+solver own their configuration semantics; duplicating those fields in a second
+adapter config would create another source of truth.
 
 ## Algorithmic invariants left unchanged
 
@@ -256,9 +259,9 @@ state blocks had the required `torch.float32` and `torch.int64` dtypes.
 `tests/benchmark/test_runner_msbm.py` additionally exercises the complete
 pre-evaluation path for two folds: shared split, fresh codec and adapter, real
 native solver construction and sampling, shared output validation, and raw
-decoding. It replaces only the native config constructor with a typed
-lightweight config (one backward stage, two integration steps, one training
-epoch); it does not replace the solver or its sampling implementation.
+decoding. It supplies the adapter with a typed lightweight native config (one
+backward stage, two integration steps, one training epoch); it does not replace
+the solver or its sampling implementation.
 
 ## Questions for the model owner
 

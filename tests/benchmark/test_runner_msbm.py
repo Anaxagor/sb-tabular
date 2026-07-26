@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -20,7 +19,6 @@ from sbtab.benchmark import (
     run_cross_validation,
 )
 from sbtab.benchmark.adapters import MSBMAdapter
-from sbtab.benchmark.adapters import msbm as msbm_module
 from sbtab.solvers.msbm import MixedSBMConfig
 
 
@@ -69,12 +67,12 @@ class MSBMRunnerSmokeTests(unittest.TestCase):
             artifact_dir=Path("unused-msbm-runner-artifacts"),
         )
 
-        with patch.object(
-            msbm_module,
-            "MixedSBMConfig",
-            side_effect=_lightweight_native_config,
-        ):
-            result = run_cross_validation(_dataset(), MSBMAdapter, config)
+        native_config = _lightweight_native_config(device="cpu", seed=0)
+        result = run_cross_validation(
+            _dataset(),
+            lambda: MSBMAdapter(native_config),
+            config,
+        )
 
         self.assertEqual(result.adapter_name, "msbm")
         self.assertEqual(len(result.folds), 2)

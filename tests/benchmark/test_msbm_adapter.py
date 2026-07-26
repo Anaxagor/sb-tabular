@@ -116,6 +116,33 @@ class MSBMAdapterTests(unittest.TestCase):
             ),
         )
 
+    def test_fixed_native_config_is_preserved_except_for_fold_context(self) -> None:
+        fixed_config = MixedSBMConfig(
+            fb_sequence=("b",),
+            hidden_dim=37,
+            num_steps=9,
+            batch_size=11,
+            device="cuda:7",
+            seed=999,
+        )
+        adapter = MSBMAdapter(fixed_config)
+        with patch.object(
+            msbm_module,
+            "MixedSBMSolver",
+            autospec=True,
+        ) as solver_class:
+            adapter.fit(_mixed_table(), _context())
+
+        received = solver_class.call_args.kwargs["cfg"]
+        self.assertIsInstance(received, MixedSBMConfig)
+        self.assertIsNot(received, fixed_config)
+        self.assertEqual(received.fb_sequence, ("b",))
+        self.assertEqual(received.hidden_dim, 37)
+        self.assertEqual(received.num_steps, 9)
+        self.assertEqual(received.batch_size, 11)
+        self.assertEqual(received.device, "cpu")
+        self.assertEqual(received.seed, 42)
+
     def test_sample_restores_canonical_order_and_schema(self) -> None:
         table = _mixed_table()
         adapter, solver, _ = _fit_with_mocked_training(table)

@@ -20,6 +20,8 @@ direction. See ``docs/model-migrations/msbm.md`` for characterization evidence.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 import torch
 
@@ -39,13 +41,14 @@ from sbtab.solvers.msbm import MixedSBMConfig, MixedSBMSolver
 class MSBMAdapter:
     """Single-fold adapter for the current mixed continuous/state solver.
 
-    The pilot intentionally uses native ``MixedSBMConfig`` defaults. Only
-    ``device`` and training ``seed`` are supplied from :class:`RunContext`.
-    A separate typed adapter config should be introduced only when a reviewed
-    benchmark profile needs non-default model mathematics.
+    ``config`` is one fixed native model configuration selected before final
+    cross-validation. Omitting it uses ``MixedSBMConfig`` defaults. Per-fold
+    ``device`` and training ``seed`` always come from :class:`RunContext`; all
+    other native fields are preserved unchanged.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, config: MixedSBMConfig | None = None) -> None:
+        self._config = replace(config) if config is not None else MixedSBMConfig()
         self._schema: PreparedSchema | None = None
         self._continuous_names: tuple[str, ...] = ()
         self._state_names: tuple[str, ...] = ()
@@ -79,7 +82,8 @@ class MSBMAdapter:
             train.schema.state_columns[name].cardinality for name in state_names
         ]
 
-        native_config = MixedSBMConfig(
+        native_config = replace(
+            self._config,
             device=context.device,
             seed=context.seed,
         )
