@@ -129,7 +129,9 @@ relative_change_percent =
 A negative change means worse synthetic utility. When `real_score == 0`, the
 relative change is mathematically undefined and is stored as `None`; the two
 scores and absolute change remain available. No epsilon is added to manufacture
-a percentage.
+a percentage. If any fold has an undefined relative change, the cross-fold
+relative-change summary is also `None`; folds with defined values are not
+silently averaged as a smaller subset.
 
 The experiment prose also mentions regression MAPE, while the mixed-data
 metric table selects delta R²/F1. V1 follows the table. Adding MAPE requires a

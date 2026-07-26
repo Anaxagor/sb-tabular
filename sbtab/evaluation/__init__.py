@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+from sbtab.evaluation.final import (
+    CategoricalQualitySummary,
+    ContinuousQualitySummary,
+    CrossValidationEvaluation,
+    DiscreteQualitySummary,
+    FinalEvaluationSummary,
+    FoldEvaluation,
+    ScalarSummary,
+    UtilitySummary,
+    evaluate_cross_validation,
+)
 from sbtab.evaluation.quality import (
     CategoricalQuality,
     ContinuousColumnQuality,
@@ -24,17 +35,26 @@ from sbtab.evaluation.utility import (
 )
 
 __all__ = [
+    "CategoricalQualitySummary",
     "CategoricalQuality",
     "ColumnTuningScore",
+    "ContinuousQualitySummary",
     "ContinuousColumnQuality",
     "ContinuousQuality",
+    "CrossValidationEvaluation",
+    "DiscreteQualitySummary",
     "DiscreteQuality",
+    "FinalEvaluationSummary",
     "FiniteColumnQuality",
+    "FoldEvaluation",
     "QualityScore",
+    "ScalarSummary",
     "TuningMetric",
     "TuningScore",
     "UtilityMetric",
     "UtilityScore",
+    "UtilitySummary",
+    "evaluate_cross_validation",
     "evaluate_quality",
     "evaluate_tuning_score",
     "evaluate_utility",
