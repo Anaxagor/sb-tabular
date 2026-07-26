@@ -184,6 +184,40 @@ The adapter does not validate native hyperparameters. `MixedSBMConfig` and the
 solver own their configuration semantics; duplicating those fields in a second
 adapter config would create another source of truth.
 
+## Model-owned tuning
+
+`sbtab/benchmark/adapters/msbm_tuning.py` owns the Optuna dependency and MSBM
+search space. Shared runner, codec, contracts, and evaluation modules do not
+import Optuna. Every trial constructs a real `MixedSBMConfig`, passes it to a
+fresh `MSBMAdapter`, executes the common reference holdout, and minimizes the
+common raw-space tuning score. The complete native config and per-group,
+per-column score evidence are stored as Optuna trial attributes.
+
+The current provisional search space is:
+
+| Native field | Optuna domain |
+| --- | --- |
+| `fb_sequence` | alternating backward/forward sequence of length 3, 5, 7, or 9 |
+| `cat_emb_dim` | integer 8 through 32 |
+| `hidden_dim` | 128, 256, or 512 |
+| `time_dim` | 32, 64, 96, or 128 |
+| `n_layers` | integer 2 through 6 |
+| `dropout` | 0.0 through 0.3 |
+| `num_steps` | 20 through 100 in increments of 10 |
+| `sigma` | log-scaled 0.01 through 1.0 |
+| `lambda_num`, `lambda_cat` | independently 0.1 through 1.0 |
+| `lr` | log-scaled `1e-4` through `2e-3` |
+| `batch_size` | 128, 256, or 512 |
+| `epochs_per_direction` | integer 5 through 20 |
+| `grad_clip` | 0.1 through 1.0 |
+
+This space still requires model-owner review. It uses only fields consumed by
+the current native solver. Historical tuning also suggested `alpha`, but the
+current `MixedSBMConfig` has no such field; it is intentionally not copied.
+`eps` exists in the current config but remains unused by the solver, so it is
+also intentionally not tuned. Trial `device` and `seed` placeholders are
+replaced by the common `RunContext`.
+
 ## Algorithmic invariants left unchanged
 
 The adapter preserves:

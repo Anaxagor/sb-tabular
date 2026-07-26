@@ -39,8 +39,9 @@ unresolved in the contract.
 - `sbtab/benchmark/`: greenfield benchmark core. Contracts, dataset
   declarations, missing policy, splitting, fold-local codec, the MSBM adapter,
   and fixed-configuration holdout/cross-validation runners are implemented.
-  Model-owned tuning, artifacts, final evaluation integration, and further
-  adapters are migrating incrementally.
+  The common tuning objective and model-owned MSBM Optuna study are implemented.
+  Artifacts, final evaluation integration, other tuners, and further adapters
+  are migrating incrementally.
 
 ## Target architecture
 
