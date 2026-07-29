@@ -283,6 +283,30 @@ The create-only root `ablation-manifest.json` records the base-config SHA-256,
 the factorial design, common protocol, four variant manifests, and each
 cross-fold metric summary.
 
+## Sampling time-scale correction
+
+MSBM training samples an integer bridge state `n` and conditions the mixed MLP
+on normalized time `t = n / K`. The previous `MixedPathSampler` instead
+conditioned that same model on `TimeGrid.times()`, the cumulative geometric
+integration step sizes. These are different quantities: cumulative `gamma`
+does not generally begin at zero, end at one, or match the training values.
+
+Sampling now uses the bridge-state convention at the current state:
+
+- forward calls use `0/K, 1/K, ..., (K-1)/K`;
+- backward calls use `K/K, (K-1)/K, ..., 1/K`.
+
+Only the MLP time-conditioning input changed. Euler--Maruyama still receives
+the original geometric `gamma[k]`, and categorical transition methods still
+receive the same integer `k`. The shared `TimeGrid.times()` API and other
+solver families remain unchanged because their training parameterizations
+require separate evidence.
+
+`tests/benchmark/test_msbm_sampling_time.py` uses a recording oracle model to
+assert every forward and backward time value independently of learned weights.
+Artifacts generated before this correction use the legacy sampling scale and
+must not be presented as corrected benchmark or ablation results.
+
 ## Algorithmic invariants left unchanged
 
 The adapter preserves:

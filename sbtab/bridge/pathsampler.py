@@ -136,7 +136,6 @@ class MixedPathSampler:
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[dict]]:
         model.eval()
         K = self.timegrid.num_steps
-        t_vals = self.timegrid.times()
 
         gen = None
         if seed is not None:
@@ -164,7 +163,14 @@ class MixedPathSampler:
             else:
                 t_idx = k - 1
 
-            tk = t_vals[t_idx].expand(B, 1).to(x_cont.device)
+            # Training conditions the mixed model on n / K. Integration gamma
+            # has a separate physical scale and must not replace that input.
+            tk = torch.full(
+                (B, 1),
+                k / K,
+                device=x_cont.device,
+                dtype=x_cont.dtype,
+            )
 
             v_num, logits_cat = model(x_cont, x_cat, tk)
 

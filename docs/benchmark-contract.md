@@ -765,6 +765,12 @@ them into the existing native configuration. The current native config exposes
 not claim that `eps` affects training; whether to remove or implement it is a
 separate model-owner decision.
 
+MSBM uses two distinct discretization quantities during sampling. The native
+MLP is conditioned on normalized bridge state `k / num_steps`, matching its
+training input. The Euler--Maruyama integrator separately retains the geometric
+`gamma[k]` schedule. Cumulative integration time must not be passed to the MLP
+as a substitute for normalized bridge state.
+
 Before an official benchmark result is reported, the fixed MSBM configuration
 must come from the reference 80/20 tuning lifecycle above (or be explicitly
 declared as an untuned baseline). A smoke run with native defaults validates
