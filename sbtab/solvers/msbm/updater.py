@@ -10,7 +10,12 @@ class MixedSBMUpdater:
         self.ref_cat = ref_cat
         self.cfg = cfg
         self.optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
-        self.loss_fn = MixedSBMLoss(reference=ref_cat, lambda_num=cfg.lambda_num, lambda_cat=cfg.lambda_cat)
+        self.loss_fn = MixedSBMLoss(
+            reference=ref_cat,
+            lambda_num=cfg.lambda_num,
+            lambda_cat=cfg.lambda_cat,
+            categorical_normalization=cfg.categorical_loss_normalization,
+        )
 
     def _make_training_tuple(self, z0_num, z0_cat, z1_num, z1_cat, direction):
         B = z0_num.shape[0]

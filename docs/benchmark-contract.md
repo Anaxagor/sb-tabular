@@ -743,8 +743,12 @@ MixedSBMConfig(
     dropout=0.1,
     num_steps=100,
     sigma=0.1,
+    alpha=0.01,
     lambda_num=0.8,
     lambda_cat=0.2,
+    categorical_loss_normalization=(
+        CategoricalLossNormalization.BY_NUM_COLUMNS
+    ),
     eps=1e-3,
     lr=1e-4,
     batch_size=256,

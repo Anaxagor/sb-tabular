@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 import torch
@@ -9,6 +10,18 @@ import torch.nn.functional as F
 from torch import nn
 
 from sbtab.bridge.reference import CategoricalReference
+
+
+class CategoricalLossNormalization(str, Enum):
+    """Select the optional MSBM categorical-loss column normalization.
+
+    ``NONE`` leaves the categorical CSBM loss unchanged. ``BY_NUM_COLUMNS``
+    divides it by the number of finite-state table columns after CSBM has
+    already reduced its flattened batch/column axis.
+    """
+
+    NONE = "none"
+    BY_NUM_COLUMNS = "by_num_columns"
 
 
 @dataclass(frozen=True)
@@ -85,7 +98,10 @@ class MixedSBMLoss(nn.Module):
             reference: CategoricalReference,
             lambda_num: float = 0.5,
             lambda_cat: float = 0.5,
-            ce_lambda: float = 0.001
+            ce_lambda: float = 0.001,
+            categorical_normalization: CategoricalLossNormalization = (
+                CategoricalLossNormalization.BY_NUM_COLUMNS
+            ),
     ):
         super().__init__()
         self.num_loss_fn = RegressionLoss(kind="mse", reduction="mean")
@@ -93,6 +109,7 @@ class MixedSBMLoss(nn.Module):
 
         self.lambda_num = lambda_num
         self.lambda_cat = lambda_cat
+        self.categorical_normalization = categorical_normalization
 
     def forward(
             self,
@@ -115,12 +132,23 @@ class MixedSBMLoss(nn.Module):
         else:
             raise ValueError("direction must be 'forward' or 'backward'")
 
-        # It's supposed that pred_logits_cat has shape of (Batch size, Number of categories, Max possible category)
-        # If the shape is different we get back to just C = 1 for stability reasons
-        C = pred_logits_cat.shape[1] if pred_logits_cat.ndim == 3 else 1
+        if (
+            self.categorical_normalization
+            is CategoricalLossNormalization.BY_NUM_COLUMNS
+        ):
+            if pred_logits_cat.ndim != 3:
+                raise ValueError(
+                    "Column-normalized categorical loss requires logits with "
+                    "shape (batch, columns, states)."
+                )
+            l_cat = l_cat / pred_logits_cat.shape[1]
+        elif (
+            self.categorical_normalization
+            is not CategoricalLossNormalization.NONE
+        ):
+            raise ValueError(
+                "Unknown categorical loss normalization: "
+                f"{self.categorical_normalization!r}."
+            )
 
-        l_cat_normalized = (1.0 / C) * l_cat
-
-        total_loss = self.lambda_num * l_num + self.lambda_cat * l_cat_normalized
-
-        return total_loss
+        return self.lambda_num * l_num + self.lambda_cat * l_cat

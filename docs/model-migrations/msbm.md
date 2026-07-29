@@ -162,8 +162,12 @@ MixedSBMConfig(
     dropout=0.1,
     num_steps=100,
     sigma=0.1,
+    alpha=0.01,
     lambda_num=0.8,
     lambda_cat=0.2,
+    categorical_loss_normalization=(
+        CategoricalLossNormalization.BY_NUM_COLUMNS
+    ),
     eps=1e-3,
     lr=1e-4,
     batch_size=256,
@@ -195,6 +199,9 @@ per-column score evidence are stored as Optuna trial attributes.
 `write_msbm_tuning_artifacts` writes those trials, the best native config,
 reference holdout controls, missing report, seeds, and timings into a
 create-only local handoff directory without exposing the Optuna storage URI.
+Artifact version 2 records explicit `alpha` and categorical-loss normalization;
+the loader assigns the preserved `0.01`/`BY_NUM_COLUMNS` defaults when reading
+an earlier version-1 `best-config.json`.
 
 The human-owned Online Shoppers entrypoint is:
 
@@ -231,11 +238,50 @@ The current provisional search space is:
 | `grad_clip` | 0.1 through 1.0 |
 
 This space still requires model-owner review. It uses only fields consumed by
-the current native solver. Historical tuning also suggested `alpha`, but the
-current `MixedSBMConfig` has no such field; it is intentionally not copied.
-`eps` exists in the current config but remains unused by the solver, so it is
-also intentionally not tuned. Trial `device` and `seed` placeholders are
-replaced by the common `RunContext`.
+the current native solver. `alpha` and categorical-loss normalization are
+explicit native config fields, but they remain fixed at the current defaults
+during Optuna tuning. Their effect is isolated by the factorial ablation below
+instead of being confounded with the main hyperparameter search. `eps` exists
+in the current config but remains unused by the solver, so it is intentionally
+not tuned. Trial `device` and `seed` placeholders are replaced by the common
+`RunContext`.
+
+## Categorical-mechanics ablation
+
+`sbtab.benchmark.pilots.msbm_online_shoppers_ablation` runs a predeclared 2x2
+full factorial:
+
+| Factor | Values |
+| --- | --- |
+| categorical reference `alpha` | `0.01`, `0.798` |
+| divide categorical loss by state-column count `C` | off, on |
+
+Every other `MixedSBMConfig` field is loaded from one frozen tuning
+`best-config.json`. All four cells use the same complete-case rows,
+target-stratified five folds, split seed 42, fold training seeds, sample seeds,
+sample sizes, and raw evaluation. The ablation does not run Optuna. This makes
+the main effects and their interaction reviewable without changing the
+benchmark contract or adding model branches to shared code.
+
+The categorical CSBM implementation flattens batch and state-column axes before
+its `batchmean` reduction. The optional `BY_NUM_COLUMNS` mode then performs the
+additional historical division by `C`; `NONE` leaves the already reduced CSBM
+loss unchanged. The choice is part of native model mathematics and therefore
+lives in `MixedSBMConfig`, not `InputSpec` or the adapter.
+
+Run from an existing pilot's frozen configuration:
+
+```bash
+python -m sbtab.benchmark.pilots.msbm_online_shoppers_ablation \
+  --csv path/to/online_shoppers.csv \
+  --base-config artifacts/msbm-online-shoppers/tuning/best-config.json \
+  --output-dir artifacts/msbm-online-shoppers-ablation \
+  --device mps
+```
+
+The create-only root `ablation-manifest.json` records the base-config SHA-256,
+the factorial design, common protocol, four variant manifests, and each
+cross-fold metric summary.
 
 ## Algorithmic invariants left unchanged
 
@@ -243,7 +289,7 @@ The adapter preserves:
 
 - the standard Gaussian continuous prior;
 - one independent uniform prior per state column;
-- categorical reference `alpha=0.01`;
+- configured categorical reference `alpha` (`0.01` by default);
 - Gaussian/rank transitions for ordered states and uniform transitions for
   unordered states;
 - the native geometric time grid;
@@ -251,8 +297,8 @@ The adapter preserves:
 - `fb_sequence`, coupling order, epochs per direction, and one snapshot after
   every direction;
 - selection of the last backward snapshot for sampling;
-- numeric MSE, categorical CSBM loss, their weights, and native categorical
-  normalization;
+- numeric MSE, categorical CSBM loss, their weights, and the configured
+  categorical column normalization (`BY_NUM_COLUMNS` by default);
 - AdamW, native batch shuffling, gradient clipping, and backward sampling.
 
 No solver, loss, reference, schedule, or sampling algorithm is copied into or

@@ -22,7 +22,10 @@ from sbtab.benchmark import (
 )
 from sbtab.benchmark.adapters import MSBMAdapter
 from sbtab.benchmark.adapters import msbm as msbm_module
-from sbtab.solvers.msbm import MixedSBMConfig
+from sbtab.solvers.msbm import (
+    CategoricalLossNormalization,
+    MixedSBMConfig,
+)
 
 
 def _mixed_table() -> PreparedTable:
@@ -121,6 +124,10 @@ class MSBMAdapterTests(unittest.TestCase):
             fb_sequence=("b",),
             hidden_dim=37,
             num_steps=9,
+            alpha=0.798,
+            categorical_loss_normalization=(
+                CategoricalLossNormalization.NONE
+            ),
             batch_size=11,
             device="cuda:7",
             seed=999,
@@ -139,6 +146,11 @@ class MSBMAdapterTests(unittest.TestCase):
         self.assertEqual(received.fb_sequence, ("b",))
         self.assertEqual(received.hidden_dim, 37)
         self.assertEqual(received.num_steps, 9)
+        self.assertEqual(received.alpha, 0.798)
+        self.assertIs(
+            received.categorical_loss_normalization,
+            CategoricalLossNormalization.NONE,
+        )
         self.assertEqual(received.batch_size, 11)
         self.assertEqual(received.device, "cpu")
         self.assertEqual(received.seed, 42)

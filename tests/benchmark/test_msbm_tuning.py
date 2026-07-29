@@ -27,11 +27,16 @@ from sbtab.benchmark import (
 from sbtab.benchmark.adapters.msbm import MSBMAdapter
 from sbtab.benchmark.adapters.msbm_tuning import (
     MSBMTuningConfig,
+    msbm_config_from_payload,
+    msbm_config_payload,
     suggest_msbm_config,
     tune_msbm,
     write_msbm_tuning_artifacts,
 )
-from sbtab.solvers.msbm import MixedSBMConfig
+from sbtab.solvers.msbm import (
+    CategoricalLossNormalization,
+    MixedSBMConfig,
+)
 
 
 def _dataset() -> TabularDataset:
@@ -99,8 +104,35 @@ class MSBMTuningTests(unittest.TestCase):
         self.assertEqual(config.hidden_dim, 128)
         self.assertEqual(config.lambda_num, 0.8)
         self.assertEqual(config.lambda_cat, 0.2)
+        self.assertEqual(config.alpha, 0.01)
+        self.assertIs(
+            config.categorical_loss_normalization,
+            CategoricalLossNormalization.BY_NUM_COLUMNS,
+        )
         self.assertEqual(config.device, "cpu")
         self.assertEqual(config.seed, 0)
+
+    def test_config_payload_round_trips_new_and_previous_artifacts(self) -> None:
+        config = MixedSBMConfig(
+            fb_sequence=("b",),
+            alpha=0.798,
+            categorical_loss_normalization=(
+                CategoricalLossNormalization.NONE
+            ),
+        )
+
+        restored = msbm_config_from_payload(msbm_config_payload(config))
+        previous_payload = msbm_config_payload(config)
+        previous_payload.pop("alpha")
+        previous_payload.pop("categorical_loss_normalization")
+        restored_previous = msbm_config_from_payload(previous_payload)
+
+        self.assertEqual(restored, config)
+        self.assertEqual(restored_previous.alpha, 0.01)
+        self.assertIs(
+            restored_previous.categorical_loss_normalization,
+            CategoricalLossNormalization.BY_NUM_COLUMNS,
+        )
 
     def test_lightweight_study_selects_config_used_by_final_folds(self) -> None:
         dataset = _dataset()
@@ -170,7 +202,7 @@ class MSBMTuningTests(unittest.TestCase):
             )
 
             self.assertEqual(manifest["artifact_type"], "msbm_tuning")
-            self.assertEqual(manifest["artifact_version"], 1)
+            self.assertEqual(manifest["artifact_version"], 2)
             self.assertEqual(manifest["dataset"]["name"], dataset.name)
             self.assertEqual(manifest["missing_report"]["rows_before"], 16)
             self.assertEqual(manifest["missing_report"]["rows_after"], 16)

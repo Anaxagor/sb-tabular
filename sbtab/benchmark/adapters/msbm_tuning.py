@@ -28,10 +28,13 @@ from sbtab.benchmark.runner import (
 from sbtab.benchmark.missing import MissingReport
 from sbtab.benchmark.validation import ContractViolation
 from sbtab.evaluation import evaluate_tuning_score
-from sbtab.solvers.msbm import MixedSBMConfig
+from sbtab.solvers.msbm import (
+    CategoricalLossNormalization,
+    MixedSBMConfig,
+)
 
 
-MSBM_TUNING_ARTIFACT_VERSION = 1
+MSBM_TUNING_ARTIFACT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -171,13 +174,20 @@ def suggest_msbm_config(trial: optuna.Trial) -> MixedSBMConfig:
     )
 
 
-def _config_payload(config: MixedSBMConfig) -> dict[str, object]:
+def msbm_config_payload(config: MixedSBMConfig) -> dict[str, object]:
+    """Serialize one complete native config into a JSON-compatible mapping."""
+
     payload = asdict(config)
     payload["fb_sequence"] = list(config.fb_sequence)
+    payload["categorical_loss_normalization"] = (
+        config.categorical_loss_normalization.value
+    )
     return payload
 
 
-def _config_from_payload(payload: object) -> MixedSBMConfig:
+def msbm_config_from_payload(payload: object) -> MixedSBMConfig:
+    """Reconstruct a native config, including older artifacts with new defaults."""
+
     if not isinstance(payload, Mapping):
         raise ContractViolation(
             "Best MSBM trial has no reconstructable native_config artifact."
@@ -189,6 +199,17 @@ def _config_from_payload(payload: object) -> MixedSBMConfig:
             "Best MSBM trial native_config has invalid fb_sequence."
         )
     values["fb_sequence"] = tuple(sequence)
+    normalization = values.get("categorical_loss_normalization")
+    if normalization is not None:
+        try:
+            values["categorical_loss_normalization"] = (
+                CategoricalLossNormalization(normalization)
+            )
+        except ValueError as error:
+            raise ContractViolation(
+                "Best MSBM trial native_config has invalid categorical loss "
+                f"normalization: {normalization!r}."
+            ) from error
     try:
         return MixedSBMConfig(**values)
     except TypeError as error:
@@ -275,7 +296,10 @@ def tune_msbm(
             holdout.validation_raw,
             holdout.synthetic_raw,
         )
-        trial.set_user_attr("native_config", _config_payload(native_config))
+        trial.set_user_attr(
+            "native_config",
+            msbm_config_payload(native_config),
+        )
         trial.set_user_attr("mean_wasserstein", score.mean_wasserstein)
         trial.set_user_attr(
             "mean_jensen_shannon",
@@ -308,7 +332,7 @@ def tune_msbm(
         show_progress_bar=False,
     )
     best_trial = study.best_trial
-    best_config = _config_from_payload(
+    best_config = msbm_config_from_payload(
         best_trial.user_attrs.get("native_config")
     )
     return MSBMTuningResult(
@@ -361,7 +385,7 @@ def write_msbm_tuning_artifacts(
     best_config_path = output_dir / "best-config.json"
     best_config_path.write_text(
         json.dumps(
-            _config_payload(result.best_config),
+            msbm_config_payload(result.best_config),
             indent=2,
             sort_keys=True,
             allow_nan=False,
