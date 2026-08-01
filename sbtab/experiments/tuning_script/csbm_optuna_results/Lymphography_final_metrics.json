@@ -1,0 +1,28 @@
+{
+    "dataset": "Lymphography",
+    "bad_cols (<=1 unique vals)": [],
+    "best_trial": 49,
+    "n_trials": 50,
+    "elapsed_sec": 1165.024447441101,
+    "best_params": {
+        "emb_dim": 100,
+        "hidden_dim": 222,
+        "time_dim": 64,
+        "steps": 100,
+        "num_outer_iterations": 7,
+        "epochs": 30,
+        "batch_size": 256,
+        "forward_lr": 0.00020397091966498041,
+        "backward_lr": 0.0026403767836209254,
+        "forward_weight_decay": 5.878892137135232e-05,
+        "backward_weight_decay": 0.0001215059166259463,
+        "loss_lambda": 0.16,
+        "alpha": 0.1
+    },
+    "Best_Tuning_Loss_JS": 0.10768121180593537,
+    "Final_Mean_KL": 0.2773030971031302,
+    "Corr_Distance": 5.50122213943377,
+    "F1_real": 0.7503267973856208,
+    "F1_synth": 0.5992156862745098,
+    "diff": 0.15111111111111097
+}

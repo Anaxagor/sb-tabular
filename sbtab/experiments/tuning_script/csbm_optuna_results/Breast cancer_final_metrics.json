@@ -1,0 +1,28 @@
+{
+    "dataset": "Breast cancer",
+    "bad_cols (<=1 unique vals)": [],
+    "best_trial": 29,
+    "n_trials": 50,
+    "elapsed_sec": 969.4114456176758,
+    "best_params": {
+        "emb_dim": 62,
+        "hidden_dim": 137,
+        "time_dim": 16,
+        "steps": 90,
+        "num_outer_iterations": 11,
+        "epochs": 19,
+        "batch_size": 512,
+        "forward_lr": 0.00016634585514568417,
+        "backward_lr": 0.0014447229418602125,
+        "forward_weight_decay": 1.244062494507057e-06,
+        "backward_weight_decay": 2.9353677316302457e-06,
+        "loss_lambda": 0.81,
+        "alpha": 0.099
+    },
+    "Best_Tuning_Loss_JS": 0.1334566451719347,
+    "Final_Mean_KL": 0.3051901474117963,
+    "Corr_Distance": 2.270501672605567,
+    "F1_real": 0.7712143928035983,
+    "F1_synth": 0.6204064171122995,
+    "diff": 0.15080797569129878
+}
