@@ -34,7 +34,8 @@ from sbtab.solvers.msbm import (
 )
 
 
-MSBM_TUNING_ARTIFACT_VERSION = 2
+MSBM_TUNING_ARTIFACT_VERSION = 3
+MSBM_TUNING_OBJECTIVE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -274,6 +275,24 @@ def tune_msbm(
         storage=config.storage,
         load_if_exists=config.load_if_exists,
     )
+    objective_version = study.user_attrs.get("objective_version")
+    if objective_version is None:
+        if study.trials:
+            raise ContractViolation(
+                "Cannot resume an MSBM study without objective_version: its "
+                "existing trial values may use the obsolete raw-scale "
+                "Wasserstein objective. Start a new study."
+            )
+        study.set_user_attr(
+            "objective_version",
+            MSBM_TUNING_OBJECTIVE_VERSION,
+        )
+    elif objective_version != MSBM_TUNING_OBJECTIVE_VERSION:
+        raise ContractViolation(
+            "Cannot resume an MSBM study with a different tuning objective: "
+            f"stored={objective_version!r}, "
+            f"required={MSBM_TUNING_OBJECTIVE_VERSION!r}."
+        )
 
     def objective(trial: optuna.Trial) -> float:
         native_config = suggest_config(trial)
@@ -293,6 +312,7 @@ def tune_msbm(
         )
         score = evaluate_tuning_score(
             holdout.dataset,
+            holdout.train_raw,
             holdout.validation_raw,
             holdout.synthetic_raw,
         )
@@ -300,7 +320,10 @@ def tune_msbm(
             "native_config",
             msbm_config_payload(native_config),
         )
-        trial.set_user_attr("mean_wasserstein", score.mean_wasserstein)
+        trial.set_user_attr(
+            "mean_standardized_wasserstein",
+            score.mean_wasserstein,
+        )
         trial.set_user_attr(
             "mean_jensen_shannon",
             score.mean_jensen_shannon,
@@ -312,6 +335,7 @@ def tune_msbm(
                     "kind": item.kind.value,
                     "metric": item.metric.value,
                     "value": item.value,
+                    "reference_scale": item.reference_scale,
                 }
                 for item in score.columns
             },
@@ -436,6 +460,9 @@ def write_msbm_tuning_artifacts(
         "study": {
             "name": result.study.study_name,
             "direction": result.study.direction.name,
+            "objective_version": result.study.user_attrs.get(
+                "objective_version"
+            ),
             "sampler": type(result.study.sampler).__name__,
             "sampler_seed": tuning_config.sampler_seed,
             "requested_trials": tuning_config.n_trials,

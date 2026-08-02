@@ -194,14 +194,19 @@ adapter config would create another source of truth.
 search space. Shared runner, codec, contracts, and evaluation modules do not
 import Optuna. Every trial constructs a real `MixedSBMConfig`, passes it to a
 fresh `MSBMAdapter`, executes the common reference holdout, and minimizes the
-common raw-space tuning score. The complete native config and per-group,
-per-column score evidence are stored as Optuna trial attributes.
+common scale-balanced tuning score. Continuous Wasserstein distances use
+holdout-train population scales; finite columns use exact decoded states. The
+complete native config and per-group, per-column score evidence, including
+continuous reference scales, are stored as Optuna trial attributes.
 `write_msbm_tuning_artifacts` writes those trials, the best native config,
 reference holdout controls, missing report, seeds, and timings into a
 create-only local handoff directory without exposing the Optuna storage URI.
-Artifact version 2 records explicit `alpha` and categorical-loss normalization;
-the loader assigns the preserved `0.01`/`BY_NUM_COLUMNS` defaults when reading
-an earlier version-1 `best-config.json`.
+Artifact version 3 records tuning-objective version 2, which replaces raw-unit
+Wasserstein with train-standardized Wasserstein and refuses to mix old trial
+values into a resumed study. Version 2 introduced explicit `alpha` and
+categorical-loss normalization; the config loader assigns the preserved
+`0.01`/`BY_NUM_COLUMNS` defaults when reading an earlier version-1
+`best-config.json`.
 
 The human-owned Online Shoppers entrypoint is:
 

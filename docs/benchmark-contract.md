@@ -627,7 +627,9 @@ The reference tuning objective is model-independent and operates after raw
 decoding:
 
 - each continuous modeled column contributes one-dimensional Wasserstein
-  distance in its raw scale, without another normalization;
+  distance after applying population mean and standard deviation fitted only
+  on the holdout-train column to both validation and synthetic values; a
+  constant train column uses scale `1.0`;
 - each discrete or categorical modeled column contributes empirical
   Jensen--Shannon divergence using exact decoded values and natural logarithms;
 - target participates according to its declared `ColumnKind`;
@@ -637,9 +639,10 @@ decoding:
   dataset.
 
 This definition uses Jensen--Shannon *divergence*, not its square-root distance.
-It never rounds decoded discrete values to repair preprocessing noise.
-Per-column contributions are retained for review instead of reporting only the
-composite scalar.
+Train-fitted continuous scales are retained with per-column contributions for
+review. The objective never rounds decoded discrete values to repair
+preprocessing noise. A persisted Optuna study records its objective version
+and cannot be resumed across incompatible objective definitions.
 
 ## Provisional family specifications
 

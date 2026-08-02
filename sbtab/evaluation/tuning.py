@@ -1,10 +1,11 @@
-"""Model-independent tuning objective for raw tabular generator samples.
+"""Model-independent tuning objective for decoded generator samples.
 
 The objective follows the mixed-data experiment protocol after shared codec
-decoding. Continuous columns use one-dimensional Wasserstein distance.
-Discrete and categorical columns use empirical Jensen--Shannon divergence.
-The target participates according to its declared :class:`ColumnKind`, exactly
-like every other modeled column.
+decoding. Continuous columns use one-dimensional Wasserstein distance after a
+train-fitted standardization, so raw measurement units cannot dominate model
+selection. Discrete and categorical columns use empirical Jensen--Shannon
+divergence. The target participates according to its declared
+:class:`ColumnKind`, exactly like every other modeled column.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from sbtab.evaluation._validation import validate_raw_table
 class TuningMetric(str, Enum):
     """Per-column distance used by the reference tuning objective."""
 
-    WASSERSTEIN = "wasserstein"
+    STANDARDIZED_WASSERSTEIN = "standardized_wasserstein"
     JENSEN_SHANNON = "jensen_shannon"
 
 
@@ -41,13 +42,18 @@ class ColumnTuningScore:
     metric:
         Wasserstein for continuous data or Jensen--Shannon for finite data.
     value:
-        Non-negative distance in raw decoded space.
+        Non-negative distance after the metric-specific transformation.
+    reference_scale:
+        Population standard deviation fitted on holdout-train for a continuous
+        column. A constant train column uses ``1.0``. Finite columns use
+        ``None`` because Jensen--Shannon compares exact decoded states.
     """
 
     column: str
     kind: ColumnKind
     metric: TuningMetric
     value: float
+    reference_scale: float | None
 
 
 @dataclass(frozen=True)
@@ -59,8 +65,8 @@ class TuningScore:
     total:
         Sum of the semantic-group means that exist in the dataset.
     mean_wasserstein:
-        Mean continuous-column distance, or ``None`` when there are no
-        continuous modeled columns.
+        Mean train-standardized continuous-column distance, or ``None`` when
+        there are no continuous modeled columns.
     mean_jensen_shannon:
         Mean across all discrete and categorical columns, or ``None`` when
         there are no finite modeled columns.
@@ -104,17 +110,22 @@ def _jensen_shannon_divergence(
 
 def evaluate_tuning_score(
     dataset: TabularDataset,
+    real_train: pd.DataFrame,
     real_validation: pd.DataFrame,
     synthetic: pd.DataFrame,
 ) -> TuningScore:
-    """Calculate the common raw-space objective for one tuning trial.
+    """Calculate the scale-balanced objective for one tuning trial.
 
-    Wasserstein distances are not rescaled across columns. Jensen--Shannon uses
-    natural logarithms and exact decoded finite values, without rounding or
-    coercing supports. The returned ``total`` is minimized.
+    Each continuous column is standardized with population mean and standard
+    deviation fitted only on ``real_train``; a zero train deviation maps to
+    scale ``1.0``. The same transform is applied to validation and synthetic
+    values before Wasserstein distance. Jensen--Shannon uses natural logarithms
+    and exact decoded finite values, without rounding or coercing supports. The
+    returned ``total`` is minimized.
     """
 
     validate_tabular_dataset(dataset)
+    validate_raw_table(dataset, real_train, label="real_train")
     validate_raw_table(dataset, real_validation, label="real_validation")
     validate_raw_table(dataset, synthetic, label="synthetic")
 
@@ -123,15 +134,28 @@ def evaluate_tuning_score(
     column_scores: list[ColumnTuningScore] = []
     for column in dataset.columns:
         if column.kind is ColumnKind.CONTINUOUS:
+            train_values = real_train[column.name].to_numpy(dtype=np.float64)
+            reference_mean = float(np.mean(train_values))
+            observed_scale = float(np.std(train_values, ddof=0))
+            reference_scale = observed_scale if observed_scale > 0.0 else 1.0
+            real_values = (
+                real_validation[column.name].to_numpy(dtype=np.float64)
+                - reference_mean
+            ) / reference_scale
+            synthetic_values = (
+                synthetic[column.name].to_numpy(dtype=np.float64)
+                - reference_mean
+            ) / reference_scale
             value = float(
                 wasserstein_distance(
-                    real_validation[column.name].to_numpy(dtype=np.float64),
-                    synthetic[column.name].to_numpy(dtype=np.float64),
+                    real_values,
+                    synthetic_values,
                 )
             )
-            metric = TuningMetric.WASSERSTEIN
+            metric = TuningMetric.STANDARDIZED_WASSERSTEIN
             continuous_scores.append(value)
         else:
+            reference_scale = None
             value = _jensen_shannon_divergence(
                 real_validation[column.name],
                 synthetic[column.name],
@@ -144,6 +168,7 @@ def evaluate_tuning_score(
                 kind=column.kind,
                 metric=metric,
                 value=value,
+                reference_scale=reference_scale,
             )
         )
 

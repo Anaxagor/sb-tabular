@@ -161,10 +161,14 @@ class MSBMTuningTests(unittest.TestCase):
         self.assertIs(tuning.dataset, dataset)
         self.assertTrue(math.isfinite(tuning.best_score))
         self.assertIn(tuning.best_config.hidden_dim, (4, 8))
+        self.assertEqual(tuning.study.user_attrs["objective_version"], 2)
         for trial in tuning.study.trials:
             self.assertEqual(trial.state, optuna.trial.TrialState.COMPLETE)
             self.assertIn("native_config", trial.user_attrs)
-            self.assertIn("mean_wasserstein", trial.user_attrs)
+            self.assertIn(
+                "mean_standardized_wasserstein",
+                trial.user_attrs,
+            )
             self.assertIn("mean_jensen_shannon", trial.user_attrs)
             self.assertIn("column_scores", trial.user_attrs)
 
@@ -202,12 +206,13 @@ class MSBMTuningTests(unittest.TestCase):
             )
 
             self.assertEqual(manifest["artifact_type"], "msbm_tuning")
-            self.assertEqual(manifest["artifact_version"], 2)
+            self.assertEqual(manifest["artifact_version"], 3)
             self.assertEqual(manifest["dataset"]["name"], dataset.name)
             self.assertEqual(manifest["missing_report"]["rows_before"], 16)
             self.assertEqual(manifest["missing_report"]["rows_after"], 16)
             self.assertEqual(manifest["study"]["requested_trials"], 2)
             self.assertEqual(manifest["study"]["completed_trials"], 2)
+            self.assertEqual(manifest["study"]["objective_version"], 2)
             self.assertFalse(manifest["study"]["storage_configured"])
             self.assertNotIn("storage", manifest["study"])
             self.assertEqual(best_config["hidden_dim"], tuning.best_config.hidden_dim)
@@ -216,6 +221,42 @@ class MSBMTuningTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ContractViolation, "already exists"):
                 write_msbm_tuning_artifacts(tuning, output_dir)
+
+    def test_refuses_to_resume_trials_from_an_unversioned_objective(self) -> None:
+        with TemporaryDirectory() as temporary_dir:
+            storage = f"sqlite:///{temporary_dir}/legacy-study.sqlite3"
+            study = optuna.create_study(
+                study_name="legacy-objective",
+                storage=storage,
+            )
+            study.add_trial(
+                optuna.trial.create_trial(
+                    value=1.0,
+                    params={},
+                    distributions={},
+                )
+            )
+
+            with self.assertRaisesRegex(
+                ContractViolation,
+                "obsolete raw-scale Wasserstein",
+            ):
+                tune_msbm(
+                    _dataset(),
+                    MSBMTuningConfig(
+                        run=HoldoutRunConfig(
+                            split=StratifiedHoldoutConfig(
+                                validation_fraction=0.25,
+                                seed=5,
+                            )
+                        ),
+                        n_trials=1,
+                        study_name="legacy-objective",
+                        storage=storage,
+                        load_if_exists=True,
+                    ),
+                    suggest_config=_lightweight_config,
+                )
 
 
 if __name__ == "__main__":
