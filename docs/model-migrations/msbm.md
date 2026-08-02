@@ -296,14 +296,18 @@ Sampling now uses the bridge-state convention at the current state:
 - forward calls use `0/K, 1/K, ..., (K-1)/K`;
 - backward calls use `K/K, (K-1)/K, ..., 1/K`.
 
-Only the MLP time-conditioning input changed. Euler--Maruyama still receives
-the original geometric `gamma[k]`, and categorical transition methods still
-receive the same integer `k`. The shared `TimeGrid.times()` API and other
-solver families remain unchanged because their training parameterizations
-require separate evidence.
+The continuous Euler--Maruyama update uses `dt = 1 / K`, so its `K` updates
+traverse the same unit interval used to construct the native velocity target.
+Previously it used geometric `gamma[k]` values whose sum depended on `K` and
+was generally much smaller than one. As a result, `num_steps` changed the
+physical sampling horizon instead of only its discretization. Categorical
+transition methods still receive the same integer `k`. The shared
+`TimeGrid.times()` API and other solver families remain unchanged because
+their training parameterizations require separate evidence.
 
-`tests/benchmark/test_msbm_sampling_time.py` uses a recording oracle model to
-assert every forward and backward time value independently of learned weights.
+`tests/benchmark/test_msbm_sampling_time.py` uses recording and constant-
+velocity oracle models to assert every forward and backward time value and a
+unit continuous integration horizon independently of learned weights.
 Artifacts generated before this correction use the legacy sampling scale and
 must not be presented as corrected benchmark or ablation results.
 
@@ -316,7 +320,8 @@ The adapter preserves:
 - configured categorical reference `alpha` (`0.01` by default);
 - Gaussian/rank transitions for ordered states and uniform transitions for
   unordered states;
-- the native geometric time grid;
+- `K` categorical bridge transitions and `K` equal continuous integration
+  steps over the unit bridge interval;
 - noisy Euler--Maruyama integration with `cfg.sigma`;
 - `fb_sequence`, coupling order, epochs per direction, and one snapshot after
   every direction;

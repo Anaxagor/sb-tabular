@@ -145,7 +145,11 @@ class MixedPathSampler:
         x_cont = x_cont_init.clone()
         x_cat = x_cat_init.clone()
         B = x_cont.shape[0]
-        g = self.timegrid.gammas()
+        # The mixed velocity target is learned on the normalized bridge
+        # interval [0, 1]. Equal steps make sampling traverse that same
+        # interval for every K; the generic geometric TimeGrid belongs to
+        # solver families with a different native parameterization.
+        dt = x_cont.new_tensor(1.0 / K)
 
         path_cont, path_cat = None, None
         if return_path:
@@ -158,13 +162,7 @@ class MixedPathSampler:
             ks = range(K, 0, -1)
 
         for k in ks:
-            if direction == "forward":
-                t_idx = k
-            else:
-                t_idx = k - 1
-
-            # Training conditions the mixed model on n / K. Integration gamma
-            # has a separate physical scale and must not replace that input.
+            # Training and sampling condition on the same bridge state k / K.
             tk = torch.full(
                 (B, 1),
                 k / K,
@@ -175,7 +173,12 @@ class MixedPathSampler:
             v_num, logits_cat = model(x_cont, x_cat, tk)
 
             drift = v_num
-            x_cont = self.integrator.step(x_cont, drift=drift, gamma=g[t_idx], generator=gen)
+            x_cont = self.integrator.step(
+                x_cont,
+                drift=drift,
+                gamma=dt,
+                generator=gen,
+            )
 
             if direction == "forward":
                 probs_step = self.reference.model_induced_next_step(

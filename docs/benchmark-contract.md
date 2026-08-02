@@ -765,11 +765,14 @@ them into the existing native configuration. The current native config exposes
 not claim that `eps` affects training; whether to remove or implement it is a
 separate model-owner decision.
 
-MSBM uses two distinct discretization quantities during sampling. The native
-MLP is conditioned on normalized bridge state `k / num_steps`, matching its
-training input. The Euler--Maruyama integrator separately retains the geometric
-`gamma[k]` schedule. Cumulative integration time must not be passed to the MLP
-as a substitute for normalized bridge state.
+MSBM sampling follows the normalized unit bridge used by its native training
+tuple. The MLP is conditioned on bridge state `k / num_steps`, and the
+continuous Euler--Maruyama update uses `dt = 1 / num_steps`. Consequently,
+changing `num_steps` changes the discretization without changing the physical
+horizon. Categorical transitions continue to receive integer bridge state
+`k`. The geometric `TimeGrid` remains available to other solver families; it
+must not replace MSBM's normalized bridge parameterization without separate
+mathematical evidence.
 
 Before an official benchmark result is reported, the fixed MSBM configuration
 must come from the reference 80/20 tuning lifecycle above (or be explicitly

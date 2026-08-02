@@ -35,6 +35,23 @@ class _TimeOracle(nn.Module):
         return torch.zeros_like(continuous), logits
 
 
+class _ConstantVelocityOracle(nn.Module):
+    """Return a unit continuous velocity independently of bridge state."""
+
+    def forward(
+        self,
+        continuous: torch.Tensor,
+        states: torch.Tensor,
+        time: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        logits = torch.zeros(
+            (len(states), states.shape[1], 2),
+            dtype=continuous.dtype,
+            device=continuous.device,
+        )
+        return torch.ones_like(continuous), logits
+
+
 class MSBMSamplingTimeTests(unittest.TestCase):
     """Keep sampling time on the same normalized scale used for training."""
 
@@ -71,6 +88,35 @@ class MSBMSamplingTimeTests(unittest.TestCase):
 
     def test_backward_sampling_uses_right_normalized_step_boundaries(self) -> None:
         self.assertEqual(self._observe("backward"), [1.0, 0.75, 0.5, 0.25])
+
+    def test_continuous_sampling_integrates_one_unit_bridge_horizon(self) -> None:
+        for steps in (4, 50):
+            with self.subTest(steps=steps):
+                sampler = MixedPathSampler(
+                    timegrid=TimeGrid(
+                        num_steps=steps,
+                        gamma_min=0.001,
+                        gamma_max=0.002,
+                        schedule="linear",
+                    ),
+                    reference=CategoricalReference(
+                        cardinalities=[2],
+                        is_ordered=torch.tensor([False]),
+                        total_number_of_q_powers=steps,
+                        alpha=0.01,
+                    ),
+                    integrator=EulerMaruyama(noise=False),
+                )
+
+                sampled, _, _ = sampler.simulate(
+                    x_cont_init=torch.zeros((2, 1)),
+                    x_cat_init=torch.zeros((2, 1), dtype=torch.int64),
+                    model=_ConstantVelocityOracle(),
+                    direction="backward",
+                    seed=7,
+                )
+
+                torch.testing.assert_close(sampled, torch.ones_like(sampled))
 
 
 if __name__ == "__main__":
