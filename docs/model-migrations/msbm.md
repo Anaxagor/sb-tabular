@@ -198,6 +198,14 @@ common scale-balanced tuning score. Continuous Wasserstein distances use
 holdout-train population scales; finite columns use exact decoded states. The
 complete native config and per-group, per-column score evidence, including
 continuous reference scales, are stored as Optuna trial attributes.
+If a candidate configuration produces non-finite or negative categorical
+sampling probabilities, the native reference raises a typed numerical error
+without clipping or renormalizing the invalid values. Optuna records that
+candidate as `FAILED`, including its complete native config and failure
+evidence, and continues with the remaining trial budget. Other model
+exceptions still stop the study so implementation defects are not hidden.
+The existing `1e-12` stabilization for an underflowed zero-sum row remains
+native model mathematics and is not classified as a trial failure.
 `write_msbm_tuning_artifacts` writes those trials, the best native config,
 reference holdout controls, missing report, seeds, and timings into a
 create-only local handoff directory without exposing the Optuna storage URI.

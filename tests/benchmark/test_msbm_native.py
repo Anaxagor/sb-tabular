@@ -8,7 +8,10 @@ from unittest.mock import MagicMock
 import torch
 
 from sbtab.bridge.losses import MixedSBMLoss
-from sbtab.bridge.reference import CategoricalReference
+from sbtab.bridge.reference import (
+    CategoricalReference,
+    InvalidCategoricalProbabilitiesError,
+)
 from sbtab.solvers.msbm import (
     CategoricalLossNormalization,
     MixedSBMConfig,
@@ -59,6 +62,30 @@ class MSBMNativeInputTests(unittest.TestCase):
                 is_ordered=torch.tensor([False]),
                 total_number_of_q_powers=2,
             )
+
+    def test_reference_reports_invalid_probabilities_before_sampling(self) -> None:
+        reference = CategoricalReference(
+            cardinalities=[2],
+            is_ordered=torch.tensor([False]),
+            total_number_of_q_powers=2,
+        )
+
+        cases = (
+            (torch.tensor([[[torch.nan, 1.0]]]), "non_finite=1"),
+            (torch.tensor([[[-5e-13, 1.0]]]), "negative=1"),
+        )
+        for probabilities, evidence in cases:
+            with self.subTest(evidence=evidence):
+                with self.assertRaisesRegex(
+                    InvalidCategoricalProbabilitiesError,
+                    evidence,
+                ):
+                    reference.sample_from_probs(probabilities)
+
+        underflow_sample = reference.sample_from_probs(
+            torch.tensor([[[0.0, 0.0]]]),
+        )
+        self.assertEqual(tuple(underflow_sample.shape), (1, 1))
 
     def test_solver_uses_configured_categorical_reference_alpha(self) -> None:
         config = _small_config()

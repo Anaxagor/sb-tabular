@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import optuna
 import pandas as pd
@@ -33,6 +35,8 @@ from sbtab.benchmark.adapters.msbm_tuning import (
     tune_msbm,
     write_msbm_tuning_artifacts,
 )
+from sbtab.benchmark.missing import apply_missing_policy
+from sbtab.bridge.reference import InvalidCategoricalProbabilitiesError
 from sbtab.solvers.msbm import (
     CategoricalLossNormalization,
     MixedSBMConfig,
@@ -257,6 +261,69 @@ class MSBMTuningTests(unittest.TestCase):
                     ),
                     suggest_config=_lightweight_config,
                 )
+
+    def test_numerically_failed_trial_does_not_abort_study(self) -> None:
+        dataset = _dataset()
+        missing_report = apply_missing_policy(
+            dataset,
+            MissingPolicy.COMPLETE_CASE,
+        ).report
+        successful_holdout = SimpleNamespace(
+            dataset=dataset,
+            train_raw=dataset.frame.iloc[:12].reset_index(drop=True),
+            validation_raw=dataset.frame.iloc[12:].reset_index(drop=True),
+            synthetic_raw=dataset.frame.iloc[8:12].reset_index(drop=True),
+            fit_seconds=1.0,
+            sample_seconds=0.5,
+            missing_report=missing_report,
+        )
+        outcomes = iter(
+            (
+                InvalidCategoricalProbabilitiesError(
+                    "invalid categorical probabilities"
+                ),
+                successful_holdout,
+            )
+        )
+
+        def run_trial(*args, **kwargs):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with patch(
+            "sbtab.benchmark.adapters.msbm_tuning.run_holdout_trial",
+            side_effect=run_trial,
+        ):
+            result = tune_msbm(
+                dataset,
+                MSBMTuningConfig(
+                    run=HoldoutRunConfig(
+                        split=StratifiedHoldoutConfig(
+                            validation_fraction=0.25,
+                            seed=5,
+                        )
+                    ),
+                    n_trials=2,
+                    sampler_seed=5,
+                ),
+                suggest_config=_lightweight_config,
+            )
+
+        self.assertEqual(
+            tuple(trial.state for trial in result.study.trials),
+            (
+                optuna.trial.TrialState.FAIL,
+                optuna.trial.TrialState.COMPLETE,
+            ),
+        )
+        failed_trial = result.study.trials[0]
+        self.assertIn("native_config", failed_trial.user_attrs)
+        self.assertEqual(
+            failed_trial.user_attrs["failure"]["type"],
+            "invalid_categorical_probabilities",
+        )
 
 
 if __name__ == "__main__":

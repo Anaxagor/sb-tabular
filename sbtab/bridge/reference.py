@@ -7,6 +7,15 @@ from typing import Optional
 import torch
 
 
+class InvalidCategoricalProbabilitiesError(RuntimeError):
+    """A categorical transition produced weights that cannot be sampled.
+
+    This is a numerical model failure, not a request to repair probabilities.
+    Callers may use the distinct exception type to mark one hyperparameter
+    trial as failed while allowing unrelated trials to continue.
+    """
+
+
 @dataclass
 class GaussianReference:
     """
@@ -329,9 +338,21 @@ class CategoricalReference:
         arange = torch.arange(s_max, device=self.device).view(1, 1, s_max)
         mask = arange < self.S.view(1, dims, 1)
 
-        masked_probs = (probs + 1e-12) * mask
-
-        flat_probs = masked_probs.reshape(-1, s_max)
+        valid_probs = probs.masked_select(mask.expand_as(probs))
+        finite = torch.isfinite(valid_probs)
+        non_finite = int((~finite).sum().item())
+        negative = int(((valid_probs < 0.0) & finite).sum().item())
+        flat_probs = ((probs + 1e-12) * mask).reshape(-1, s_max)
+        row_sums = flat_probs.sum(dim=-1)
+        invalid_row_sums = int(
+            ((~torch.isfinite(row_sums)) | (row_sums <= 0.0)).sum().item()
+        )
+        if non_finite or negative or invalid_row_sums:
+            raise InvalidCategoricalProbabilitiesError(
+                "Categorical transition produced invalid sampling "
+                f"probabilities: non_finite={non_finite}, "
+                f"negative={negative}, invalid_row_sums={invalid_row_sums}."
+            )
         samples = torch.multinomial(flat_probs, num_samples=1)
         return samples.view(batch_size, dims)
 

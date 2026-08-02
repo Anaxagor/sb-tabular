@@ -27,6 +27,7 @@ from sbtab.benchmark.runner import (
 )
 from sbtab.benchmark.missing import MissingReport
 from sbtab.benchmark.validation import ContractViolation
+from sbtab.bridge.reference import InvalidCategoricalProbabilitiesError
 from sbtab.evaluation import evaluate_tuning_score
 from sbtab.solvers.msbm import (
     CategoricalLossNormalization,
@@ -257,8 +258,10 @@ def tune_msbm(
 
     ``suggest_config`` is injectable for narrow tests and explicitly reviewed
     alternative MSBM profiles. It must return the real native config type.
-    Trial failures are not converted to an infinite score: precise adapter or
-    model exceptions remain visible to Optuna and the caller.
+    Invalid categorical probabilities mark only their numerically unstable
+    trial as failed. They are not converted to an infinite score or repaired.
+    Other adapter and model exceptions remain visible to Optuna and the caller
+    and stop the study.
     """
 
     if not isinstance(dataset, TabularDataset):
@@ -305,20 +308,30 @@ def tune_msbm(
             run_id=f"{config.run.run_id}-trial-{trial.number}",
             artifact_dir=config.run.artifact_dir / f"trial-{trial.number}",
         )
-        holdout = run_holdout_trial(
-            dataset,
-            lambda: MSBMAdapter(native_config),
-            trial_run,
+        trial.set_user_attr(
+            "native_config",
+            msbm_config_payload(native_config),
         )
+        try:
+            holdout = run_holdout_trial(
+                dataset,
+                lambda: MSBMAdapter(native_config),
+                trial_run,
+            )
+        except InvalidCategoricalProbabilitiesError as error:
+            trial.set_user_attr(
+                "failure",
+                {
+                    "type": "invalid_categorical_probabilities",
+                    "message": str(error),
+                },
+            )
+            raise
         score = evaluate_tuning_score(
             holdout.dataset,
             holdout.train_raw,
             holdout.validation_raw,
             holdout.synthetic_raw,
-        )
-        trial.set_user_attr(
-            "native_config",
-            msbm_config_payload(native_config),
         )
         trial.set_user_attr(
             "mean_standardized_wasserstein",
@@ -354,7 +367,16 @@ def tune_msbm(
         timeout=config.timeout_seconds,
         gc_after_trial=True,
         show_progress_bar=False,
+        catch=(InvalidCategoricalProbabilitiesError,),
     )
+    if not any(
+        trial.state is optuna.trial.TrialState.COMPLETE
+        for trial in study.trials
+    ):
+        raise ContractViolation(
+            "MSBM tuning finished without a successful trial; inspect failed "
+            "trial evidence before changing the search space."
+        )
     best_trial = study.best_trial
     best_config = msbm_config_from_payload(
         best_trial.user_attrs.get("native_config")
