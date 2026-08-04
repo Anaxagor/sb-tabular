@@ -1,9 +1,24 @@
-"""Strict validation at unified benchmark contract boundaries.
+"""Strict validation at the unified benchmark contract boundaries.
 
-Validation rejects ambiguous declarations and invalid prepared model output.
-It never repairs data by clipping, rounding, dropping, reordering, or guessing
-semantics. The caller receives evidence identifying the broken field or
-column.
+This module validates four different objects, each at the boundary that owns
+its invariants:
+
+``TabularDataset``
+    The raw table and its semantic declaration, before missing-value handling
+    and splitting.
+``InputSpec``
+    The three semantic representations requested by a model family.
+``PreparedSchema``
+    The column order and representation metadata produced by a fold-local
+    codec.
+``PreparedTable``
+    The actual codec or adapter data checked against ``PreparedSchema``.
+
+Validation is deliberately fail-fast and non-corrective. It never clips state
+codes, rounds generated values, drops rows, reorders columns, or guesses a
+column kind. Repairing data here would make different models run under
+different effective benchmark conditions and would hide the component that
+broke its contract.
 """
 
 from __future__ import annotations
@@ -43,7 +58,11 @@ class ContractViolation(ValueError):
 EnumT = TypeVar("EnumT", bound=Enum)
 
 
+# These small validators keep public boundary functions focused on semantic
+# relationships while preserving precise field names in error messages.
 def _require_enum(value: object, enum_type: type[EnumT], field_name: str) -> None:
+    """Require an enum member, not an equivalent string or integer value."""
+
     if not isinstance(value, enum_type):
         raise ContractViolation(
             f"{field_name} must be {enum_type.__name__}, got {value!r}."
@@ -51,11 +70,15 @@ def _require_enum(value: object, enum_type: type[EnumT], field_name: str) -> Non
 
 
 def _require_name(value: object, field_name: str) -> None:
+    """Require a usable column or object name without normalizing it."""
+
     if not isinstance(value, str) or not value.strip():
         raise ContractViolation(f"{field_name} must be a non-empty string.")
 
 
 def _duplicates(values: Iterable[str]) -> tuple[str, ...]:
+    """Return each duplicate once, in the order it first repeats."""
+
     seen: set[str] = set()
     duplicates: list[str] = []
     for value in values:
@@ -66,6 +89,8 @@ def _duplicates(values: Iterable[str]) -> tuple[str, ...]:
 
 
 def _require_name_tuple(values: object, field_name: str) -> tuple[str, ...]:
+    """Validate immutable, ordered and duplicate-free column names."""
+
     if not isinstance(values, tuple):
         raise ContractViolation(f"{field_name} must be a tuple of column names.")
     for index, value in enumerate(values):
@@ -82,12 +107,22 @@ def _require_hashable_domain(
     values: tuple[object, ...],
     field_name: str,
 ) -> set[object]:
+    """Validate values suitable for an exact finite-state codebook.
+
+    Hashability is required because the codec maps raw values to integer state
+    codes by dictionary lookup. Missing and duplicate entries would make that
+    mapping ambiguous even if pandas happened to accept them as labels.
+    """
+
     domain: set[object] = set()
     for index, value in enumerate(values):
         if not isinstance(value, Hashable):
             raise ContractViolation(
                 f"{field_name}[{index}]={value!r} is unhashable."
             )
+        # ``pd.isna`` is the cross-dtype missing predicate used by the raw
+        # pipeline. Some exotic scalar objects do not support it cleanly; that
+        # alone does not make a hashable category invalid.
         try:
             is_missing = bool(pd.isna(value))
         except (TypeError, ValueError):
@@ -105,6 +140,11 @@ def _require_hashable_domain(
 
 
 def _require_real_numeric_series(series: pd.Series, semantic_label: str) -> None:
+    """Require finite real numbers while rejecting bool and complex dtypes."""
+
+    # Pandas considers booleans numeric, but treating False/True as magnitudes
+    # would silently change categorical semantics. Complex values likewise
+    # have no agreed ordering or real-valued transport interpretation here.
     if (
         not is_numeric_dtype(series.dtype)
         or is_bool_dtype(series.dtype)
@@ -119,6 +159,8 @@ def _require_real_numeric_series(series: pd.Series, semantic_label: str) -> None
 
 
 def _require_hashable_series(series: pd.Series, semantic_label: str) -> None:
+    """Require trainable categorical scalars without imposing a storage dtype."""
+
     try:
         observed_values = tuple(series.dropna().drop_duplicates().tolist())
     except TypeError as error:
@@ -129,7 +171,13 @@ def _require_hashable_series(series: pd.Series, semantic_label: str) -> None:
 
 
 def validate_column_spec(column: ColumnSpec, series: pd.Series | None = None) -> None:
-    """Validate one column declaration and its optional observed raw support."""
+    """Validate one column declaration and its optional observed raw support.
+
+    Declaration-only validation is used before the frame is indexed, so a bad
+    ``ColumnSpec`` produces a contract error rather than an incidental pandas
+    exception. When ``series`` is supplied, the same declaration is checked
+    against values actually present in the raw table.
+    """
 
     if not isinstance(column, ColumnSpec):
         raise ContractViolation(
@@ -169,6 +217,9 @@ def validate_column_spec(column: ColumnSpec, series: pd.Series | None = None) ->
             f"ColumnSpec[{column.name!r}].ordered_values cannot be empty."
         )
 
+    # ``ordered_values`` is semantic metadata, not merely a list of known
+    # categories. Its tuple position determines adjacency for models that use
+    # ordered finite-state transitions.
     declared_domain = _require_hashable_domain(
         ordered_values,
         f"ColumnSpec[{column.name!r}].ordered_values",
@@ -181,6 +232,8 @@ def validate_column_spec(column: ColumnSpec, series: pd.Series | None = None) ->
         observed_values,
         f"observed support for {column.name!r}",
     )
+    # A declared order may contain states absent from this particular dataset,
+    # but every observed state must have an explicitly declared position.
     missing_values = observed_domain - declared_domain
     if missing_values:
         ordered_missing = [
@@ -193,7 +246,13 @@ def validate_column_spec(column: ColumnSpec, series: pd.Series | None = None) ->
 
 
 def validate_tabular_dataset(dataset: TabularDataset) -> None:
-    """Validate raw schema, modeled order, target, task, and identifier rules."""
+    """Validate the complete raw dataset declaration before orchestration.
+
+    The raw frame must consist exactly of modeled columns plus, optionally, one
+    identifier. The target remains an ordinary modeled column; ``task`` only
+    tells downstream evaluation how to interpret it. This function validates
+    raw values but does not filter missing rows or learn any transform state.
+    """
 
     if not isinstance(dataset, TabularDataset):
         raise ContractViolation(
@@ -216,6 +275,8 @@ def validate_tabular_dataset(dataset: TabularDataset) -> None:
             f"{list(duplicate_frame_columns)!r}."
         )
 
+    # Validate declarations before using their names to index the frame. This
+    # keeps malformed metadata errors separate from missing-frame-column errors.
     modeled_names: list[str] = []
     for column in dataset.columns:
         if not isinstance(column, ColumnSpec):
@@ -239,6 +300,8 @@ def validate_tabular_dataset(dataset: TabularDataset) -> None:
             f"Dataset {dataset.name!r} is missing modeled columns: {missing_columns!r}."
         )
 
+    # A task without a target is unusable, while a target without a task would
+    # force evaluators to infer classification versus regression from dtype.
     if (dataset.target is None) != (dataset.task is None):
         raise ContractViolation(
             "TabularDataset.target and TabularDataset.task must be both present "
@@ -252,6 +315,8 @@ def validate_tabular_dataset(dataset: TabularDataset) -> None:
                 f"Target {dataset.target!r} must be one of the modeled columns."
             )
 
+    # Identifiers are retained only for audit/output reconstruction. They never
+    # enter PreparedTable and therefore cannot also be modeled features.
     expected_frame_columns = set(modeled_names)
     if dataset.identifier is not None:
         _require_name(dataset.identifier, "TabularDataset.identifier")
@@ -265,6 +330,9 @@ def validate_tabular_dataset(dataset: TabularDataset) -> None:
             )
         expected_frame_columns.add(dataset.identifier)
 
+    # Reject extra raw columns instead of silently dropping them. Otherwise a
+    # misspelled ColumnSpec or forgotten target could yield a successful but
+    # semantically different experiment.
     undeclared_columns = [
         str(name)
         for name in dataset.frame.columns
@@ -276,12 +344,20 @@ def validate_tabular_dataset(dataset: TabularDataset) -> None:
             f"{undeclared_columns!r}. Declare one as identifier or remove it."
         )
 
+    # Only after structural checks succeed do we validate each observed raw
+    # support against its declaration.
     for column in dataset.columns:
         validate_column_spec(column, dataset.frame[column.name])
 
 
 def validate_input_spec(spec: InputSpec) -> None:
-    """Validate that a model requests exactly the approved semantic enums."""
+    """Validate the model's three semantic representation requests.
+
+    Exact enum membership is intentional: accepting strings here would turn
+    typos and future enum additions into implicit compatibility behavior.
+    Native tensor layout, dtype and target extraction are adapter concerns and
+    therefore have no corresponding checks in this function.
+    """
 
     if not isinstance(spec, InputSpec):
         raise ContractViolation(
@@ -293,7 +369,12 @@ def validate_input_spec(spec: InputSpec) -> None:
 
 
 def validate_state_column(name: str, state: StateColumn) -> None:
-    """Validate cardinality and order meaning for one prepared state column."""
+    """Validate finite-state cardinality and ordering metadata for one column.
+
+    ``cardinality`` defines the complete valid prepared-code interval
+    ``[0, cardinality)``. ``ordered`` describes whether code adjacency has
+    semantic meaning; it is not inferred later from numeric-looking values.
+    """
 
     _require_name(name, "state column name")
     if not isinstance(state, StateColumn):
@@ -317,7 +398,13 @@ def validate_state_column(name: str, state: StateColumn) -> None:
 
 
 def validate_prepared_schema(schema: PreparedSchema) -> None:
-    """Validate canonical order, semantic partition, target, and state metadata."""
+    """Validate canonical order, semantic partition, target, and state metadata.
+
+    Every prepared column belongs to exactly one semantic group, and each group
+    preserves its relative position from ``column_order``. State metadata is
+    keyed by column name so adapters never have to infer cardinality or ordering
+    from an array position.
+    """
 
     if not isinstance(schema, PreparedSchema):
         raise ContractViolation(
@@ -341,6 +428,8 @@ def validate_prepared_schema(schema: PreparedSchema) -> None:
             "categorical_columns",
         ),
     }
+    # The three groups are a partition, not independent convenience lists. A
+    # duplicate would give two conflicting meanings to the same prepared data.
     assigned = [name for values in groups.values() for name in values]
     duplicates = _duplicates(assigned)
     if duplicates:
@@ -355,6 +444,8 @@ def validate_prepared_schema(schema: PreparedSchema) -> None:
             "Prepared semantic groups must partition column_order exactly; "
             f"missing={missing_from_groups!r}, unknown={unknown_group_columns!r}."
         )
+    # Adapters may form separate native blocks, but the order inside each block
+    # must remain a stable projection of the canonical table order.
     for group_name, group_columns in groups.items():
         group_set = set(group_columns)
         canonical_group_order = tuple(
@@ -366,6 +457,8 @@ def validate_prepared_schema(schema: PreparedSchema) -> None:
                 f"actual={group_columns!r}, expected={canonical_group_order!r}."
             )
 
+    # Prepared data keeps the target in the canonical table. These fields mark
+    # its evaluation semantics; they do not authorize a shared X/y split.
     if (schema.target_col is None) != (schema.task_type is None):
         raise ContractViolation(
             "PreparedSchema.target_col and task_type must be both present or "
@@ -379,6 +472,8 @@ def validate_prepared_schema(schema: PreparedSchema) -> None:
                 f"Prepared target {schema.target_col!r} is absent from column_order."
             )
 
+    # Continuous columns never use finite-state metadata. Their representation
+    # is governed solely by ContinuousView and codec transform state.
     allowed_state_columns = set(schema.discrete_columns) | set(
         schema.categorical_columns
     )
@@ -394,6 +489,9 @@ def validate_prepared_schema(schema: PreparedSchema) -> None:
                 f"Numeric discrete state column {name!r} must be ordered."
             )
 
+    # InputSpec chooses one view for an entire semantic group. Partial metadata
+    # would imply that different columns silently received different views, so
+    # a finite-state group must be covered completely or not at all.
     state_names = set(schema.state_columns)
     for group_name, group_columns in (
         ("discrete", schema.discrete_columns),
@@ -416,7 +514,13 @@ def validate_prepared_table(
     *,
     expected_rows: int | None = None,
 ) -> None:
-    """Validate one prepared adapter input or output without repairing it."""
+    """Validate one codec or adapter table without repairing model output.
+
+    This function is used at both sides of the adapter boundary. It checks that
+    physical DataFrame values implement the attached semantic schema, including
+    exact column order, optional expected row count, missingness, numeric
+    finiteness, raw-view value types and integer state-code ranges.
+    """
 
     if not isinstance(table, PreparedTable):
         raise ContractViolation(
@@ -426,6 +530,8 @@ def validate_prepared_table(
         raise ContractViolation("PreparedTable.frame must be a pandas DataFrame.")
     validate_prepared_schema(table.schema)
 
+    # Equality rather than set comparison protects the canonical order used to
+    # assemble native tensors and to decode the returned sample.
     actual_columns = tuple(table.frame.columns.tolist())
     if actual_columns != table.schema.column_order:
         raise ContractViolation(
@@ -443,6 +549,9 @@ def validate_prepared_table(
                 f"{expected_rows}."
             )
 
+    # MissingPolicy is applied once before splitting. Missing values here mean
+    # that a codec or adapter violated the trusted boundary; this layer must not
+    # apply a second, model-specific fallback.
     missing_counts = table.frame.isna().sum()
     columns_with_missing = {
         str(name): int(count)
@@ -461,6 +570,9 @@ def validate_prepared_table(
             f"Prepared continuous column {name!r}",
         )
 
+    # A finite column without StateColumn metadata is intentionally in its raw
+    # view. Numeric discrete values remain real numeric; categorical values may
+    # use any exact hashable scalar representation.
     state_names = set(table.schema.state_columns)
     for name in table.schema.discrete_columns:
         if name not in state_names:
@@ -475,6 +587,9 @@ def validate_prepared_table(
                 f"Prepared raw categorical column {name!r}",
             )
 
+    # Encoded states are strict integer codes. Numerically integral floats are
+    # rejected instead of rounded because rounding would conceal invalid model
+    # output and could change the generated distribution.
     for name, state in table.schema.state_columns.items():
         series = table.frame[name]
         if is_bool_dtype(series.dtype) or not is_integer_dtype(series.dtype):
