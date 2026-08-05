@@ -56,6 +56,7 @@ jobs:
           python -m unittest
           tests.benchmark.test_contracts
           tests.benchmark.test_import_boundaries
+          tests.benchmark.test_missing
 
   minimum-dependencies:
     name: Minimum supported dependencies
@@ -79,3 +80,4 @@ jobs:
           python -m unittest
           tests.benchmark.test_contracts
           tests.benchmark.test_import_boundaries
+          tests.benchmark.test_missing

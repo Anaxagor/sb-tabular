@@ -144,6 +144,38 @@ Missing-value filtering and learned transforms are not validation operations.
 They will be owned by later benchmark components and must be applied uniformly
 across models.
 
+## Missing values before splitting
+
+`sbtab.benchmark.missing` owns one experiment-wide policy over the raw modeled
+table. The caller selects an enum value explicitly:
+
+- `ERROR` preserves all rows and raises `MissingValuesError` when any modeled
+  value is missing;
+- `COMPLETE_CASE` removes a row when any modeled column, including target, is
+  missing.
+
+The optional identifier is ignored by both policies because it never enters a
+model. `COMPLETE_CASE` may therefore retain a row whose identifier is missing.
+No adapter or model receives the policy or may add its own fallback.
+
+`apply_missing_policy` returns a `MissingPolicyResult` containing the retained
+`TabularDataset` and a `MissingReport`. Under `ERROR`, the same report is
+attached to the exception. It records:
+
+- row counts before and after policy application;
+- dropped row count and source-row fraction;
+- pre-policy missing counts for every modeled column in canonical order;
+- raw classification-target counts before and after filtering when applicable.
+
+The official v1 comparison will select `COMPLETE_CASE` once before creating
+common splits. `ERROR` is the intended safe default when benchmark
+configuration is introduced. This module itself has no implicit default:
+callers must pass the policy. Imputation and model-native missing handling are
+not v1 enum values and require a separate contract decision.
+
+This policy layer does not create holdout or KFold splits. Splitting remains a
+separate benchmark-owned component that consumes only the post-policy dataset.
+
 ## Dependency boundary
 
 The new `sbtab.benchmark` package must not import the legacy orchestration APIs
@@ -167,9 +199,11 @@ From the repository root, run the tests owned by this contract:
 ```bash
 python -m unittest \
   tests.benchmark.test_contracts \
-  tests.benchmark.test_import_boundaries
+  tests.benchmark.test_import_boundaries \
+  tests.benchmark.test_missing
 ```
 
 The tests cover malformed declarations, target/task and identifier rules,
 semantic partitions, finite-state ranges, timestamp category identity,
-canonical order, and both dependency directions.
+canonical order, both dependency directions, and uniform pre-split missing
+handling.
