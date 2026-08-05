@@ -112,6 +112,20 @@ class BenchmarkImportBoundaryTests(unittest.TestCase):
         self.assertIn("sbtab.data", modules)
         self.assertTrue(any(_has_prefix(module, LEGACY_PREFIXES) for module in modules))
 
+    def test_absolute_from_import_cannot_hide_upward_dependency(self) -> None:
+        tree = ast.parse("from sbtab import evaluation")
+        node = tree.body[0]
+
+        self.assertIsInstance(node, ast.ImportFrom)
+        modules = _imported_modules(node, "sbtab.models")  # type: ignore[arg-type]
+        self.assertIn("sbtab.evaluation", modules)
+        self.assertTrue(
+            any(
+                _has_prefix(module, UPWARD_DEPENDENCY_PREFIXES)
+                for module in modules
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
