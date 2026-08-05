@@ -92,8 +92,9 @@ class ColumnSpec:
         replace it from pandas dtype or observed cardinality.
     ordered_values:
         Optional complete ordinal domain in semantic order. It is valid only
-        for finite-state columns. ``None`` means that a categorical column is
-        nominal; numeric discrete columns are ordered by their numeric support.
+        for categorical columns. ``None`` means that a categorical column is
+        nominal. Numeric discrete columns are always ordered by ascending
+        numeric support and therefore cannot override that order here.
     """
 
     name: str

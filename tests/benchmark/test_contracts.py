@@ -70,6 +70,16 @@ class TabularDatasetValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractViolation, "duplicate names"):
             validate_tabular_dataset(dataset)
 
+    def test_duplicate_raw_frame_column_is_rejected(self) -> None:
+        dataset = TabularDataset(
+            name="duplicate-frame-label",
+            frame=pd.DataFrame([[1.0, 2.0]], columns=["value", "value"]),
+            columns=(ColumnSpec("value", ColumnKind.CONTINUOUS),),
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "duplicate column labels"):
+            validate_tabular_dataset(dataset)
+
     def test_invalid_column_name_raises_contextual_contract_error(self) -> None:
         dataset = TabularDataset(
             name="invalid-name",
@@ -138,6 +148,37 @@ class TabularDatasetValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractViolation, "both present"):
             validate_tabular_dataset(dataset)
 
+    def test_raw_target_kind_must_match_task(self) -> None:
+        cases = (
+            (TaskType.CLASSIFICATION, ColumnKind.CONTINUOUS, "discrete or categorical"),
+            (TaskType.REGRESSION, ColumnKind.CATEGORICAL, "continuous or discrete"),
+        )
+        for task, kind, expected_message in cases:
+            with self.subTest(task=task, kind=kind):
+                dataset = TabularDataset(
+                    name="incompatible-target",
+                    frame=pd.DataFrame({"target": [1.0]}),
+                    columns=(ColumnSpec("target", kind),),
+                    target="target",
+                    task=task,
+                )
+
+                with self.assertRaisesRegex(ContractViolation, expected_message):
+                    validate_tabular_dataset(dataset)
+
+    def test_numeric_discrete_target_is_valid_for_either_task(self) -> None:
+        for task in TaskType:
+            with self.subTest(task=task):
+                dataset = TabularDataset(
+                    name="numeric-discrete-target",
+                    frame=pd.DataFrame({"target": [0, 1]}),
+                    columns=(ColumnSpec("target", ColumnKind.DISCRETE),),
+                    target="target",
+                    task=task,
+                )
+
+                validate_tabular_dataset(dataset)
+
     def test_numeric_semantics_reject_strings_without_reclassification(self) -> None:
         dataset = TabularDataset(
             name="wrong-kind",
@@ -157,21 +198,23 @@ class TabularDatasetValidationTests(unittest.TestCase):
 
         validate_tabular_dataset(dataset)
 
-    def test_continuous_column_cannot_declare_ordered_values(self) -> None:
-        dataset = TabularDataset(
-            name="bad-order",
-            frame=pd.DataFrame({"value": [1.0, 2.0]}),
-            columns=(
-                ColumnSpec(
-                    "value",
-                    ColumnKind.CONTINUOUS,
-                    ordered_values=(1.0, 2.0),
-                ),
-            ),
-        )
+    def test_only_categorical_column_can_declare_ordered_values(self) -> None:
+        for kind in (ColumnKind.CONTINUOUS, ColumnKind.DISCRETE):
+            with self.subTest(kind=kind):
+                dataset = TabularDataset(
+                    name="bad-order",
+                    frame=pd.DataFrame({"value": [1.0, 2.0]}),
+                    columns=(
+                        ColumnSpec(
+                            "value",
+                            kind,
+                            ordered_values=(1.0, 2.0),
+                        ),
+                    ),
+                )
 
-        with self.assertRaisesRegex(ContractViolation, "cannot declare"):
-            validate_tabular_dataset(dataset)
+                with self.assertRaisesRegex(ContractViolation, "Only categorical"):
+                    validate_tabular_dataset(dataset)
 
     def test_ordered_domain_must_cover_observed_values(self) -> None:
         dataset = TabularDataset(
@@ -205,6 +248,22 @@ class TabularDatasetValidationTests(unittest.TestCase):
         )
 
         validate_tabular_dataset(dataset)
+
+    def test_nested_unhashable_ordered_value_is_a_contract_violation(self) -> None:
+        dataset = TabularDataset(
+            name="nested-unhashable",
+            frame=pd.DataFrame({"category": ["known"]}),
+            columns=(
+                ColumnSpec(
+                    "category",
+                    ColumnKind.CATEGORICAL,
+                    ordered_values=(("nested", ["list"]),),  # type: ignore[list-item]
+                ),
+            ),
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "unhashable"):
+            validate_tabular_dataset(dataset)
 
 
 class InputAndPreparedValidationTests(unittest.TestCase):
@@ -319,6 +378,25 @@ class InputAndPreparedValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractViolation, "must follow column_order"):
             validate_prepared_schema(schema)
 
+    def test_prepared_target_kind_must_match_task(self) -> None:
+        cases = (
+            (TaskType.CLASSIFICATION, ("target",), (), "discrete or categorical"),
+            (TaskType.REGRESSION, (), ("target",), "continuous or discrete"),
+        )
+        for task, continuous, categorical, expected_message in cases:
+            with self.subTest(task=task):
+                schema = PreparedSchema(
+                    column_order=("target",),
+                    continuous_columns=continuous,
+                    discrete_columns=(),
+                    categorical_columns=categorical,
+                    target_col="target",
+                    task_type=task,
+                )
+
+                with self.assertRaisesRegex(ContractViolation, expected_message):
+                    validate_prepared_schema(schema)
+
     def test_numeric_discrete_state_must_be_ordered(self) -> None:
         schema = PreparedSchema(
             column_order=("count",),
@@ -334,6 +412,27 @@ class InputAndPreparedValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ContractViolation, "must be ordered"):
             validate_prepared_schema(schema)
+
+    def test_state_metadata_fields_are_strictly_typed_and_positive(self) -> None:
+        invalid_states = (
+            (StateColumn(cardinality=True, ordered=True), "must be an integer"),
+            (StateColumn(cardinality=0, ordered=True), "must be positive"),
+            (StateColumn(cardinality=2, ordered=1), "must be bool"),
+        )
+        for state, expected_message in invalid_states:
+            with self.subTest(state=state):
+                schema = PreparedSchema(
+                    column_order=("count",),
+                    continuous_columns=(),
+                    discrete_columns=("count",),
+                    categorical_columns=(),
+                    target_col=None,
+                    task_type=None,
+                    state_columns={"count": state},
+                )
+
+                with self.assertRaisesRegex(ContractViolation, expected_message):
+                    validate_prepared_schema(schema)
 
     def test_state_metadata_cannot_cover_only_part_of_semantic_group(self) -> None:
         schema = PreparedSchema(
@@ -364,6 +463,46 @@ class InputAndPreparedValidationTests(unittest.TestCase):
         )
 
         validate_prepared_table(table, expected_rows=2)
+
+    def test_expected_row_count_is_strictly_validated(self) -> None:
+        table = PreparedTable(
+            frame=pd.DataFrame(
+                {
+                    "amount": [0.1],
+                    "count": pd.Series([1], dtype="int64"),
+                    "label": pd.Series([1], dtype="int64"),
+                }
+            ),
+            schema=self._schema(),
+        )
+        cases = (
+            (True, "must be an integer"),
+            (1.0, "must be an integer"),
+            (-1, "must be non-negative"),
+            (2, "row count"),
+        )
+        for expected_rows, expected_message in cases:
+            with self.subTest(expected_rows=expected_rows):
+                with self.assertRaisesRegex(ContractViolation, expected_message):
+                    validate_prepared_table(
+                        table,
+                        expected_rows=expected_rows,  # type: ignore[arg-type]
+                    )
+
+    def test_prepared_table_rejects_missing_values(self) -> None:
+        table = PreparedTable(
+            frame=pd.DataFrame(
+                {
+                    "amount": [None],
+                    "count": pd.Series([1], dtype="int64"),
+                    "label": pd.Series([1], dtype="int64"),
+                }
+            ),
+            schema=self._schema(),
+        )
+
+        with self.assertRaisesRegex(ContractViolation, "contains missing values"):
+            validate_prepared_table(table)
 
     def test_prepared_table_rejects_invalid_state_without_clipping(self) -> None:
         table = PreparedTable(

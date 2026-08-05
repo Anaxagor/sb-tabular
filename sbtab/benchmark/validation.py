@@ -23,7 +23,7 @@ broke its contract.
 
 from __future__ import annotations
 
-from collections.abc import Hashable, Iterable
+from collections.abc import Iterable
 from enum import Enum
 from typing import TypeVar
 
@@ -116,10 +116,15 @@ def _require_hashable_domain(
 
     domain: set[object] = set()
     for index, value in enumerate(values):
-        if not isinstance(value, Hashable):
+        # ``isinstance(value, Hashable)`` is only a nominal check. A tuple that
+        # contains a list, for example, advertises ``__hash__`` but still
+        # raises TypeError when a dictionary or set actually hashes it.
+        try:
+            hash(value)
+        except TypeError as error:
             raise ContractViolation(
                 f"{field_name}[{index}]={value!r} is unhashable."
-            )
+            ) from error
         # ``pd.isna`` is the cross-dtype missing predicate used by the raw
         # pipeline. Some exotic scalar objects do not support it cleanly; that
         # alone does not make a hashable category invalid.
@@ -208,9 +213,10 @@ def validate_column_spec(column: ColumnSpec, series: pd.Series | None = None) ->
         raise ContractViolation(
             f"ColumnSpec[{column.name!r}].ordered_values must be a tuple or None."
         )
-    if column.kind is ColumnKind.CONTINUOUS:
+    if column.kind is not ColumnKind.CATEGORICAL:
         raise ContractViolation(
-            f"Continuous column {column.name!r} cannot declare ordered_values."
+            f"Only categorical column {column.name!r} can declare ordered_values; "
+            f"its kind is {column.kind.value!r}."
         )
     if not ordered_values:
         raise ContractViolation(
@@ -242,6 +248,31 @@ def validate_column_spec(column: ColumnSpec, series: pd.Series | None = None) ->
         raise ContractViolation(
             f"Column {column.name!r} has observed values absent from "
             f"ordered_values: {ordered_missing!r}."
+        )
+
+
+def _validate_target_kind(
+    *,
+    target_name: str,
+    task: TaskType,
+    target_kind: ColumnKind,
+) -> None:
+    """Reject target semantics that contradict the declared utility task.
+
+    A numeric discrete target is deliberately valid for either task: it may
+    denote a finite class label or an integer-valued regression response. The
+    explicit ``task`` field disambiguates those two legitimate meanings.
+    """
+
+    if task is TaskType.CLASSIFICATION and target_kind is ColumnKind.CONTINUOUS:
+        raise ContractViolation(
+            f"Classification target {target_name!r} must be discrete or "
+            "categorical, not continuous."
+        )
+    if task is TaskType.REGRESSION and target_kind is ColumnKind.CATEGORICAL:
+        raise ContractViolation(
+            f"Regression target {target_name!r} must be continuous or discrete, "
+            "not categorical."
         )
 
 
@@ -314,6 +345,12 @@ def validate_tabular_dataset(dataset: TabularDataset) -> None:
             raise ContractViolation(
                 f"Target {dataset.target!r} must be one of the modeled columns."
             )
+        target_kind = dataset.column(dataset.target).kind
+        _validate_target_kind(
+            target_name=dataset.target,
+            task=dataset.task,
+            target_kind=target_kind,
+        )
 
     # Identifiers are retained only for audit/output reconstruction. They never
     # enter PreparedTable and therefore cannot also be modeled features.
@@ -471,6 +508,17 @@ def validate_prepared_schema(schema: PreparedSchema) -> None:
             raise ContractViolation(
                 f"Prepared target {schema.target_col!r} is absent from column_order."
             )
+        if schema.target_col in schema.continuous_columns:
+            target_kind = ColumnKind.CONTINUOUS
+        elif schema.target_col in schema.discrete_columns:
+            target_kind = ColumnKind.DISCRETE
+        else:
+            target_kind = ColumnKind.CATEGORICAL
+        _validate_target_kind(
+            target_name=schema.target_col,
+            task=schema.task_type,
+            target_kind=target_kind,
+        )
 
     # Continuous columns never use finite-state metadata. Their representation
     # is governed solely by ContinuousView and codec transform state.
