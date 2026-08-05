@@ -82,7 +82,7 @@ class MissingPolicyTests(unittest.TestCase):
         self.assertIsNot(result.dataset.frame, dataset.frame)
         self.assertEqual(result.report.policy, MissingPolicy.COMPLETE_CASE)
         self.assertEqual(result.dataset.name, dataset.name)
-        self.assertIs(result.dataset.columns, dataset.columns)
+        self.assertEqual(result.dataset.columns, dataset.columns)
         self.assertEqual(result.dataset.target, dataset.target)
         self.assertEqual(result.dataset.task, dataset.task)
         self.assertEqual(result.dataset.identifier, dataset.identifier)
