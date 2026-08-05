@@ -141,8 +141,9 @@ replace, or silently drop them to make a model run succeed.
   attached schema.
 
 Missing-value filtering and learned transforms are not validation operations.
-They will be owned by later benchmark components and must be applied uniformly
-across models.
+The next section assigns filtering to one common pre-split policy. Learned
+transforms remain the responsibility of a later fold-local codec and must be
+applied uniformly across models.
 
 ## Missing values before splitting
 
