@@ -160,6 +160,18 @@ The reverse boundary is equally strict: native `bridge`, `models`, and
 `solvers` code must not import the higher-level `benchmark` or `evaluation`
 packages.
 
+## Dataset declarations
+
+Concrete dataset semantics live under `sbtab/benchmark/datasets/` as small
+factories that return validated `TabularDataset` objects. A declaration owns
+only source identity, canonical column order, column kinds, target/task, and an
+optional identifier. Acquisition, missing-value policy, splitting,
+preprocessing, model selection, and evaluation remain outside it.
+
+The first declaration is UCI Online Shoppers dataset 468. Its source evidence,
+semantic groups, and intentional correction to a legacy target mapping are
+recorded in [`datasets/online-shoppers.md`](datasets/online-shoppers.md).
+
 ## Verification
 
 From the repository root, run the tests owned by this contract:
@@ -167,9 +179,11 @@ From the repository root, run the tests owned by this contract:
 ```bash
 python -m unittest \
   tests.benchmark.test_contracts \
-  tests.benchmark.test_import_boundaries
+  tests.benchmark.test_import_boundaries \
+  tests.benchmark.test_online_shoppers
 ```
 
 The tests cover malformed declarations, target/task and identifier rules,
 semantic partitions, finite-state ranges, timestamp category identity,
-canonical order, and both dependency directions.
+canonical order, both dependency directions, and the approved Online Shoppers
+source schema.

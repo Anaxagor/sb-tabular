@@ -265,13 +265,16 @@ root (or add it to `PYTHONPATH`) so that `import sbtab` resolves.
 The initial model-independent data boundary lives in `sbtab/benchmark/`. It defines explicit
 raw column semantics and the canonical table exchanged with future model adapters. See
 [`docs/benchmark-contract.md`](docs/benchmark-contract.md) for its scope and invariants.
+The first concrete declaration, UCI Online Shoppers 468, has a separate
+[`source and semantics note`](docs/datasets/online-shoppers.md).
 
 Run its focused tests from the repository root:
 
 ```bash
 python -m unittest \
   tests.benchmark.test_contracts \
-  tests.benchmark.test_import_boundaries
+  tests.benchmark.test_import_boundaries \
+  tests.benchmark.test_online_shoppers
 ```
 
 ## Status and known gaps
