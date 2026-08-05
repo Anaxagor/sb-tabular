@@ -156,6 +156,9 @@ under:
 Those modules remain useful migration evidence, but extending them would bind
 the new contract to the assumptions it is intended to replace. An AST-based
 test checks both absolute and relative imports without importing their targets.
+The reverse boundary is equally strict: native `bridge`, `models`, and
+`solvers` code must not import the higher-level `benchmark` or `evaluation`
+packages.
 
 ## Verification
 
