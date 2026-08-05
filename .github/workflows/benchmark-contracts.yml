@@ -1,0 +1,81 @@
+name: Benchmark contracts
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/benchmark-contracts.yml"
+      - "README.md"
+      - "docs/benchmark-contract.md"
+      - "requirements.txt"
+      - "sbtab/benchmark/**"
+      - "sbtab/bridge/**"
+      - "sbtab/models/**"
+      - "sbtab/solvers/**"
+      - "tests/benchmark/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/benchmark-contracts.yml"
+      - "README.md"
+      - "docs/benchmark-contract.md"
+      - "requirements.txt"
+      - "sbtab/benchmark/**"
+      - "sbtab/bridge/**"
+      - "sbtab/models/**"
+      - "sbtab/solvers/**"
+      - "tests/benchmark/**"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install contract dependencies
+        run: python -m pip install "numpy>=1.26" "pandas>=2.2"
+
+      - name: Run contract tests
+        run: >-
+          python -m unittest
+          tests.benchmark.test_contracts
+          tests.benchmark.test_import_boundaries
+
+  minimum-dependencies:
+    name: Minimum supported dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.10"
+
+      - name: Install minimum contract dependencies
+        run: python -m pip install "numpy==1.26.0" "pandas==2.2.0"
+
+      - name: Run contract tests
+        run: >-
+          python -m unittest
+          tests.benchmark.test_contracts
+          tests.benchmark.test_import_boundaries
