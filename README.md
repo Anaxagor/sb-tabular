@@ -271,8 +271,7 @@ Run its focused tests from the repository root:
 ```bash
 python -m unittest \
   tests.benchmark.test_contracts \
-  tests.benchmark.test_import_boundaries \
-  tests.benchmark.test_online_shoppers
+  tests.benchmark.test_import_boundaries
 ```
 
 ## Status and known gaps

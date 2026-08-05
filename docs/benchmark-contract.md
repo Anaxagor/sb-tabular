@@ -29,7 +29,8 @@ integration details, not dataset semantics.
 
 - `name` is its exact DataFrame label;
 - `kind` is `CONTINUOUS`, `DISCRETE`, or `CATEGORICAL`;
-- `ordered_values` optionally declares a complete ordinal domain.
+- `ordered_values` optionally declares a complete ordinal domain for a
+  categorical column.
 
 Column kind is explicit. Shared code and adapters must not infer it from pandas
 dtype, observed cardinality, or a dataset name.
@@ -37,6 +38,10 @@ dtype, observed cardinality, or a dataset name.
 Continuous columns have real-valued support. Discrete columns have finite
 numeric support with meaningful order. Categorical columns are nominal unless
 `ordered_values` gives an explicit semantic order.
+
+Numeric discrete support is always ordered by ascending numeric value.
+`ordered_values` cannot override that order; the field exists only for ordinal
+categorical values such as `("low", "medium", "high")`.
 
 ### `TabularDataset`
 
@@ -55,6 +60,15 @@ identifier. Undeclared columns are rejected instead of silently dropped.
 The target remains an ordinary modeled column. It is not removed from the
 table or encoded as a separate input mode. If a native model API requires a
 separate `y`, its adapter may extract and later reassemble it.
+
+The target kind must agree with its declared utility task:
+
+- classification accepts categorical or numeric discrete targets;
+- regression accepts continuous or numeric discrete targets.
+
+A numeric discrete target is valid for either task because `task`, rather than
+storage dtype, states whether its finite numeric values are class labels or a
+regression response.
 
 An identifier is never modeled. A future runner may retain it for audit or
 reconstruct output identifiers after generation, but it must not pass training
@@ -95,7 +109,9 @@ cardinality.
 
 The `state_columns` mapping is copied and made read-only during construction.
 This prevents later mutation of a caller-owned dictionary from changing an
-already constructed schema.
+already constructed schema. Code that serializes artifacts must explicitly
+copy it with `dict(schema.state_columns)` instead of assuming that a mutable
+dictionary remains attached to the frozen schema.
 
 ### `PreparedTable`
 
@@ -141,20 +157,6 @@ Those modules remain useful migration evidence, but extending them would bind
 the new contract to the assumptions it is intended to replace. An AST-based
 test checks both absolute and relative imports without importing their targets.
 
-## Concrete mixed-table declaration
-
-`sbtab.benchmark.datasets.online_shoppers` supplies one explicit declaration
-for UCI Online Shoppers (dataset 468). It contains no download logic and does
-not infer semantics from pandas dtypes.
-
-The three page-count columns are numeric discrete states. Duration and rate
-columns are continuous. Remaining finite columns, including `Revenue`, are
-categorical. `Month` stays nominal because a linear ordered-state model would
-not represent its cyclic neighbourhood correctly.
-
-This declaration is included to exercise the contract against a real mixed
-schema. It does not introduce an MSBM adapter or benchmark runner.
-
 ## Verification
 
 From the repository root, run the tests owned by this contract:
@@ -162,10 +164,9 @@ From the repository root, run the tests owned by this contract:
 ```bash
 python -m unittest \
   tests.benchmark.test_contracts \
-  tests.benchmark.test_import_boundaries \
-  tests.benchmark.test_online_shoppers
+  tests.benchmark.test_import_boundaries
 ```
 
-The tests cover malformed declarations, target and identifier rules, semantic
-partitions, finite-state ranges, timestamp category identity, canonical order,
-and the legacy import boundary.
+The tests cover malformed declarations, target/task and identifier rules,
+semantic partitions, finite-state ranges, timestamp category identity,
+canonical order, and both dependency directions.

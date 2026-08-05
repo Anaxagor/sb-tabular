@@ -1,4 +1,4 @@
-"""Unified, model-independent benchmark contracts and orchestration.
+"""Unified, model-independent benchmark data contracts.
 
 The package is intentionally independent of the legacy ``sbtab.data``,
 ``sbtab.transforms``, and ``sbtab.experiments`` orchestration paths.
