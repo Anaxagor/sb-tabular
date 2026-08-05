@@ -16,7 +16,7 @@ from sbtab.benchmark.datasets import (
 
 
 def _online_shoppers_frame() -> pd.DataFrame:
-    """Return a tiny raw fixture with the real UCI names and storage types."""
+    """Return source names with representative source-compatible values."""
 
     return pd.DataFrame(
         {
@@ -51,6 +51,7 @@ class OnlineShoppersDeclarationTests(unittest.TestCase):
         dataset = make_online_shoppers_dataset(frame)
 
         self.assertEqual(ONLINE_SHOPPERS_UCI_ID, 468)
+        self.assertEqual(ONLINE_SHOPPERS_TARGET, "Revenue")
         self.assertIs(dataset.frame, frame)
         self.assertEqual(dataset.column_order, tuple(frame.columns))
         self.assertEqual(dataset.target, ONLINE_SHOPPERS_TARGET)

@@ -1,7 +1,5 @@
 # Online Shoppers dataset declaration
 
-Status: review candidate for the unified benchmark.
-
 ## Source identity
 
 The declaration targets the
@@ -38,14 +36,16 @@ benchmark table as a separate shared `y`.
 
 ## Intentional correction to legacy evidence
 
-The canonical loader in `sbtab/data/get_datasets.py` already fetches UCI 468
-and passes `Revenue` as its classification target. Several legacy metric and
-tuning scripts instead map Online Shoppers to `ProductRelated`. That mapping
-contradicts both UCI and the repository loader, so the new declaration does not
-preserve it.
+`sbtab/data/get_datasets.py` contains two contradictory paths. Its legacy
+continuous-bundle target map assigns `ProductRelated`, while its direct mixed
+UCI fetch correctly passes `Revenue` as the classification target. Several
+legacy metric and tuning scripts repeat the `ProductRelated` mapping. The UCI
+source resolves the conflict in favour of `Revenue`, so the new declaration
+does not preserve the other mapping.
 
-This PR records the correction without modifying old entrypoints. Moving those
-entrypoints onto the new benchmark remains a separate migration task.
+The declaration records the correction without modifying old entrypoints.
+Moving those entrypoints onto the new benchmark remains a separate migration
+task.
 
 ## Ownership boundary
 
@@ -64,13 +64,10 @@ order.
 
 ## Verification
 
-The committed tests use a small local frame with the real source names and
-storage types, so CI does not depend on network availability:
+The committed tests use a small local frame with the source names and
+representative source-compatible storage types, so CI does not depend on
+network availability:
 
 ```bash
 python -m unittest tests.benchmark.test_online_shoppers
 ```
-
-Before this review candidate was prepared, the declaration was also checked
-against a fresh `ucimlrepo.fetch_ucirepo(id=468)` response: 12,330 feature rows,
-12,330 target rows, the expected 17 feature names, and one `Revenue` target.
