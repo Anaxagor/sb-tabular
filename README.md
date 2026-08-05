@@ -260,11 +260,28 @@ pip install -r requirements.txt
 Python ≥ 3.10 is assumed. There is no `pyproject.toml` yet, so run scripts from the repository
 root (or add it to `PYTHONPATH`) so that `import sbtab` resolves.
 
+## Unified benchmark contract
+
+The initial model-independent data boundary lives in `sbtab/benchmark/`. It defines explicit
+raw column semantics and the canonical table exchanged with future model adapters. See
+[`docs/benchmark-contract.md`](docs/benchmark-contract.md) for its scope and invariants.
+The first concrete declaration, UCI Online Shoppers 468, has a separate
+[`source and semantics note`](docs/datasets/online-shoppers.md).
+
+Run its focused tests from the repository root:
+
+```bash
+python -m unittest \
+  tests.benchmark.test_contracts \
+  tests.benchmark.test_import_boundaries \
+  tests.benchmark.test_online_shoppers
+```
+
 ## Status and known gaps
 
 - The evaluation utilities are being consolidated into `sbtab/evaluation/`; the metric
   implementations currently live inside the `sbtab/experiments/*_metrics.py` scripts.
 - CSBM (categorical) and MixedSBM (mixed) are the newest solvers and do not yet have example
   scripts or committed benchmark results.
-- No `pyproject.toml` packaging, tests, or CI yet (dependencies are tracked in
-  `requirements.txt`).
+- There is no `pyproject.toml` or repository-wide test suite yet. The unified benchmark
+  contract has focused tests and CI; dependencies are tracked in `requirements.txt`.
