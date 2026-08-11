@@ -187,8 +187,8 @@ conda run -n lightning11 python -m unittest \
   tests.benchmark.test_import_boundaries
 ```
 
-This focused command passes 22 tests. The complete benchmark test discovery
-also passes 151 tests:
+This focused command passes 22 tests. The complete benchmark test discovery on
+the fixed-score follow-up branch passes 152 tests:
 
 ```bash
 conda run -n lightning11 python -m unittest discover \
@@ -220,12 +220,29 @@ Independent contract/test review found no implementation blocker, but treating
 the whole local branch as one PR would mix review concerns. Publication should
 therefore use dependent, human-created PRs in this order:
 
-1. approved shared semantic contract;
+1. project-level shared semantic decision;
 2. native tensor seam and explicit model-internal corrections;
 3. benchmark adapter, boundary tests, and migration documentation.
 
 The local commits preserve these layers. Agents do not push them or create the
 remote PRs.
+
+## Fixed-configuration holdout score
+
+The follow-up command below downloads UCI 468, applies the same 80/20
+stratified holdout and raw-space tuning objective used by model-owned studies,
+and writes one create-only JSON artifact:
+
+```bash
+python -m sbtab.benchmark.pilots.tabddpm_online_shoppers_score \
+  --output-json artifacts/tabddpm-online-shoppers-score.json \
+  --device cuda
+```
+
+Pass `--csv path/to/table.csv` to avoid network acquisition. The printed
+`total_score` is minimized and belongs only to the exact native configuration
+recorded in the artifact. This command does not search hyperparameters or run
+final K-fold quality/TSTR evaluation.
 
 Model-owned Optuna tuning, a frozen production configuration, a full real
 dataset quality run, and comparison with published TabDDPM results remain
