@@ -1,9 +1,9 @@
 # TabDDPM migration note
 
-Status: semantic input approved; native tensor boundary and benchmark adapter
-are implemented locally. Independent method and contract reviews found no
-implementation blocker. Maintainer/model-owner review remains required before
-merge.
+Status: the project-level semantic input decision, native tensor boundary, and
+benchmark adapter are implemented locally. Independent method and contract
+reviews found no implementation blocker. Maintainer/model-owner approval of
+the semantic change remains required before merge.
 
 ## Scope
 
@@ -23,7 +23,7 @@ The existing `TabDDPMWrapper` remains a legacy-facing compatibility shell. Its
 schema inference, transform inspection, raw category reconstruction, identifier
 handling, and output repair are not part of the new benchmark path.
 
-## Approved semantic input
+## Implemented semantic input decision
 
 ```python
 InputSpec(
