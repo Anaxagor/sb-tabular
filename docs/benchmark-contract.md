@@ -5,13 +5,14 @@ Status: draft for maintainer and model-owner review.
 Evidence base: repository `main` at `52e86e0`. This document defines the target
 boundary and records its incremental implementation. The greenfield contracts,
 dataset declaration, missing policy, splitting, codec, adapter protocol, MSBM
-adapter, and fixed-configuration holdout/cross-validation runners now exist
-under `sbtab.benchmark`; MSBM-owned tuning and the common tuning objective are
-also implemented. The create-only cross-validation generation and MSBM tuning
-artifacts are implemented. Final statistical/TSTR evaluation, aggregation,
-and linked create-only artifacts are also implemented. Other model-owned
-tuners and further model adapters remain migration work. A human-owned Online
-Shoppers pilot entrypoint connects the complete tuning, frozen-config,
+and TabDDPM adapters, and fixed-configuration holdout/cross-validation runners
+now exist under `sbtab.benchmark`; MSBM-owned tuning and the common tuning
+objective are also implemented. TabDDPM uses a schema-independent native tensor
+solver while its model-owned tuner remains migration work. The create-only
+cross-validation generation and MSBM tuning artifacts are implemented. Final
+statistical/TSTR evaluation, aggregation, and linked create-only artifacts are
+also implemented. Further model adapters remain migration work. A human-owned
+Online Shoppers pilot entrypoint connects the complete tuning, frozen-config,
 five-fold generation, evaluation, and artifact lifecycle.
 Final metric formulas are fixed separately in
 [`benchmark-metrics.md`](benchmark-metrics.md).
