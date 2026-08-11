@@ -241,8 +241,10 @@ python -m sbtab.benchmark.pilots.tabddpm_online_shoppers_score \
 
 Pass `--csv path/to/table.csv` to avoid network acquisition. The printed
 `total_score` is minimized and belongs only to the exact native configuration
-recorded in the artifact. This command does not search hyperparameters or run
-final K-fold quality/TSTR evaluation.
+recorded in the artifact. Interactive CLI runs show separate training and
+sampling progress bars by default; pass `--no-progress` for redirected logs or
+automation. This command does not search hyperparameters or run final K-fold
+quality/TSTR evaluation.
 
 Model-owned Optuna tuning, a frozen production configuration, a full real
 dataset quality run, and comparison with published TabDDPM results remain

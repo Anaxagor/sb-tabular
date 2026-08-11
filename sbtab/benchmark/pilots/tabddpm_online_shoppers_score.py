@@ -236,6 +236,11 @@ def main() -> None:
     )
     parser.add_argument("--ema-decay", type=float, default=0.999)
     parser.add_argument("--no-ema", action="store_true")
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable native training and sampling progress bars.",
+    )
     arguments = parser.parse_args()
 
     frame = (
@@ -260,6 +265,7 @@ def main() -> None:
                 scheduler=arguments.scheduler,
                 ema_decay=arguments.ema_decay,
                 use_ema_for_sampling=not arguments.no_ema,
+                show_progress=not arguments.no_progress,
                 device=arguments.device,
                 seed=42,
             ),
