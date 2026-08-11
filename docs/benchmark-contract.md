@@ -653,7 +653,7 @@ adapter-local evidence.
 | Family | Continuous | Discrete | Categorical | Review note |
 | --- | --- | --- | --- | --- |
 | CTGAN | `RAW` | `RAW_VALUES` | `RAW_VALUES` | Confirm that common missing and ID policies replace wrapper-owned behavior |
-| TabDDPM | `STANDARD` | `RAW_VALUES` | `FINITE_STATE_CODES` | Confirm treatment of discrete numeric support and target column |
+| TabDDPM | `STANDARD` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Approved**; finite numeric support uses multinomial diffusion instead of Gaussian output repair |
 | TabPFGen | `STANDARD` | `RAW_VALUES` | unresolved | Decide whether encoded categorical features are mathematically supported or datasets must be restricted; do not add target mode to solve this |
 | STaSy / LightSB / numeric SB solvers | `STANDARD` | `UNSUPPORTED` | `UNSUPPORTED` | Do not claim categorical support merely because codes can be cast to float |
 | MSBM | `STANDARD` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Approved pilot**; use train-observed cardinalities and explicit order semantics |
@@ -661,6 +661,53 @@ adapter-local evidence.
 
 An adapter task cannot start until its row is resolved to actual enum values
 and approved with repository evidence.
+
+## Approved adapter: TabDDPM
+
+TabDDPM uses the following semantic representations:
+
+```python
+InputSpec(
+    continuous_view=ContinuousView.STANDARD,
+    discrete_view=DiscreteView.FINITE_STATE_CODES,
+    categorical_view=CategoricalView.FINITE_STATE_CODES,
+)
+```
+
+The shared codec standardizes continuous columns and converts every numeric
+discrete or categorical train support to reversible codes. The adapter sends
+standardized continuous values to TabDDPM's Gaussian block and sends both
+finite-state groups to its multinomial block. Per-column cardinalities come
+from named `PreparedSchema.state_columns`; the adapter does not infer or pad
+them.
+
+This mapping intentionally corrects the current legacy wrapper. That wrapper
+places numeric discrete columns in the Gaussian block and legacy tuning rounds
+their generated real values before computing a discrete metric. Such rounding
+can create values outside the train-observed support and is forbidden at the
+new codec boundary. Treating declared finite supports as multinomial variables
+produces native states directly, without clipping or rounding model output.
+
+TabDDPM's multinomial diffusion does not use ordinal adjacency or distances.
+It consumes the codec's dense codes and real cardinality for each state column,
+but it treats those states symmetrically. This is true even when the underlying
+`ColumnSpec` is numeric discrete or explicitly ordinal.
+
+Target remains an ordinary modeled column. A continuous target enters the
+Gaussian block; a discrete or categorical target enters the multinomial block.
+The adapter does not extract a conditional label, and its sample contains the
+target in canonical table order. Identifiers never enter either native block.
+
+The clean native boundary must accept numeric and state tensors directly. The
+benchmark adapter must not call the current wrapper's legacy schema discovery,
+transform introspection, categorical reconstruction, output clipping, or ID
+resampling. Training loss, beta schedule, denoiser, optimizer, learning-rate
+annealing, EMA update, and ancestral sampling remain native TabDDPM behavior.
+
+TabDDPM and MSBM currently request the same three semantic views. TabDDPM
+therefore validates a different native layout and diffusion implementation, but
+it does not satisfy the remaining requirement to validate the benchmark with a
+family that requests different semantic views.
 
 ## Approved pilot: MSBM
 
