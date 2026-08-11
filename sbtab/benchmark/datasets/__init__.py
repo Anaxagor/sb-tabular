@@ -6,6 +6,7 @@ from sbtab.benchmark.datasets.online_shoppers import (
     ONLINE_SHOPPERS_COLUMNS,
     ONLINE_SHOPPERS_TARGET,
     ONLINE_SHOPPERS_UCI_ID,
+    fetch_online_shoppers_frame,
     make_online_shoppers_dataset,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "ONLINE_SHOPPERS_COLUMNS",
     "ONLINE_SHOPPERS_TARGET",
     "ONLINE_SHOPPERS_UCI_ID",
+    "fetch_online_shoppers_frame",
     "make_online_shoppers_dataset",
 ]

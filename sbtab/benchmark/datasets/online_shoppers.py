@@ -20,7 +20,7 @@ from sbtab.benchmark.contracts import (
     TabularDataset,
     TaskType,
 )
-from sbtab.benchmark.validation import validate_tabular_dataset
+from sbtab.benchmark.validation import ContractViolation, validate_tabular_dataset
 
 
 ONLINE_SHOPPERS_UCI_ID = 468
@@ -46,6 +46,52 @@ ONLINE_SHOPPERS_COLUMNS: tuple[ColumnSpec, ...] = (
     ColumnSpec("Weekend", ColumnKind.CATEGORICAL),
     ColumnSpec(ONLINE_SHOPPERS_TARGET, ColumnKind.CATEGORICAL),
 )
+
+
+def fetch_online_shoppers_frame() -> pd.DataFrame:
+    """Download and assemble the canonical raw UCI 468 frame.
+
+    ``ucimlrepo`` remains an optional acquisition dependency. Importing this
+    dataset module performs no network work; the package is loaded only when
+    this function is called.
+    """
+
+    try:
+        from ucimlrepo import fetch_ucirepo
+    except ImportError as error:
+        raise RuntimeError(
+            "Fetching UCI 468 requires the optional ucimlrepo package. "
+            "Install it or supply a CSV to the calling pilot."
+        ) from error
+
+    repository = fetch_ucirepo(id=ONLINE_SHOPPERS_UCI_ID)
+    features = repository.data.features.copy().reset_index(drop=True)
+    targets = repository.data.targets
+    if targets is None:
+        raise ContractViolation(
+            f"UCI {ONLINE_SHOPPERS_UCI_ID} returned no target table."
+        )
+    if isinstance(targets, pd.Series):
+        target_frame = targets.to_frame()
+    elif isinstance(targets, pd.DataFrame):
+        target_frame = targets.copy()
+    else:
+        target_frame = pd.DataFrame(targets)
+    target_frame = target_frame.reset_index(drop=True)
+    if ONLINE_SHOPPERS_TARGET not in target_frame.columns:
+        raise ContractViolation(
+            f"UCI {ONLINE_SHOPPERS_UCI_ID} target table lacks "
+            f"{ONLINE_SHOPPERS_TARGET!r}."
+        )
+    if ONLINE_SHOPPERS_TARGET in features.columns:
+        raise ContractViolation(
+            "UCI features unexpectedly contain target "
+            f"{ONLINE_SHOPPERS_TARGET!r}."
+        )
+    return pd.concat(
+        (features, target_frame[[ONLINE_SHOPPERS_TARGET]]),
+        axis=1,
+    )
 
 
 def make_online_shoppers_dataset(
