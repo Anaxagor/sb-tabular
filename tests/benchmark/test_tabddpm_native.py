@@ -130,6 +130,18 @@ class TabDDPMNativeTests(unittest.TestCase):
         assert solver.diffusion is not None
         self.assertEqual(solver.diffusion.gaussian_loss_type, "kl")
 
+    def test_linear_schedule_rejects_invalid_short_horizon(self) -> None:
+        config = _tiny_config()
+        config.scheduler = "linear"
+        config.num_timesteps = 20
+
+        with self.assertRaisesRegex(ValueError, "strictly below 1"):
+            TabDDPMSolver(
+                num_numerical_features=1,
+                cardinalities=[],
+                cfg=config,
+            )
+
     def test_numeric_only_and_state_only_layouts_fit(self) -> None:
         cases = (
             (

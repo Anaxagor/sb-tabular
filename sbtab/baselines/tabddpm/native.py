@@ -111,6 +111,11 @@ def _validate_config(config: TabDDPMConfig) -> None:
             "TabDDPMConfig.num_timesteps must be at least 2 for the native "
             "posterior variance schedule."
         )
+    if config.scheduler == "linear" and config.num_timesteps <= 20:
+        raise ValueError(
+            "TabDDPM linear schedule requires num_timesteps > 20 so every "
+            "beta remains strictly below 1."
+        )
     if config.batch_size <= 0:
         raise ValueError("TabDDPMConfig.batch_size must be positive.")
     if config.gaussian_loss_type not in {"mse", "kl"}:
