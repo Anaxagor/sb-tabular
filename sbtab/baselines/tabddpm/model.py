@@ -1,15 +1,12 @@
 
-"""
-Refined TabDDPM wrapper that only addresses comments 1, 2, and 3 from the training-logic review:
+"""Legacy DataFrame compatibility wrapper around the native TabDDPM solver.
 
-1. train for a fixed number of optimizer STEPS (not only epochs)
-2. apply linear learning-rate annealing across training steps
-3. maintain an EMA copy of the denoiser, and optionally sample with EMA
-
-All other wrapper behavior is intentionally left unchanged:
-  - mixed-type schema handling
-  - support for raw / one-hot / integer-coded categoricals
-  - reconstruction of the same representation on sampling
+The wrapper retains its existing schema discovery, support for raw/one-hot/
+integer-coded categoricals, and output reconstruction. Training and sampling
+now delegate to the schema-independent tensor solver. That extraction also
+makes the declared training seed and Gaussian loss effective and keeps an
+absent Gaussian or multinomial loss on the active device. See
+``docs/model-migrations/tabddpm.md`` for the reviewed behavior boundary.
 """
 
 from __future__ import annotations

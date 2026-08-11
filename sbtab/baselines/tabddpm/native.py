@@ -56,17 +56,20 @@ class TabDDPMConfig:
         silently ignored.
     scheduler:
         Native beta schedule name, either ``"cosine"`` or ``"linear"``.
+        The inherited linear formula requires more than 20 timesteps so its
+        largest beta remains strictly below one.
     ema_decay:
         Post-optimizer-step exponential moving-average decay for the denoiser.
-    use_ema_for_sampling:
-        Whether the native ancestral sampler uses the EMA denoiser. This is a
-        typed model setting; the shared adapter API has no model-specific
-        keyword arguments.
     device:
         Torch device on which training and diffusion sampling execute.
     seed:
         Non-negative 32-bit seed controlling denoiser initialization,
         DataLoader shuffling, diffusion timesteps, and training noise.
+    use_ema_for_sampling:
+        Whether the native ancestral sampler uses the EMA denoiser. This is a
+        typed model setting; the shared adapter API has no model-specific
+        keyword arguments. It follows the legacy fields so their positional
+        constructor slots remain unchanged.
     """
 
     steps: int | None = 10_000
@@ -82,9 +85,9 @@ class TabDDPMConfig:
     gaussian_loss_type: str = "mse"
     scheduler: str = "cosine"
     ema_decay: float = 0.999
-    use_ema_for_sampling: bool = True
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
+    use_ema_for_sampling: bool = True
 
 
 def _validate_seed(seed: int, field_name: str) -> None:

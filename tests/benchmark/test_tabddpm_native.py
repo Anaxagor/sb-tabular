@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 import torch
@@ -56,6 +57,27 @@ def _mixed_blocks() -> tuple[torch.Tensor, torch.Tensor]:
 
 class TabDDPMNativeTests(unittest.TestCase):
     """Keep model mechanics testable without legacy table preprocessing."""
+
+    def test_config_keeps_legacy_positional_device_and_seed_slots(self) -> None:
+        config = TabDDPMConfig(
+            1,
+            None,
+            2,
+            2,
+            1e-3,
+            0.0,
+            [4],
+            0.0,
+            "mse",
+            "cosine",
+            0.9,
+            "cpu",
+            17,
+        )
+
+        self.assertEqual(config.device, "cpu")
+        self.assertEqual(config.seed, 17)
+        self.assertTrue(config.use_ema_for_sampling)
 
     def test_mixed_solver_returns_separate_native_blocks(self) -> None:
         train_numerical, train_states = _mixed_blocks()
@@ -114,6 +136,67 @@ class TabDDPMNativeTests(unittest.TestCase):
                 if first[name].is_floating_point()
             )
         )
+
+    def test_sample_seed_repeats_the_native_sample(self) -> None:
+        train_numerical, train_states = _mixed_blocks()
+        solver = TabDDPMSolver(
+            num_numerical_features=2,
+            cardinalities=[3, 2],
+            cfg=_tiny_config(),
+        )
+        solver.fit(train_numerical, train_states)
+
+        first = solver.sample(n_samples=3, seed=19)
+        repeated = solver.sample(n_samples=3, seed=19)
+
+        torch.testing.assert_close(first[0], repeated[0], rtol=0, atol=0)
+        torch.testing.assert_close(first[1], repeated[1], rtol=0, atol=0)
+
+    def test_typed_ema_setting_selects_and_restores_the_denoiser(self) -> None:
+        train_numerical, train_states = _mixed_blocks()
+        config = _tiny_config()
+        config.use_ema_for_sampling = True
+        solver = TabDDPMSolver(
+            num_numerical_features=2,
+            cardinalities=[3, 2],
+            cfg=config,
+        )
+        solver.fit(train_numerical, train_states)
+        assert solver.diffusion is not None
+        assert solver.ema_model is not None
+        fitted_denoiser = solver.diffusion._denoise_fn
+        active_denoisers: list[torch.nn.Module] = []
+
+        def fake_sample_all(
+            num_samples: int,
+            batch_size: int,
+            y_distribution: torch.Tensor,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            del batch_size, y_distribution
+            active_denoisers.append(solver.diffusion._denoise_fn)
+            width = solver.num_numerical_features + len(solver.cardinalities)
+            return (
+                torch.zeros((num_samples, width), device=solver.device),
+                torch.zeros((num_samples,), device=solver.device),
+            )
+
+        for use_ema, expected_denoiser in (
+            (True, solver.ema_model),
+            (False, fitted_denoiser),
+        ):
+            with self.subTest(use_ema=use_ema):
+                active_denoisers.clear()
+                solver.cfg.use_ema_for_sampling = use_ema
+                with patch.object(
+                    solver.diffusion,
+                    "sample_all",
+                    side_effect=fake_sample_all,
+                ):
+                    solver.sample(n_samples=2, seed=23)
+
+                self.assertEqual(len(active_denoisers), 1)
+                self.assertIs(active_denoisers[0], expected_denoiser)
+                self.assertIs(solver.diffusion._denoise_fn, fitted_denoiser)
 
     def test_configured_gaussian_loss_reaches_diffusion(self) -> None:
         train_numerical, train_states = _mixed_blocks()
