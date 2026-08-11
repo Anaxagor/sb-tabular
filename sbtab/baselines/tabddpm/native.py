@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
 
 from sbtab.baselines.tabddpm.gaussian_multinomial_diffsuion import (
     GaussianMultinomialDiffusion,
@@ -70,6 +71,9 @@ class TabDDPMConfig:
         typed model setting; the shared adapter API has no model-specific
         keyword arguments. It follows the legacy fields so their positional
         constructor slots remain unchanged.
+    show_progress:
+        Whether native training and sampling render progress bars. It is an
+        operational control only and does not change model mathematics.
     """
 
     steps: int | None = 10_000
@@ -88,6 +92,7 @@ class TabDDPMConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     use_ema_for_sampling: bool = True
+    show_progress: bool = False
 
 
 def _validate_seed(seed: int, field_name: str) -> None:
@@ -321,32 +326,52 @@ class TabDDPMSolver:
 
         loader_iterator = iter(loader)
         diffusion.train()
-        for step in range(total_steps):
-            try:
-                (batch,) = next(loader_iterator)
-            except StopIteration:
-                loader_iterator = iter(loader)
-                (batch,) = next(loader_iterator)
+        loss_report_interval = max(total_steps // 100, 1)
+        with tqdm(
+            range(total_steps),
+            desc="Training TabDDPM",
+            unit="step",
+            dynamic_ncols=True,
+            disable=not self.cfg.show_progress,
+        ) as progress:
+            for step in progress:
+                try:
+                    (batch,) = next(loader_iterator)
+                except StopIteration:
+                    loader_iterator = iter(loader)
+                    (batch,) = next(loader_iterator)
 
-            self._anneal_lr(
-                optimizer,
-                init_lr=self.cfg.lr,
-                step=step,
-                total_steps=total_steps,
-            )
-            loss_multinomial, loss_gaussian = diffusion.mixed_loss(
-                batch, out_dict={"y": None}
-            )
-            loss = loss_multinomial + loss_gaussian
+                self._anneal_lr(
+                    optimizer,
+                    init_lr=self.cfg.lr,
+                    step=step,
+                    total_steps=total_steps,
+                )
+                loss_multinomial, loss_gaussian = diffusion.mixed_loss(
+                    batch, out_dict={"y": None}
+                )
+                loss = loss_multinomial + loss_gaussian
 
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            self._update_ema(
-                ema_model,
-                diffusion._denoise_fn,
-                self.cfg.ema_decay,
-            )
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                self._update_ema(
+                    ema_model,
+                    diffusion._denoise_fn,
+                    self.cfg.ema_decay,
+                )
+                if self.cfg.show_progress and (
+                    step == 0
+                    or (step + 1) % loss_report_interval == 0
+                    or step + 1 == total_steps
+                ):
+                    # Reading a device scalar synchronizes accelerators. Keep
+                    # loss reporting sparse so progress output does not
+                    # materially slow CUDA or MPS training.
+                    progress.set_postfix(
+                        loss=f"{loss.detach().item():.4f}",
+                        refresh=False,
+                    )
 
         self.diffusion = diffusion
         self.ema_model = ema_model
@@ -388,6 +413,7 @@ class TabDDPMSolver:
                 n_samples,
                 self.cfg.batch_size,
                 y_distribution,
+                show_progress=self.cfg.show_progress,
             )
         finally:
             self.diffusion._denoise_fn = denoiser_backup

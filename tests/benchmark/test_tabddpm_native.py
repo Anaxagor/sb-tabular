@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+import io
 import unittest
 from unittest.mock import patch
 
@@ -76,6 +78,49 @@ class TabDDPMNativeTests(unittest.TestCase):
                 torch.device("cuda:1"),
                 torch.device("cuda:0"),
             )
+        )
+
+    def test_progress_reports_training_and_sampling_without_changing_output(
+        self,
+    ) -> None:
+        train_numerical, train_states = _mixed_blocks()
+        config = _tiny_config()
+        config.show_progress = True
+        solver = TabDDPMSolver(
+            num_numerical_features=2,
+            cardinalities=[3, 2],
+            cfg=config,
+        )
+        progress_output = io.StringIO()
+
+        with redirect_stderr(progress_output):
+            solver.fit(train_numerical, train_states)
+            generated_numerical, generated_states = solver.sample(
+                n_samples=3,
+                seed=19,
+            )
+        solver.cfg.show_progress = False
+        repeated_numerical, repeated_states = solver.sample(
+            n_samples=3,
+            seed=19,
+        )
+
+        rendered = progress_output.getvalue()
+        self.assertIn("Training TabDDPM", rendered)
+        self.assertIn("Sampling TabDDPM", rendered)
+        self.assertEqual(tuple(generated_numerical.shape), (3, 2))
+        self.assertEqual(tuple(generated_states.shape), (3, 2))
+        torch.testing.assert_close(
+            generated_numerical,
+            repeated_numerical,
+            rtol=0,
+            atol=0,
+        )
+        torch.testing.assert_close(
+            generated_states,
+            repeated_states,
+            rtol=0,
+            atol=0,
         )
 
     def test_config_keeps_legacy_positional_device_and_seed_slots(self) -> None:
@@ -191,8 +236,10 @@ class TabDDPMNativeTests(unittest.TestCase):
             num_samples: int,
             batch_size: int,
             y_distribution: torch.Tensor,
+            *,
+            show_progress: bool,
         ) -> tuple[torch.Tensor, torch.Tensor]:
-            del batch_size, y_distribution
+            del batch_size, y_distribution, show_progress
             active_denoisers.append(solver.diffusion._denoise_fn)
             width = solver.num_numerical_features + len(solver.cardinalities)
             return (
