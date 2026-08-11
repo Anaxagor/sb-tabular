@@ -104,6 +104,14 @@ if loaded:
             msg=completed.stderr or completed.stdout,
         )
 
+    def test_tabddpm_public_api_resolves_the_legacy_wrapper(self) -> None:
+        from sbtab.baselines.tabddpm import TabDDPMWrapper
+        from sbtab.baselines.tabddpm.model import (
+            TabDDPMWrapper as DirectTabDDPMWrapper,
+        )
+
+        self.assertIs(TabDDPMWrapper, DirectTabDDPMWrapper)
+
 
 if __name__ == "__main__":
     unittest.main()
