@@ -653,7 +653,7 @@ adapter-local evidence.
 | Family | Continuous | Discrete | Categorical | Review note |
 | --- | --- | --- | --- | --- |
 | CTGAN | `RAW` | `RAW_VALUES` | `RAW_VALUES` | Confirm that common missing and ID policies replace wrapper-owned behavior |
-| TabDDPM | `STANDARD` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Approved**; finite numeric support uses multinomial diffusion instead of Gaussian output repair |
+| TabDDPM | `STANDARD` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Project decision; model-owner review pending**; finite numeric support uses multinomial diffusion instead of Gaussian output repair |
 | TabPFGen | `STANDARD` | `RAW_VALUES` | unresolved | Decide whether encoded categorical features are mathematically supported or datasets must be restricted; do not add target mode to solve this |
 | STaSy / LightSB / numeric SB solvers | `STANDARD` | `UNSUPPORTED` | `UNSUPPORTED` | Do not claim categorical support merely because codes can be cast to float |
 | MSBM | `STANDARD` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Approved pilot**; use train-observed cardinalities and explicit order semantics |
@@ -662,7 +662,12 @@ adapter-local evidence.
 An adapter task cannot start until its row is resolved to actual enum values
 and approved with repository evidence.
 
-## Approved adapter: TabDDPM
+## Implemented semantic decision: TabDDPM
+
+This project-level decision is sufficiently resolved for implementation and
+testing. It still requires explicit maintainer/model-owner review before merge
+because it changes numeric discrete columns from the legacy Gaussian route to
+TabDDPM's multinomial route.
 
 TabDDPM uses the following semantic representations:
 
