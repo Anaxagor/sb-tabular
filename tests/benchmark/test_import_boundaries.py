@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 
 BENCHMARK_ROOT = Path(__file__).resolve().parents[2] / "sbtab" / "benchmark"
+REPOSITORY_ROOT = BENCHMARK_ROOT.parents[1]
 FORBIDDEN_PREFIXES = (
     "sbtab.data",
     "sbtab.transforms",
@@ -65,6 +68,41 @@ class BenchmarkImportBoundaryTests(unittest.TestCase):
         modules = _imported_modules(node, "sbtab.benchmark")  # type: ignore[arg-type]
         self.assertEqual(modules, ["sbtab.data"])
         self.assertTrue(_is_forbidden(modules[0]))
+
+    def test_tabddpm_adapter_import_does_not_load_legacy_orchestration(
+        self,
+    ) -> None:
+        script = """
+import sys
+import sbtab.benchmark.adapters.tabddpm
+
+forbidden = (
+    name
+    for name in sys.modules
+    if name == "sbtab.data"
+    or name.startswith("sbtab.data.")
+    or name == "sbtab.transforms"
+    or name.startswith("sbtab.transforms.")
+    or name == "sbtab.experiments"
+    or name.startswith("sbtab.experiments.")
+)
+loaded = tuple(sorted(forbidden))
+if loaded:
+    raise AssertionError(f"TabDDPM adapter loaded legacy modules: {loaded!r}")
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            msg=completed.stderr or completed.stdout,
+        )
 
 
 if __name__ == "__main__":
