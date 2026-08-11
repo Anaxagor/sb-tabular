@@ -1,8 +1,9 @@
 # TabDDPM migration note
 
 Status: semantic input approved; native tensor boundary and benchmark adapter
-are implemented locally. Independent method and contract reviews are pending;
-maintainer/model-owner review remains required before merge.
+are implemented locally. Independent method and contract reviews found no
+implementation blocker. Maintainer/model-owner review remains required before
+merge.
 
 ## Scope
 
@@ -117,12 +118,17 @@ are model-internal corrections, not adapter compatibility logic:
   `GaussianMultinomialDiffusion` instead of being silently ignored;
 - the zero-valued loss for an absent Gaussian or multinomial block is created
   on the input tensor's device, so numerical-only and state-only training do
-  not introduce a CPU/CUDA/MPS device mismatch.
+  not introduce a CPU/CUDA/MPS device mismatch;
+- a linear schedule with at most 20 timesteps fails before model construction,
+  because the inherited scaled schedule would otherwise produce a beta greater
+  than or equal to one and invalid diffusion probabilities.
 
 The default configuration still uses Gaussian MSE, so forwarding that default
 does not change its loss. Applying the documented training seed makes native
-training reproducible and intentionally corrects the legacy wrapper, where the
-field previously had no effect.
+training repeatable under the deterministic behavior available from the chosen
+Torch backend; it does not promise bitwise equality across devices. This
+intentionally corrects the legacy wrapper, where the field previously had no
+effect.
 
 ## Legacy discrepancies recorded for review
 
@@ -160,19 +166,19 @@ optimizer step and two diffusion timesteps; this profile tests boundaries and
 is not a quality benchmark:
 
 ```bash
-conda run -n lightning11 python -W ignore -m unittest -q \
+conda run -n lightning11 python -m unittest \
   tests.benchmark.test_tabddpm_native \
   tests.benchmark.test_tabddpm_adapter \
   tests.benchmark.test_runner_tabddpm \
   tests.benchmark.test_import_boundaries
 ```
 
-This focused command passes 15 tests. The complete benchmark test discovery
-also passes 144 tests:
+This focused command passes 19 tests. The complete benchmark test discovery
+also passes 148 tests:
 
 ```bash
 conda run -n lightning11 python -m unittest discover \
-  -s tests/benchmark -v
+  -s tests/benchmark -p 'test_*.py'
 ```
 
 Both commands were run in the `lightning11` environment. The native smoke
@@ -184,10 +190,28 @@ and on CPU but still needs a real MPS/CUDA run.
 
 The native tests cover mixed, numerical-only, and state-only layouts, exact
 multinomial state output, effective training seeds, configured Gaussian loss,
-and compatibility of the legacy wrapper. Adapter tests cover canonical block
-order, dtypes, per-column cardinalities, target preservation, config copying,
-and schema identity. The runner smoke creates two real folds, fits fresh codecs
-and native models, and decodes finite states without output repair.
+repeatable sample seeds, typed EMA selection, and compatibility of the legacy
+wrapper. Adapter tests cover canonical block order, dtypes, per-column
+cardinalities, target preservation, config copying, schema identity, and exact
+agreement with a direct native call. The runner smoke creates mixed and pure
+Gaussian folds, fits fresh codecs and native models, preserves categorical and
+continuous targets, and decodes finite states without output repair.
+Import-boundary tests cover both the legacy-free adapter import and the lazy
+public compatibility export.
+
+## Review and publication boundary
+
+Independent method review found no mathematical or behavioral blocker.
+Independent contract/test review found no implementation blocker, but treating
+the whole local branch as one PR would mix review concerns. Publication should
+therefore use dependent, human-created PRs in this order:
+
+1. approved shared semantic contract;
+2. native tensor seam and explicit model-internal corrections;
+3. benchmark adapter, boundary tests, and migration documentation.
+
+The local commits preserve these layers. Agents do not push them or create the
+remote PRs.
 
 Model-owned Optuna tuning, a frozen production configuration, a full real
 dataset quality run, and comparison with published TabDDPM results remain
