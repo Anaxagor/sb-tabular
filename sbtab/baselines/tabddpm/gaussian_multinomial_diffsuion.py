@@ -9,6 +9,7 @@ import torch
 import math
 
 import numpy as np
+from tqdm.auto import tqdm
 from .utils import *
 
 """
@@ -886,7 +887,7 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         return out
 
     @torch.no_grad()
-    def sample_ddim(self, num_samples, y_dist):
+    def sample_ddim(self, num_samples, y_dist, progress_callback=None):
         b = num_samples
         device = self.log_alpha.device
         z_norm = torch.randn((b, self.num_numerical_features), device=device)
@@ -904,7 +905,6 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         )
         out_dict = {'y': y.long().to(device)}
         for i in reversed(range(0, self.num_timesteps)):
-            print(f'Sample timestep {i:4d}', end='\r')
             t = torch.full((b,), i, device=device, dtype=torch.long)
             model_out = self._denoise_fn(
                 torch.cat([z_norm, log_z], dim=1).float(),
@@ -916,8 +916,9 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             z_norm = self.gaussian_ddim_step(model_out_num, z_norm, t, clip_denoised=False)
             if has_cat:
                 log_z = self.multinomial_ddim_step(model_out_cat, log_z, t, out_dict)
+            if progress_callback is not None:
+                progress_callback()
 
-        print()
         z_ohe = torch.exp(log_z).round()
         z_cat = log_z
         if has_cat:
@@ -927,7 +928,7 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
     
 
     @torch.no_grad()
-    def sample(self, num_samples, y_dist):
+    def sample(self, num_samples, y_dist, progress_callback=None):
         b = num_samples
         device = self.log_alpha.device
         z_norm = torch.randn((b, self.num_numerical_features), device=device)
@@ -945,7 +946,6 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         )
         out_dict = {'y': y.long().to(device)}
         for i in reversed(range(0, self.num_timesteps)):
-            print(f'Sample timestep {i:4d}', end='\r')
             t = torch.full((b,), i, device=device, dtype=torch.long)
             model_out = self._denoise_fn(
                 torch.cat([z_norm, log_z], dim=1).float(),
@@ -957,8 +957,9 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             z_norm = self.gaussian_p_sample(model_out_num, z_norm, t, clip_denoised=False)['sample']
             if has_cat:
                 log_z = self.p_sample(model_out_cat, log_z, t, out_dict)
+            if progress_callback is not None:
+                progress_callback()
 
-        print()
         z_ohe = torch.exp(log_z).round()
         z_cat = log_z
         if has_cat:
@@ -966,29 +967,44 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         sample = torch.cat([z_norm, z_cat], dim=1).cpu()
         return sample, out_dict
     
-    def sample_all(self, num_samples, batch_size, y_dist, ddim=False):
-        if ddim:
-            print('Sample using DDIM.')
-            sample_fn = self.sample_ddim
-        else:
-            sample_fn = self.sample
+    def sample_all(
+        self,
+        num_samples,
+        batch_size,
+        y_dist,
+        ddim=False,
+        show_progress=False,
+    ):
+        sample_fn = self.sample_ddim if ddim else self.sample
         
         b = batch_size
 
         all_y = []
         all_samples = []
         num_generated = 0
-        while num_generated < num_samples:
-            sample, out_dict = sample_fn(b, y_dist)
-            mask_nan = torch.any(sample.isnan(), dim=1)
-            sample = sample[~mask_nan]
-            out_dict['y'] = out_dict['y'][~mask_nan]
+        total_batches = math.ceil(num_samples / batch_size)
+        with tqdm(
+            total=total_batches * self.num_timesteps,
+            desc="Sampling TabDDPM",
+            unit="timestep",
+            dynamic_ncols=True,
+            disable=not show_progress,
+        ) as progress:
+            while num_generated < num_samples:
+                sample, out_dict = sample_fn(
+                    b,
+                    y_dist,
+                    progress_callback=progress.update,
+                )
+                mask_nan = torch.any(sample.isnan(), dim=1)
+                sample = sample[~mask_nan]
+                out_dict['y'] = out_dict['y'][~mask_nan]
 
-            all_samples.append(sample)
-            all_y.append(out_dict['y'].cpu())
-            if sample.shape[0] != b:
-                raise FoundNANsError
-            num_generated += sample.shape[0]
+                all_samples.append(sample)
+                all_y.append(out_dict['y'].cpu())
+                if sample.shape[0] != b:
+                    raise FoundNANsError
+                num_generated += sample.shape[0]
 
         x_gen = torch.cat(all_samples, dim=0)[:num_samples]
         y_gen = torch.cat(all_y, dim=0)[:num_samples]
