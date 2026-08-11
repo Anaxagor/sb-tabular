@@ -87,15 +87,6 @@ class TabDDPMConfig:
     seed: int = 42
 
 
-def _validate_positive_int(value: int | None, field_name: str) -> None:
-    """Validate an optional strictly positive integer config field."""
-
-    if value is None:
-        return
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"TabDDPMConfig.{field_name} must be a positive integer.")
-
-
 def _validate_seed(seed: int, field_name: str) -> None:
     """Validate a seed accepted by both NumPy and the benchmark contract."""
 
@@ -106,52 +97,27 @@ def _validate_seed(seed: int, field_name: str) -> None:
 
 
 def _validate_config(config: TabDDPMConfig) -> None:
-    """Reject unsupported native settings before model construction."""
+    """Reject only settings that otherwise fail opaquely in native code."""
 
-    _validate_positive_int(config.steps, "steps")
-    _validate_positive_int(config.n_epochs, "n_epochs")
     if config.steps is None and config.n_epochs is None:
         raise ValueError(
             "TabDDPMConfig requires steps or n_epochs for native training."
         )
-    _validate_positive_int(config.num_timesteps, "num_timesteps")
+    active_length = config.steps if config.steps is not None else config.n_epochs
+    if active_length is None or active_length <= 0:
+        raise ValueError("TabDDPM training length must be positive.")
     if config.num_timesteps < 2:
         raise ValueError(
             "TabDDPMConfig.num_timesteps must be at least 2 for the native "
             "posterior variance schedule."
         )
-    _validate_positive_int(config.batch_size, "batch_size")
-    if not isinstance(config.lr, (int, float)) or config.lr <= 0:
-        raise ValueError("TabDDPMConfig.lr must be positive.")
-    if not isinstance(config.weight_decay, (int, float)) or config.weight_decay < 0:
-        raise ValueError("TabDDPMConfig.weight_decay must be non-negative.")
-    if not isinstance(config.d_layers, list) or any(
-        isinstance(width, bool) or not isinstance(width, int) or width <= 0
-        for width in config.d_layers
-    ):
-        raise ValueError(
-            "TabDDPMConfig.d_layers must be a list of positive integers."
-        )
-    if not isinstance(config.dropout, (int, float)) or not 0 <= config.dropout < 1:
-        raise ValueError("TabDDPMConfig.dropout must be in the range [0, 1).")
+    if config.batch_size <= 0:
+        raise ValueError("TabDDPMConfig.batch_size must be positive.")
     if config.gaussian_loss_type not in {"mse", "kl"}:
         raise ValueError(
             "TabDDPMConfig.gaussian_loss_type must be 'mse' or 'kl'; "
             f"got {config.gaussian_loss_type!r}."
         )
-    if config.scheduler not in {"cosine", "linear"}:
-        raise ValueError(
-            "TabDDPMConfig.scheduler must be 'cosine' or 'linear'; "
-            f"got {config.scheduler!r}."
-        )
-    if not isinstance(config.ema_decay, (int, float)) or not 0 <= config.ema_decay <= 1:
-        raise ValueError("TabDDPMConfig.ema_decay must be in the range [0, 1].")
-    if not isinstance(config.use_ema_for_sampling, bool):
-        raise ValueError(
-            "TabDDPMConfig.use_ema_for_sampling must be a boolean."
-        )
-    if not isinstance(config.device, str) or not config.device.strip():
-        raise ValueError("TabDDPMConfig.device must be a non-empty string.")
     _validate_seed(config.seed, "TabDDPMConfig.seed")
 
 
@@ -180,21 +146,10 @@ class TabDDPMSolver:
         cfg: TabDDPMConfig,
     ) -> None:
         _validate_config(cfg)
-        if (
-            isinstance(num_numerical_features, bool)
-            or not isinstance(num_numerical_features, int)
-            or num_numerical_features < 0
-        ):
-            raise ValueError(
-                "num_numerical_features must be a non-negative integer."
-            )
-        if not isinstance(cardinalities, list) or any(
-            isinstance(value, bool) or not isinstance(value, int) or value <= 0
-            for value in cardinalities
-        ):
-            raise ValueError(
-                "cardinalities must be a list of positive per-column sizes."
-            )
+        if num_numerical_features < 0:
+            raise ValueError("num_numerical_features must be non-negative.")
+        if any(value <= 0 for value in cardinalities):
+            raise ValueError("Every state cardinality must be positive.")
         if num_numerical_features == 0 and not cardinalities:
             raise ValueError("TabDDPM requires at least one modeled column.")
 
@@ -389,16 +344,11 @@ class TabDDPMSolver:
 
         if self.diffusion is None:
             raise RuntimeError("Call TabDDPMSolver.fit() before sample().")
-        if isinstance(n_samples, bool) or not isinstance(n_samples, int):
-            raise ValueError("n_samples must be an integer.")
         if n_samples <= 0:
             raise ValueError("n_samples must be positive.")
         if seed is not None:
             _validate_seed(seed, "sample seed")
             _seed_native_randomness(seed, self.device)
-        if use_ema is not None and not isinstance(use_ema, bool):
-            raise ValueError("use_ema must be a boolean when provided.")
-
         sample_with_ema = (
             self.cfg.use_ema_for_sampling if use_ema is None else use_ema
         )
@@ -421,12 +371,12 @@ class TabDDPMSolver:
             dtype=torch.float32
         )
         generated_state_values = generated[:, self.num_numerical_features :]
-        if generated_state_values.numel() and not torch.equal(
+        generated_state = generated_state_values.to(dtype=torch.int64)
+        if not torch.equal(
+            generated_state.to(dtype=generated_state_values.dtype),
             generated_state_values,
-            generated_state_values.round(),
         ):
             raise RuntimeError(
                 "Native TabDDPM returned a non-integral multinomial state."
             )
-        generated_state = generated_state_values.to(dtype=torch.int64)
         return generated_num, generated_state
