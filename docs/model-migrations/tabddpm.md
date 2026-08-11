@@ -110,7 +110,7 @@ repository sources for these claims are linked below for model-owner review.
 
 ## Explicit native corrections
 
-The extraction also makes three previously declared behaviors effective. They
+The extraction also makes four previously declared behaviors effective. They
 are model-internal corrections, not adapter compatibility logic:
 
 - `TabDDPMConfig.seed` is applied before denoiser construction, DataLoader
