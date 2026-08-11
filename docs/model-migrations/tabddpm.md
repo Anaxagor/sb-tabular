@@ -105,15 +105,8 @@ The extraction keeps the current repository behavior for:
   EMA update after every optimizer step;
 - ancestral reverse diffusion and optional EMA sampling.
 
-Native container extraction does not justify changes to these choices.
-
-The concrete sources of these invariants are the existing denoiser in
-[`modules.py`](../../sbtab/baselines/tabddpm/modules.py), the Gaussian and
-multinomial processes in
-[`gaussian_multinomial_diffsuion.py`](../../sbtab/baselines/tabddpm/gaussian_multinomial_diffsuion.py),
-and the extracted training/sampling orchestration in
-[`native.py`](../../sbtab/baselines/tabddpm/native.py). The adapter only calls
-that native seam.
+Native container extraction does not justify changes to these choices. Exact
+repository sources for these claims are linked below for model-owner review.
 
 ## Explicit native corrections
 
