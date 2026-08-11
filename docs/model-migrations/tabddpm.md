@@ -107,6 +107,14 @@ The extraction keeps the current repository behavior for:
 
 Native container extraction does not justify changes to these choices.
 
+The concrete sources of these invariants are the existing denoiser in
+[`modules.py`](../../sbtab/baselines/tabddpm/modules.py), the Gaussian and
+multinomial processes in
+[`gaussian_multinomial_diffsuion.py`](../../sbtab/baselines/tabddpm/gaussian_multinomial_diffsuion.py),
+and the extracted training/sampling orchestration in
+[`native.py`](../../sbtab/baselines/tabddpm/native.py). The adapter only calls
+that native seam.
+
 ## Explicit native corrections
 
 The extraction also makes three previously declared behaviors effective. They
@@ -129,6 +137,19 @@ training repeatable under the deterministic behavior available from the chosen
 Torch backend; it does not promise bitwise equality across devices. This
 intentionally corrects the legacy wrapper, where the field previously had no
 effect.
+
+## Repository evidence for model-owner review
+
+| Reviewed claim | Repository evidence |
+| --- | --- |
+| Legacy numeric/state selection and target reclassification | [`TabDDPMWrapper._numeric_block_cols`, `_categorical_block_specs`, and `_preprocess_data`](../../sbtab/baselines/tabddpm/model.py) |
+| Legacy reconstruction, clipping, and identifier behavior | [`TabDDPMWrapper._reconstruct_output_df` and `sample`](../../sbtab/baselines/tabddpm/model.py) |
+| Gaussian plus multinomial loss and ancestral sampler | [`GaussianMultinomialDiffusion.mixed_loss`, `sample`, and `sample_all`](../../sbtab/baselines/tabddpm/gaussian_multinomial_diffsuion.py) |
+| Denoiser architecture | [`MLPDiffusion`](../../sbtab/baselines/tabddpm/modules.py) |
+| Mixed-data tuning and rounding of discrete values | [`_js_for_discrete_numeric`, `compute_composite_metric`, and `make_objective_for_dataset`](../../sbtab/experiments/tuning_script/tabddpm_mixed_data_tuning.py) |
+| Older `n_epochs` search whose default `steps` takes precedence | [`make_objective_for_dataset`](../../sbtab/experiments/tuning_script/tabddpm_tuning.py) and [`TabDDPMConfig`](../../sbtab/baselines/tabddpm/native.py) |
+| Legacy final K-fold config and processed-space evaluation | [`build_tabddpm_config_from_best` and `main`](../../sbtab/experiments/calculating_metrics/tabddpm_metrics.py) |
+| Conditional classification is a distinct published variant | [TabDDPM paper](https://arxiv.org/abs/2209.15421) |
 
 ## Legacy discrepancies recorded for review
 
@@ -173,8 +194,8 @@ conda run -n lightning11 python -m unittest \
   tests.benchmark.test_import_boundaries
 ```
 
-This focused command passes 19 tests. The complete benchmark test discovery
-also passes 148 tests:
+This focused command passes 22 tests. The complete benchmark test discovery
+also passes 151 tests:
 
 ```bash
 conda run -n lightning11 python -m unittest discover \
