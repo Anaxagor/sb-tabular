@@ -13,6 +13,7 @@ from sbtab.benchmark import (
     BenchmarkConfig,
     ColumnKind,
     ColumnSpec,
+    KFoldConfig,
     MissingPolicy,
     StratifiedKFoldConfig,
     TabularDataset,
@@ -63,6 +64,26 @@ def _lightweight_native_config() -> TabDDPMConfig:
     )
 
 
+def _regression_dataset() -> TabularDataset:
+    """Return a pure Gaussian table whose target remains a modeled column."""
+
+    return TabularDataset(
+        name="tabddpm-regression-target-smoke",
+        frame=pd.DataFrame(
+            {
+                "feature": [float(index) for index in range(8)],
+                "target": [float(index * index) for index in range(8)],
+            }
+        ),
+        columns=(
+            ColumnSpec("feature", ColumnKind.CONTINUOUS),
+            ColumnSpec("target", ColumnKind.CONTINUOUS),
+        ),
+        target="target",
+        task=TaskType.REGRESSION,
+    )
+
+
 class TabDDPMRunnerSmokeTests(unittest.TestCase):
     """Exercise fold-local codec, real native sampling, and raw decoding."""
 
@@ -104,6 +125,33 @@ class TabDDPMRunnerSmokeTests(unittest.TestCase):
             )
             self.assertTrue(
                 set(fold.synthetic_raw["label"]).issubset({"no", "yes"})
+            )
+
+    def test_continuous_target_stays_in_generated_gaussian_table(self) -> None:
+        config = BenchmarkConfig(
+            split=KFoldConfig(n_splits=2, seed=17),
+            missing_policy=MissingPolicy.COMPLETE_CASE,
+            run_id="tabddpm-regression-target-smoke",
+            training_seed=17,
+            sample_seed=10_017,
+            device="cpu",
+            artifact_dir=Path("unused-tabddpm-regression-artifacts"),
+        )
+
+        result = run_cross_validation(
+            _regression_dataset(),
+            lambda: TabDDPMAdapter(_lightweight_native_config()),
+            config,
+        )
+
+        self.assertEqual(len(result.folds), 2)
+        for fold in result.folds:
+            self.assertEqual(
+                tuple(fold.synthetic_raw.columns),
+                ("feature", "target"),
+            )
+            self.assertTrue(
+                np.isfinite(fold.synthetic_raw.to_numpy()).all()
             )
 
 

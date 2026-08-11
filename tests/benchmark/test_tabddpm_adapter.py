@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from sbtab.baselines.tabddpm.native import TabDDPMConfig
+from sbtab.baselines.tabddpm.native import TabDDPMConfig, TabDDPMSolver
 from sbtab.benchmark import (
     CategoricalView,
     ContinuousView,
@@ -63,6 +63,25 @@ def _context() -> RunContext:
         seed=42,
         device="cpu",
         artifact_dir=Path("unused-test-artifacts"),
+    )
+
+
+def _lightweight_native_config() -> TabDDPMConfig:
+    """Return a one-update profile for real boundary characterization."""
+
+    return TabDDPMConfig(
+        steps=1,
+        num_timesteps=2,
+        batch_size=2,
+        lr=1e-3,
+        weight_decay=0.0,
+        d_layers=[4],
+        dropout=0.0,
+        scheduler="cosine",
+        ema_decay=0.9,
+        use_ema_for_sampling=False,
+        device="cpu",
+        seed=42,
     )
 
 
@@ -125,7 +144,7 @@ class TabDDPMAdapterTests(unittest.TestCase):
     def test_fixed_config_and_typed_ema_choice_reach_native_solver(self) -> None:
         fixed_config = TabDDPMConfig(
             steps=7,
-            num_timesteps=9,
+            num_timesteps=90,
             batch_size=11,
             lr=0.012,
             weight_decay=0.034,
@@ -150,7 +169,7 @@ class TabDDPMAdapterTests(unittest.TestCase):
         self.assertIsInstance(received, TabDDPMConfig)
         self.assertIsNot(received, fixed_config)
         self.assertEqual(received.steps, 7)
-        self.assertEqual(received.num_timesteps, 9)
+        self.assertEqual(received.num_timesteps, 90)
         self.assertEqual(received.batch_size, 11)
         self.assertEqual(received.lr, 0.012)
         self.assertEqual(received.weight_decay, 0.034)
@@ -237,6 +256,62 @@ class TabDDPMAdapterTests(unittest.TestCase):
         self.assertEqual(sample.frame["count"].dtype, np.dtype(np.int64))
         self.assertEqual(sample.frame["label"].dtype, np.dtype(np.int64))
         solver.sample.assert_called_once_with(n_samples=2, seed=11)
+
+    def test_real_adapter_matches_direct_native_boundary(self) -> None:
+        table = _mixed_table()
+        config = _lightweight_native_config()
+        context = _context()
+        continuous_names = table.schema.continuous_columns
+        state_names = tuple(
+            name
+            for name in table.schema.column_order
+            if name in table.schema.state_columns
+        )
+        direct_solver = TabDDPMSolver(
+            num_numerical_features=len(continuous_names),
+            cardinalities=[
+                table.schema.state_columns[name].cardinality
+                for name in state_names
+            ],
+            cfg=config,
+        )
+        direct_solver.fit(
+            torch.tensor(
+                table.frame.loc[:, continuous_names].to_numpy(),
+                dtype=torch.float32,
+            ),
+            torch.tensor(
+                table.frame.loc[:, state_names].to_numpy(),
+                dtype=torch.int64,
+            ),
+        )
+        adapter = TabDDPMAdapter(config)
+        adapter.fit(table, context)
+
+        direct_num, direct_state = direct_solver.sample(
+            n_samples=4,
+            seed=91,
+            use_ema=False,
+        )
+        first = adapter.sample(n=4, seed=91)
+        repeated = adapter.sample(n=4, seed=91)
+        expected = pd.concat(
+            (
+                pd.DataFrame(
+                    direct_num.numpy(),
+                    columns=continuous_names,
+                ),
+                pd.DataFrame(
+                    direct_state.numpy(),
+                    columns=state_names,
+                ),
+            ),
+            axis=1,
+        ).loc[:, table.schema.column_order]
+
+        pd.testing.assert_frame_equal(first.frame, expected)
+        pd.testing.assert_frame_equal(repeated.frame, expected)
+        self.assertIs(first.schema, table.schema)
 
     def test_sample_before_fit_has_a_clear_error(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "before sample"):
