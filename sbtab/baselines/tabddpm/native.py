@@ -138,6 +138,23 @@ def _seed_native_randomness(seed: int, device: torch.device) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _is_compatible_device(
+    actual: torch.device,
+    expected: torch.device,
+) -> bool:
+    """Return whether a tensor device satisfies the configured device.
+
+    Torch may resolve an unindexed device such as ``mps`` to ``mps:0`` when a
+    tensor is allocated.  An omitted index means "the current device", so it
+    must not be compared strictly with the resolved tensor index.  An index
+    explicitly supplied by the caller remains part of the validation.
+    """
+
+    return actual.type == expected.type and (
+        expected.index is None or actual.index == expected.index
+    )
+
+
 class TabDDPMSolver:
     """Train and sample native TabDDPM from already prepared tensors.
 
@@ -214,7 +231,7 @@ class TabDDPMSolver:
                 raise TypeError(f"{name} must be a torch.Tensor.")
             if value.ndim != 2:
                 raise ValueError(f"{name} must be a two-dimensional tensor.")
-            if value.device != self.device:
+            if not _is_compatible_device(value.device, self.device):
                 raise ValueError(
                     f"{name} is on {value.device}, expected {self.device}."
                 )

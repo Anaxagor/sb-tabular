@@ -9,7 +9,11 @@ import pandas as pd
 import torch
 
 from sbtab.baselines.tabddpm.model import TabDDPMWrapper
-from sbtab.baselines.tabddpm.native import TabDDPMConfig, TabDDPMSolver
+from sbtab.baselines.tabddpm.native import (
+    TabDDPMConfig,
+    TabDDPMSolver,
+    _is_compatible_device,
+)
 from sbtab.data.schema import TabularSchema
 
 
@@ -57,6 +61,22 @@ def _mixed_blocks() -> tuple[torch.Tensor, torch.Tensor]:
 
 class TabDDPMNativeTests(unittest.TestCase):
     """Keep model mechanics testable without legacy table preprocessing."""
+
+    def test_unindexed_config_device_accepts_resolved_accelerator_index(
+        self,
+    ) -> None:
+        self.assertTrue(
+            _is_compatible_device(
+                torch.device("mps:0"),
+                torch.device("mps"),
+            )
+        )
+        self.assertFalse(
+            _is_compatible_device(
+                torch.device("cuda:1"),
+                torch.device("cuda:0"),
+            )
+        )
 
     def test_config_keeps_legacy_positional_device_and_seed_slots(self) -> None:
         config = TabDDPMConfig(
