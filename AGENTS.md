@@ -39,8 +39,10 @@ unresolved in the contract.
 - `sbtab/evaluation/`: model-independent raw-space tuning, final quality,
   TSTR, cross-fold aggregation, and linked evaluation artifacts.
 - `sbtab/benchmark/`: greenfield benchmark core. Contracts, dataset
-  declarations, missing policy, splitting, fold-local codec, the MSBM adapter,
-  and fixed-configuration holdout/cross-validation runners are implemented.
+  declarations, missing policy, splitting, fold-local codec, the MSBM and
+  TabDDPM adapters, and fixed-configuration holdout/cross-validation runners
+  are implemented. TabDDPM uses a model-native tensor solver under
+  `sbtab/baselines/tabddpm/`; its legacy wrapper remains available separately.
   The common tuning objective and model-owned MSBM Optuna study are implemented.
   Create-only cross-validation generation and MSBM tuning artifacts are
   implemented. The Online Shoppers pilot entrypoint connects tuning, final

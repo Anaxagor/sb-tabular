@@ -160,26 +160,27 @@ optimizer step and two diffusion timesteps; this profile tests boundaries and
 is not a quality benchmark:
 
 ```bash
-conda run -n lightning11 python -m unittest \
+conda run -n lightning11 python -W ignore -m unittest -q \
   tests.benchmark.test_tabddpm_native \
   tests.benchmark.test_tabddpm_adapter \
   tests.benchmark.test_runner_tabddpm \
   tests.benchmark.test_import_boundaries
 ```
 
-This focused command passes 14 tests. The complete benchmark test discovery
-also passes 143 tests:
+This focused command passes 15 tests. The complete benchmark test discovery
+also passes 144 tests:
 
 ```bash
 conda run -n lightning11 python -m unittest discover \
-  -s tests/benchmark -p 'test_*.py'
+  -s tests/benchmark -v
 ```
 
 Both commands were run in the `lightning11` environment. The native smoke
-tests emit the implementation's existing diffusion-timestep progress output
-and NumPy 2 deprecation warnings; neither changes the assertions. The current
-execution environment reports MPS as unavailable, so the device-safe absent
-loss is covered structurally and on CPU but still needs a real MPS/CUDA run.
+tests emit the implementation's existing diffusion-timestep progress output.
+The full discovery also emits NumPy 2 deprecation warnings; neither changes
+the assertions. PyTorch 2.12.0 reports MPS as unavailable in the current
+execution environment, so the device-safe absent loss is covered structurally
+and on CPU but still needs a real MPS/CUDA run.
 
 The native tests cover mixed, numerical-only, and state-only layouts, exact
 multinomial state output, effective training seeds, configured Gaussian loss,
