@@ -14,47 +14,17 @@ All other wrapper behavior is intentionally left unchanged:
 
 from __future__ import annotations
 
-import copy
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader, TensorDataset
 
 from sbtab.baselines.base import ArrayLike, BaselineFitInfo, BaselineGenerativeModel
 from sbtab.data.schema import TabularSchema, classify_feature_type
 
 from .gaussian_multinomial_diffsuion import GaussianMultinomialDiffusion
-from .modules import MLPDiffusion
-
-
-@dataclass
-class TabDDPMConfig:
-    # --- comment 1: fixed number of training steps ---
-    steps: Optional[int] = 10000
-
-    # optional backward-compatibility fallback; if `steps` is None, use old epoch logic
-    n_epochs: Optional[int] = None
-
-    # original TabDDPM hyperparameters
-    num_timesteps: int = 1000
-    batch_size: int = 4096
-    lr: float = 1e-3
-    weight_decay: float = 1e-4
-
-    d_layers: List[int] = field(default_factory=lambda: [256, 512, 512, 256])
-    dropout: float = 0.0
-
-    gaussian_loss_type: str = "mse"
-    scheduler: str = "cosine"
-
-    # --- comment 3: EMA ---
-    ema_decay: float = 0.999
-
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    seed: int = 42
+from .native import TabDDPMConfig, TabDDPMSolver
 
 
 class TabDDPMWrapper(BaselineGenerativeModel):
@@ -89,6 +59,7 @@ class TabDDPMWrapper(BaselineGenerativeModel):
 
         self.diffusion: Optional[GaussianMultinomialDiffusion] = None
         self.ema_model: Optional[torch.nn.Module] = None
+        self._solver: Optional[TabDDPMSolver] = None
 
     # ------------------------------------------------------------------
     # helpers for discovering categorical representation metadata
@@ -337,27 +308,6 @@ class TabDDPMWrapper(BaselineGenerativeModel):
         return torch.from_numpy(X).to(self.device)
 
     # ------------------------------------------------------------------
-    # comment 2: linear LR annealing helper
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _anneal_lr(optimizer: torch.optim.Optimizer, *, init_lr: float, step: int, total_steps: int) -> None:
-        frac_done = step / float(total_steps)
-        lr = init_lr * (1.0 - frac_done)
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = lr
-
-    # ------------------------------------------------------------------
-    # comment 3: EMA helper
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    @torch.no_grad()
-    def _update_ema(target_model: torch.nn.Module, source_model: torch.nn.Module, rate: float) -> None:
-        for targ, src in zip(target_model.parameters(), source_model.parameters()):
-            targ.detach().mul_(rate).add_(src.detach(), alpha=1.0 - rate)
-
-    # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
 
@@ -375,73 +325,21 @@ class TabDDPMWrapper(BaselineGenerativeModel):
             data = pd.DataFrame(data, columns=[f"f{i}" for i in range(data.shape[1])])
 
         X = self._preprocess_data(data, schema, transforms)
-        if len(self.num_classes) == 0:
-            self.num_classes = np.array([0])
-
-        d_in = self.num_numerical_features + int(self.num_classes.sum())
-        model = MLPDiffusion(
-            d_in=d_in,
-            num_classes=0,
-            is_y_cond=False,
-            rtdl_params={
-                "d_layers": self.cfg.d_layers,
-                "dropout": self.cfg.dropout,
-            },
-        ).to(self.device)
-
-        self.diffusion = GaussianMultinomialDiffusion(
-            num_classes=self.num_classes,
+        cardinalities = self.num_classes.tolist()
+        train_num = X[:, : self.num_numerical_features].to(dtype=torch.float32)
+        train_state = X[:, self.num_numerical_features :].to(dtype=torch.int64)
+        solver = TabDDPMSolver(
             num_numerical_features=self.num_numerical_features,
-            denoise_fn=model,
-            num_timesteps=self.cfg.num_timesteps,
-            scheduler=self.cfg.scheduler,
-            device=self.device,
-        ).to(self.device)
-
-        optimizer = torch.optim.AdamW(
-            self.diffusion.parameters(),
-            lr=self.cfg.lr,
-            weight_decay=self.cfg.weight_decay,
+            cardinalities=cardinalities,
+            cfg=self.cfg,
         )
+        solver.fit(train_num, train_state)
 
-        # --- comment 3: initialize EMA model from the denoiser ---
-        self.ema_model = copy.deepcopy(self.diffusion._denoise_fn).to(self.device)
-        self.ema_model.eval()
-        for p in self.ema_model.parameters():
-            p.requires_grad_(False)
-
-        loader = DataLoader(TensorDataset(X), batch_size=self.cfg.batch_size, shuffle=True, drop_last=False)
-
-        # --- comment 1: use fixed number of optimizer steps when cfg.steps is provided ---
-        if self.cfg.steps is not None:
-            total_steps = int(self.cfg.steps)
-        else:
-            if self.cfg.n_epochs is None:
-                raise ValueError("Either cfg.steps or cfg.n_epochs must be provided.")
-            total_steps = int(self.cfg.n_epochs) * max(len(loader), 1)
-
-        loader_iter = iter(loader)
-        self.diffusion.train()
-
-        for step in range(total_steps):
-            try:
-                (x_batch,) = next(loader_iter)
-            except StopIteration:
-                loader_iter = iter(loader)
-                (x_batch,) = next(loader_iter)
-
-            # --- comment 2: linear LR annealing ---
-            self._anneal_lr(optimizer, init_lr=self.cfg.lr, step=step, total_steps=total_steps)
-
-            loss_multi, loss_gauss = self.diffusion.mixed_loss(x_batch, out_dict={"y": None})
-            loss = loss_multi + loss_gauss
-
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-
-            # --- comment 3: EMA update after optimizer step ---
-            self._update_ema(self.ema_model, self.diffusion._denoise_fn, self.cfg.ema_decay)
+        self._solver = solver
+        self.diffusion = solver.diffusion
+        self.ema_model = solver.ema_model
+        if len(self.num_classes) == 0:
+            self.num_classes = np.array([0], dtype=np.int64)
 
         self.fit_info_ = BaselineFitInfo(
             n_rows=int(data.shape[0]),
@@ -515,29 +413,20 @@ class TabDDPMWrapper(BaselineGenerativeModel):
         use_ema: bool = True,
         **kwargs: Any,
     ) -> pd.DataFrame:
-        if not self._fitted or self.diffusion is None:
+        if not self._fitted or self._solver is None:
             raise RuntimeError("Call fit() before sample().")
         if n <= 0:
             raise ValueError("n must be positive.")
 
-        if seed is not None:
-            torch.manual_seed(int(seed))
-            np.random.seed(int(seed))
-
-        self.diffusion.eval()
-        y_dist = torch.ones(1, device=self.device)
-
-        # --- comment 3: sample with EMA model by temporarily swapping denoiser ---
-        denoiser_backup = self.diffusion._denoise_fn
-        if use_ema and self.ema_model is not None:
-            self.diffusion._denoise_fn = self.ema_model
-
-        try:
-            x_gen, _ = self.diffusion.sample_all(n, self.cfg.batch_size, y_dist)
-        finally:
-            self.diffusion._denoise_fn = denoiser_backup
-
-        if isinstance(x_gen, torch.Tensor):
-            x_gen = x_gen.detach().cpu().numpy()
-
-        return self._reconstruct_output_df(np.asarray(x_gen, dtype=np.float32))
+        generated_num, generated_state = self._solver.sample(
+            n_samples=n,
+            seed=seed,
+            use_ema=use_ema,
+        )
+        generated = torch.cat(
+            (generated_num, generated_state.to(dtype=torch.float32)),
+            dim=1,
+        )
+        return self._reconstruct_output_df(
+            generated.detach().cpu().numpy().astype(np.float32, copy=False)
+        )

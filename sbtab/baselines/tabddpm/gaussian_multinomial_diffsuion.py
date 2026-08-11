@@ -617,8 +617,10 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         model_out_num = model_out[:, :self.num_numerical_features]
         model_out_cat = model_out[:, self.num_numerical_features:]
 
-        loss_multi = torch.zeros((1,)).float()
-        loss_gauss = torch.zeros((1,)).float()
+        # Keep the absent block on the input device.  CPU constants made
+        # numerical-only and state-only models fail when trained on CUDA/MPS.
+        loss_multi = x.new_zeros(())
+        loss_gauss = x.new_zeros(())
         if x_cat.shape[1] > 0:
             loss_multi = self._multinomial_loss(model_out_cat, log_x_cat, log_x_cat_t, t, pt, out_dict) / len(self.num_classes)
         
