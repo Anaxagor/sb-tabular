@@ -107,7 +107,10 @@ class TabDDPMAdapterTests(unittest.TestCase):
     def test_declares_the_approved_semantic_views(self) -> None:
         spec = TabDDPMAdapter().input_spec
 
-        self.assertEqual(spec.continuous_view, ContinuousView.STANDARD)
+        self.assertEqual(
+            spec.continuous_view,
+            ContinuousView.QUANTILE_NORMAL,
+        )
         self.assertEqual(spec.discrete_view, DiscreteView.FINITE_STATE_CODES)
         self.assertEqual(
             spec.categorical_view,

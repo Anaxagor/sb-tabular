@@ -659,7 +659,7 @@ adapter-local evidence.
 | Family | Continuous | Discrete | Categorical | Review note |
 | --- | --- | --- | --- | --- |
 | CTGAN | `RAW` | `RAW_VALUES` | `RAW_VALUES` | Confirm that common missing and ID policies replace wrapper-owned behavior |
-| TabDDPM | `STANDARD` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Project decision; model-owner review pending**; finite numeric support uses multinomial diffusion instead of Gaussian output repair |
+| TabDDPM | `QUANTILE_NORMAL` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Project decision; model-owner review pending**; continuous marginals follow the published implementation and finite numeric support uses multinomial diffusion instead of Gaussian output repair |
 | TabPFGen | `STANDARD` | `RAW_VALUES` | unresolved | Decide whether encoded categorical features are mathematically supported or datasets must be restricted; do not add target mode to solve this |
 | STaSy / LightSB / numeric SB solvers | `STANDARD` | `UNSUPPORTED` | `UNSUPPORTED` | Do not claim categorical support merely because codes can be cast to float |
 | MSBM | `STANDARD` | `FINITE_STATE_CODES` | `FINITE_STATE_CODES` | **Approved pilot**; use train-observed cardinalities and explicit order semantics |
@@ -679,18 +679,25 @@ TabDDPM uses the following semantic representations:
 
 ```python
 InputSpec(
-    continuous_view=ContinuousView.STANDARD,
+    continuous_view=ContinuousView.QUANTILE_NORMAL,
     discrete_view=DiscreteView.FINITE_STATE_CODES,
     categorical_view=CategoricalView.FINITE_STATE_CODES,
 )
 ```
 
-The shared codec standardizes continuous columns and converts every numeric
-discrete or categorical train support to reversible codes. The adapter sends
-standardized continuous values to TabDDPM's Gaussian block and sends both
-finite-state groups to its multinomial block. Per-column cardinalities come
-from named `PreparedSchema.state_columns`; the adapter does not infer or pad
-them.
+The shared codec fits an empirical quantile-to-normal transform independently
+for every continuous column and converts every numeric discrete or categorical
+train support to reversible codes. The adapter sends quantile-normal continuous
+values to TabDDPM's Gaussian block and sends both finite-state groups to its
+multinomial block. Per-column cardinalities come from named
+`PreparedSchema.state_columns`; the adapter does not infer or pad them.
+
+The quantile count follows the published TabDDPM implementation:
+`max(min(n_train // 30, 1000), 10)`, capped to the actual fold size to avoid an
+equivalent sklearn warning on tiny characterization folds. Subsampling is
+disabled. The codec fits the map on the train partition only and retains its
+inverse for raw-space samples; this is a representation change at the shared
+boundary, not adapter-owned preprocessing.
 
 This mapping intentionally corrects the current legacy wrapper. That wrapper
 places numeric discrete columns in the Gaussian block and legacy tuning rounds
@@ -715,10 +722,9 @@ transform introspection, categorical reconstruction, output clipping, or ID
 resampling. Training loss, beta schedule, denoiser, optimizer, learning-rate
 annealing, EMA update, and ancestral sampling remain native TabDDPM behavior.
 
-TabDDPM and MSBM currently request the same three semantic views. TabDDPM
-therefore validates a different native layout and diffusion implementation, but
-it does not satisfy the remaining requirement to validate the benchmark with a
-family that requests different semantic views.
+TabDDPM and MSBM deliberately request different continuous views while sharing
+the finite-state representation. This exercises model-specific semantic views
+without adding a model-name branch to the codec or runner.
 
 ## Approved pilot: MSBM
 

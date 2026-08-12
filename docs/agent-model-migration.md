@@ -358,7 +358,7 @@ Repository evidence:
 - Characterization command or fixture: <COMMAND OR PATH>
 
 Approved contract:
-- continuous_view: <RAW | STANDARD | UNSUPPORTED>
+- continuous_view: <RAW | STANDARD | QUANTILE_NORMAL | UNSUPPORTED>
 - discrete_view: <RAW_VALUES | FINITE_STATE_CODES | UNSUPPORTED>
 - categorical_view: <RAW_VALUES | FINITE_STATE_CODES | UNSUPPORTED>
 - benchmark missing_policy: COMPLETE_CASE

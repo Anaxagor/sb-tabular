@@ -2,13 +2,14 @@
 
 Canonical -> native mapping
 ---------------------------
-``PreparedSchema.continuous_columns`` become one ``float32`` Torch tensor for
-the Gaussian diffusion block. Every name in ``PreparedSchema.column_order``
-that has ``state_columns`` metadata becomes one ``int64`` tensor column for the
-multinomial block. The same ordered names provide real per-column
-cardinalities. TabDDPM treats those states symmetrically and does not consume
-the metadata's ordinal flag. Target remains in whichever semantic block its
-column kind selected; it is never separated as a conditioning label.
+Quantile-normal ``PreparedSchema.continuous_columns`` become one ``float32``
+Torch tensor for the Gaussian diffusion block. Every name in
+``PreparedSchema.column_order`` that has ``state_columns`` metadata becomes one
+``int64`` tensor column for the multinomial block. The same ordered names
+provide real per-column cardinalities. TabDDPM treats those states
+symmetrically and does not consume the metadata's ordinal flag. Target remains
+in whichever semantic block its column kind selected; it is never separated as
+a conditioning label.
 
 Native -> canonical mapping
 ---------------------------
@@ -69,10 +70,10 @@ class TabDDPMAdapter:
 
     @property
     def input_spec(self) -> InputSpec:
-        """Request standard continuous values and codes for finite states."""
+        """Request native quantile-normal values and finite-state codes."""
 
         return InputSpec(
-            continuous_view=ContinuousView.STANDARD,
+            continuous_view=ContinuousView.QUANTILE_NORMAL,
             discrete_view=DiscreteView.FINITE_STATE_CODES,
             categorical_view=CategoricalView.FINITE_STATE_CODES,
         )

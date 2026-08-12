@@ -27,15 +27,17 @@ handling, and output repair are not part of the new benchmark path.
 
 ```python
 InputSpec(
-    continuous_view=ContinuousView.STANDARD,
+    continuous_view=ContinuousView.QUANTILE_NORMAL,
     discrete_view=DiscreteView.FINITE_STATE_CODES,
     categorical_view=CategoricalView.FINITE_STATE_CODES,
 )
 ```
 
-The fold-local shared codec owns continuous standardization and every
-reversible train-observed codebook. The adapter does not fit preprocessing or
-read held-out rows.
+The fold-local shared codec owns the empirical quantile-to-normal transform for
+each continuous column and every reversible train-observed codebook. The
+adapter does not fit preprocessing or read held-out rows. Quantile maps use the
+published TabDDPM quantile-count rule, disable subsampling, and retain their
+inverse for decoding generated values to raw units.
 
 This is an intentional correction to the legacy wrapper. That wrapper places
 numeric discrete columns in the Gaussian block, which can generate arbitrary
@@ -50,7 +52,7 @@ The mapping is fixed:
 
 | Canonical source | Native value | Shape | dtype |
 | --- | --- | --- | --- |
-| `PreparedSchema.continuous_columns` | numeric train block | `(N, D_num)` | `torch.float32` |
+| quantile-normal `PreparedSchema.continuous_columns` | numeric train block | `(N, D_num)` | `torch.float32` |
 | `column_order` filtered by `state_columns` | state train block | `(N, D_state)` | `torch.int64` |
 | same state names | per-column cardinalities | `D_state` Python values | positive `int` |
 
@@ -142,6 +144,7 @@ effect.
 | Mixed-data tuning and rounding of discrete values | [`_js_for_discrete_numeric`, `compute_composite_metric`, and `make_objective_for_dataset`](../../sbtab/experiments/tuning_script/tabddpm_mixed_data_tuning.py) |
 | Older `n_epochs` search whose default `steps` takes precedence | [`make_objective_for_dataset`](../../sbtab/experiments/tuning_script/tabddpm_tuning.py) and [`TabDDPMConfig`](../../sbtab/baselines/tabddpm/native.py) |
 | Legacy final K-fold config and processed-space evaluation | [`build_tabddpm_config_from_best` and `main`](../../sbtab/experiments/calculating_metrics/tabddpm_metrics.py) |
+| Quantile-normal preprocessing and quantile-count rule | [Published TabDDPM implementation](https://github.com/yandex-research/tab-ddpm/blob/main/lib/data.py) |
 | Conditional classification is a distinct published variant | [TabDDPM paper](https://arxiv.org/abs/2209.15421) |
 
 ## Legacy discrepancies recorded for review
@@ -165,9 +168,9 @@ effect.
 ## Supported semantics
 
 The adapter supports canonical tables containing any combination of
-standardized continuous columns and encoded finite-state columns supported by
-the native solver. It uses per-column train cardinalities and ignores ordinal
-adjacency because TabDDPM has no ordered transition kernel.
+quantile-normal continuous columns and encoded finite-state columns supported
+by the native solver. It uses per-column train cardinalities and ignores
+ordinal adjacency because TabDDPM has no ordered transition kernel.
 
 Raw categorical values, raw numeric discrete values, missing-value handling,
 identifiers, generic preprocessing, train/test splitting, tuning, and metrics
