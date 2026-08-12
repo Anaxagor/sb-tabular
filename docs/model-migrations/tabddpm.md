@@ -277,3 +277,22 @@ None of those report metrics is optimized per trial.
 
 Comparison with the published conditional TabDDPM results remains a separate
 study: this repository's migrated model is an unconditional joint generator.
+
+### Preliminary fixed-config report while Optuna runs
+
+To produce a clearly labelled comparison row before the Optuna study finishes,
+run the already characterized `10k / T=100 / batch=512 / [128,256,128]`
+configuration directly through the final five-fold protocol:
+
+```bash
+python -m sbtab.benchmark.pilots.tabddpm_online_shoppers_fixed \
+  --output-dir artifacts/tabddpm-online-shoppers-fixed-10k \
+  --device mps
+```
+
+This command never reads or creates an Optuna study. `report.md` contains a
+shareable `mean ± population-std` row for continuous Mean KL, train-standardized
+Mean WD, Pearson correlation distance, `% F1_real - F1_synth`, applicable R²
+degradation, and continuous MMD. `comparison-metrics.json` retains the exact
+conventions and per-fold values; `evaluation/metrics.json` additionally retains
+raw-unit WD plus every discrete and categorical metric.
