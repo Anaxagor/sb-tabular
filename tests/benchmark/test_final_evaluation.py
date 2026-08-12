@@ -189,6 +189,7 @@ class FinalEvaluationTests(unittest.TestCase):
                 manifest["artifact_type"],
                 "cross_validation_evaluation",
             )
+            self.assertEqual(manifest["artifact_version"], 2)
             self.assertEqual(manifest["adapter_name"], "evaluation-echo")
             self.assertEqual(
                 manifest["generation_manifest"],

@@ -12,7 +12,10 @@ from sbtab.benchmark.validation import ContractViolation
 from sbtab.evaluation.final import CrossValidationEvaluation
 
 
-EVALUATION_ARTIFACT_VERSION = 1
+# Version 2 adds the train-standardized continuous ``mmd_rbf`` field to every
+# applicable fold and cross-fold summary. Older readers must not silently
+# assume the version-1 metric schema.
+EVALUATION_ARTIFACT_VERSION = 2
 
 
 def _read_generation_manifest(path: Path) -> tuple[dict[str, object], str]:
