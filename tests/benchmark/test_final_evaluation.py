@@ -129,6 +129,11 @@ class FinalEvaluationTests(unittest.TestCase):
             result.summary.continuous.mean_wasserstein.std,
             expected_std,
         )
+        mmd_values = [fold.quality.continuous.mmd_rbf for fold in result.folds]
+        self.assertAlmostEqual(
+            result.summary.continuous.mmd_rbf.mean,
+            sum(mmd_values) / len(mmd_values),
+        )
         self.assertIsNotNone(result.summary.continuous.pearson_frobenius)
         self.assertIsNotNone(result.summary.discrete.spearman_frobenius)
         self.assertIsNotNone(result.summary.categorical.nmi_frobenius)

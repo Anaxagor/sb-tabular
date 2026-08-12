@@ -52,10 +52,11 @@ class QualityEvaluationTests(unittest.TestCase):
 
     def test_identical_tables_have_zero_applicable_distances(self) -> None:
         real = _real_frame()
-        score = evaluate_quality(_mixed_dataset(real), real, real.copy())
+        score = evaluate_quality(_mixed_dataset(real), real, real, real.copy())
 
         self.assertEqual(score.continuous.mean_wasserstein, 0.0)
         self.assertEqual(score.continuous.mean_kl, 0.0)
+        self.assertAlmostEqual(score.continuous.mmd_rbf, 0.0)
         self.assertEqual(score.continuous.pearson_frobenius, 0.0)
         self.assertEqual(score.discrete.mean_kl, 0.0)
         self.assertEqual(score.discrete.spearman_frobenius, 0.0)
@@ -71,7 +72,7 @@ class QualityEvaluationTests(unittest.TestCase):
             ignore_index=True,
         )
 
-        score = evaluate_quality(_mixed_dataset(real), real, synthetic)
+        score = evaluate_quality(_mixed_dataset(real), real, real, synthetic)
 
         self.assertEqual(
             tuple(item.column for item in score.continuous.columns),
@@ -98,6 +99,7 @@ class QualityEvaluationTests(unittest.TestCase):
 
         score = evaluate_quality(
             dataset,
+            frame,
             frame,
             pd.DataFrame({"state": ["a", "a"]}),
         )
@@ -133,12 +135,33 @@ class QualityEvaluationTests(unittest.TestCase):
             ),
         )
 
-        score = evaluate_quality(dataset, real, synthetic)
+        score = evaluate_quality(dataset, real, real, synthetic)
 
         self.assertAlmostEqual(
             score.continuous.pearson_frobenius,
             math.sqrt(2.0),
         )
+
+    def test_continuous_mmd_uses_train_scale_and_detects_joint_shift(self) -> None:
+        train = pd.DataFrame(
+            {"left": [0.0, 1.0, 2.0, 3.0], "right": [0.0, 1.0, 2.0, 3.0]}
+        )
+        real = train.copy()
+        synthetic = pd.DataFrame(
+            {"left": [4.0, 5.0, 6.0, 7.0], "right": [4.0, 5.0, 6.0, 7.0]}
+        )
+        dataset = TabularDataset(
+            name="mmd-shift",
+            frame=train,
+            columns=(
+                ColumnSpec("left", ColumnKind.CONTINUOUS),
+                ColumnSpec("right", ColumnKind.CONTINUOUS),
+            ),
+        )
+
+        score = evaluate_quality(dataset, train, real, synthetic, seed=11)
+
+        self.assertGreater(score.continuous.mmd_rbf, 0.0)
 
     def test_quality_requires_canonical_non_missing_raw_tables(self) -> None:
         real = _real_frame()
@@ -148,12 +171,12 @@ class QualityEvaluationTests(unittest.TestCase):
             ["amount", "value", "count", "rank", "group", "label"],
         ]
         with self.assertRaisesRegex(ContractViolation, "canonical"):
-            evaluate_quality(dataset, reordered, real)
+            evaluate_quality(dataset, real, reordered, real)
 
         missing = real.copy()
         missing.loc[0, "group"] = None
         with self.assertRaisesRegex(ContractViolation, "missing values"):
-            evaluate_quality(dataset, real, missing)
+            evaluate_quality(dataset, real, real, missing)
 
 
 if __name__ == "__main__":

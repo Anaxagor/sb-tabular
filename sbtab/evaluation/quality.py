@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from scipy.spatial.distance import cdist
 from scipy.stats import wasserstein_distance
 from sklearn.metrics import normalized_mutual_info_score
 
@@ -22,6 +23,8 @@ from sbtab.evaluation._validation import validate_raw_table
 
 CONTINUOUS_KL_BINS = 50
 KL_PSEUDOCOUNT = 1e-12
+MMD_MAX_SAMPLES = 5_000
+MMD_KERNEL_BLOCK_ROWS = 512
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,9 @@ class ContinuousQuality:
     ----------
     mean_wasserstein, mean_kl:
         Arithmetic means across ``columns``.
+    mmd_rbf:
+        Biased squared maximum mean discrepancy in a train-standardized
+        continuous space, using the RBF kernel ``gamma=1 / n_features``.
     pearson_frobenius:
         Frobenius distance between off-diagonal Pearson matrices. ``None``
         means that fewer than two continuous columns exist.
@@ -79,6 +85,7 @@ class ContinuousQuality:
 
     mean_wasserstein: float
     mean_kl: float
+    mmd_rbf: float
     pearson_frobenius: float | None
     columns: tuple[ContinuousColumnQuality, ...]
 
@@ -208,6 +215,63 @@ def _correlation_frobenius(
     return float(np.linalg.norm(real_matrix - synthetic_matrix, ord="fro"))
 
 
+def _rbf_kernel_mean(left: np.ndarray, right: np.ndarray) -> float:
+    """Return an RBF-kernel mean without materializing a 5k by 5k matrix."""
+
+    gamma = 1.0 / left.shape[1]
+    total = 0.0
+    count = 0
+    for start in range(0, len(left), MMD_KERNEL_BLOCK_ROWS):
+        squared_distances = cdist(
+            left[start : start + MMD_KERNEL_BLOCK_ROWS],
+            right,
+            metric="sqeuclidean",
+        )
+        kernel = np.exp(-gamma * squared_distances)
+        total += float(kernel.sum(dtype=np.float64))
+        count += kernel.size
+    return total / count
+
+
+def _continuous_mmd_rbf(
+    real_train: pd.DataFrame,
+    real_test: pd.DataFrame,
+    synthetic: pd.DataFrame,
+    columns: tuple[str, ...],
+    *,
+    seed: int,
+) -> float:
+    """Compute legacy-comparable MMD without leaking test scale into fit."""
+
+    train = real_train.loc[:, list(columns)].to_numpy(dtype=np.float64)
+    real = real_test.loc[:, list(columns)].to_numpy(dtype=np.float64)
+    generated = synthetic.loc[:, list(columns)].to_numpy(dtype=np.float64)
+    location = train.mean(axis=0)
+    observed_scale = train.std(axis=0, ddof=0)
+    scale = np.where(observed_scale > 0.0, observed_scale, 1.0)
+    real = (real - location) / scale
+    generated = (generated - location) / scale
+
+    random = np.random.default_rng(seed)
+    if len(real) > MMD_MAX_SAMPLES:
+        real = real[
+            random.choice(len(real), MMD_MAX_SAMPLES, replace=False)
+        ]
+    if len(generated) > MMD_MAX_SAMPLES:
+        generated = generated[
+            random.choice(len(generated), MMD_MAX_SAMPLES, replace=False)
+        ]
+
+    value = (
+        _rbf_kernel_mean(real, real)
+        + _rbf_kernel_mean(generated, generated)
+        - 2.0 * _rbf_kernel_mean(real, generated)
+    )
+    # The biased estimator is non-negative analytically; suppress only a
+    # possible negative floating-point residue around zero.
+    return max(float(value), 0.0)
+
+
 def _nmi_matrix(
     frame: pd.DataFrame,
     columns: tuple[str, ...],
@@ -247,16 +311,21 @@ def _nmi_frobenius(
 
 def evaluate_quality(
     dataset: TabularDataset,
+    real_train: pd.DataFrame,
     real_test: pd.DataFrame,
     synthetic: pd.DataFrame,
+    *,
+    seed: int = 5,
 ) -> QualityScore:
     """Evaluate final marginal and association quality for one fold.
 
-    Both tables are decoded raw modeled tables in canonical order. They may
-    have different positive row counts and are never aligned row by row.
+    All tables are decoded raw modeled tables in canonical order. Test and
+    synthetic may have different positive row counts and are never aligned row
+    by row. Train is used only to fit the scale of continuous MMD.
     """
 
     validate_tabular_dataset(dataset)
+    validate_raw_table(dataset, real_train, label="real_train")
     validate_raw_table(dataset, real_test, label="real_test")
     validate_raw_table(dataset, synthetic, label="synthetic")
 
@@ -277,6 +346,13 @@ def evaluate_quality(
             ),
             mean_kl=float(
                 np.mean([score.kl for score in continuous_columns])
+            ),
+            mmd_rbf=_continuous_mmd_rbf(
+                real_train,
+                real_test,
+                synthetic,
+                dataset.continuous_columns,
+                seed=seed,
             ),
             pearson_frobenius=_correlation_frobenius(
                 real_test,

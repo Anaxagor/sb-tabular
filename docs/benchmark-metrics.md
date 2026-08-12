@@ -58,6 +58,33 @@ When their constant values differ, the union has non-zero width and the normal
 The fold-level continuous marginal values are arithmetic means across all
 continuous modeled columns. Per-column values are retained as review evidence.
 
+### Continuous joint MMD
+
+MMD is calculated only over the complete continuous modeled block. Fit a
+population mean and standard deviation (`ddof=0`) on `real_train`, using scale
+`1` for a constant column, and apply that fixed transform to `real_test` and
+`synthetic`. This scale is evaluator-owned and is independent of the
+generator's codec.
+
+Deterministically sample at most 5,000 rows without replacement from each
+table using the fold seed. With `D` continuous columns, use the RBF kernel
+
+```text
+k(x, y) = exp(-||x - y||² / D)
+```
+
+and report the biased squared empirical MMD:
+
+```text
+MMD² = mean(k(real, real)) + mean(k(synth, synth))
+       - 2 * mean(k(real, synth))
+```
+
+Diagonal self-similarities are included. This convention preserves
+comparability with the repository's previous `compute_mmd_numpy` reports while
+making train-only scale fitting and deterministic subsampling explicit. The
+implementation computes the same kernel means in bounded-memory blocks.
+
 ### Discrete and categorical columns
 
 For each discrete or categorical column, form one support from the union of
@@ -150,6 +177,8 @@ dropping a fold.
 ## Deliberate corrections to legacy scripts
 
 - Metrics use decoded raw tables, never one model's prepared representation.
+- The only secondary representation is evaluator-owned train standardization
+  for continuous MMD; it is fitted independently of every generator codec.
 - Column groups and target semantics come only from `TabularDataset`; there
   are no dataset-name target maps.
 - Every model receives the same real folds and metric formulas.

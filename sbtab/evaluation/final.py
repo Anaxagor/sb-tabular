@@ -49,6 +49,8 @@ class ContinuousQualitySummary:
         Summary of per-fold means across continuous columns.
     mean_kl:
         Summary of per-fold mean 50-bin KL values.
+    mmd_rbf:
+        Summary of per-fold train-standardized RBF MMD-squared values.
     pearson_frobenius:
         Summary of per-fold association distances, or ``None`` when fewer than
         two continuous columns exist.
@@ -56,6 +58,7 @@ class ContinuousQualitySummary:
 
     mean_wasserstein: ScalarSummary
     mean_kl: ScalarSummary
+    mmd_rbf: ScalarSummary
     pearson_frobenius: ScalarSummary | None
 
 
@@ -198,6 +201,7 @@ def _continuous_summary(
             tuple(score.mean_wasserstein for score in scores)
         ),
         mean_kl=_summarize(tuple(score.mean_kl for score in scores)),
+        mmd_rbf=_summarize(tuple(score.mmd_rbf for score in scores)),
         pearson_frobenius=(
             _summarize(
                 tuple(
@@ -301,8 +305,12 @@ def evaluate_cross_validation(
             fold_id=fold.split.fold_id,
             quality=evaluate_quality(
                 generation.dataset,
+                fold.train_raw,
                 fold.test_raw,
                 fold.synthetic_raw,
+                seed=(
+                    generation.config.training_seed + fold.split.fold_id
+                ),
             ),
             utility=(
                 evaluate_utility(
