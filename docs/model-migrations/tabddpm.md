@@ -252,6 +252,28 @@ sampling progress bars by default; pass `--no-progress` for redirected logs or
 automation. This command does not search hyperparameters or run final K-fold
 quality/TSTR evaluation.
 
-Model-owned Optuna tuning, a frozen production configuration, a full real
-dataset quality run, and comparison with published TabDDPM results remain
-separate follow-up work.
+## Staged Optuna and complete metric run
+
+The full Online Shoppers entrypoint searches model-owned hyperparameters on the
+reference 80/20 stratified holdout, reranks three distinct leaders at 30,000
+steps on two seed pairs, freezes one configuration, and runs the common final
+five-fold protocol:
+
+```bash
+python -m sbtab.benchmark.pilots.tabddpm_online_shoppers \
+  --output-dir artifacts/tabddpm-online-shoppers-optuna-v1 \
+  --device mps
+```
+
+The command creates a local SQLite study automatically. If it is stopped after
+a completed Phase-A trial or completed Phase-B seed run, repeat the same
+command with `--resume`. See `docs/benchmark-artifacts.md` for the exact
+recovery boundary and fingerprint checks.
+
+Final evaluation reports decoded raw-space WD, 50-bin continuous KL,
+exact-support discrete/categorical KL, Pearson/Spearman/NMI association
+distances, train-standardized continuous RBF MMD, and CatBoost TSTR macro-F1.
+None of those report metrics is optimized per trial.
+
+Comparison with the published conditional TabDDPM results remains a separate
+study: this repository's migrated model is an unconditional joint generator.
