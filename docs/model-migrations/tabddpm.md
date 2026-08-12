@@ -112,7 +112,7 @@ repository sources for these claims are linked below for model-owner review.
 
 ## Explicit native corrections
 
-The extraction also makes four previously declared behaviors effective. They
+The extraction also makes five previously declared behaviors effective. They
 are model-internal corrections, not adapter compatibility logic:
 
 - `TabDDPMConfig.seed` is applied before denoiser construction, DataLoader
@@ -124,7 +124,10 @@ are model-internal corrections, not adapter compatibility logic:
   not introduce a CPU/CUDA/MPS device mismatch;
 - a linear schedule with at most 20 timesteps fails before model construction,
   because the inherited scaled schedule would otherwise produce a beta greater
-  than or equal to one and invalid diffusion probabilities.
+  than or equal to one and invalid diffusion probabilities;
+- Gaussian posterior coefficients are registered as device-local `float32`
+  buffers. Their formulas are unchanged, but sampling no longer attempts to
+  convert a retained `float64` tensor on MPS, which that backend rejects.
 
 The default configuration still uses Gaussian MSE, so forwarding that default
 does not change its loss. Applying the documented training seed makes native

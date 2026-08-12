@@ -104,40 +104,49 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         self.parametrization = parametrization
         self.scheduler = scheduler
 
-        alphas = 1. - get_named_beta_schedule(scheduler, num_timesteps)
-        alphas = torch.tensor(alphas.astype('float64'))
+        alphas = torch.as_tensor(
+            1. - get_named_beta_schedule(scheduler, num_timesteps),
+            dtype=torch.float64,
+        )
         betas = 1. - alphas
 
-        log_alpha = np.log(alphas)
-        log_cumprod_alpha = np.cumsum(log_alpha)
+        log_alpha = torch.log(alphas)
+        log_cumprod_alpha = torch.cumsum(log_alpha, dim=0)
 
         log_1_min_alpha = log_1_min_a(log_alpha)
         log_1_min_cumprod_alpha = log_1_min_a(log_cumprod_alpha)
 
-        alphas_cumprod = np.cumprod(alphas, axis=0)
-        alphas_cumprod_prev = torch.tensor(np.append(1.0, alphas_cumprod[:-1]))
-        alphas_cumprod_next = torch.tensor(np.append(alphas_cumprod[1:], 0.0))
-        sqrt_alphas_cumprod = np.sqrt(alphas_cumprod)
-        sqrt_one_minus_alphas_cumprod = np.sqrt(1.0 - alphas_cumprod)
-        sqrt_recip_alphas_cumprod = np.sqrt(1.0 / alphas_cumprod)
-        sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / alphas_cumprod - 1)
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        alphas_cumprod_prev = torch.cat(
+            (torch.ones(1, dtype=torch.float64), alphas_cumprod[:-1])
+        )
+        alphas_cumprod_next = torch.cat(
+            (alphas_cumprod[1:], torch.zeros(1, dtype=torch.float64))
+        )
+        sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
+        sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
+        sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / alphas_cumprod)
+        sqrt_recipm1_alphas_cumprod = torch.sqrt(
+            1.0 / alphas_cumprod - 1
+        )
 
         # Gaussian diffusion
 
-        self.posterior_variance = (
+        posterior_variance = (
             betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         )
-        self.posterior_log_variance_clipped = torch.from_numpy(
-            np.log(np.append(self.posterior_variance[1], self.posterior_variance[1:]))
-        ).float().to(device)
-        self.posterior_mean_coef1 = (
-            betas * np.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod)
-        ).float().to(device)
-        self.posterior_mean_coef2 = (
-            (1.0 - alphas_cumprod_prev)
-            * np.sqrt(alphas.numpy())
+        posterior_log_variance_clipped = torch.log(
+            torch.cat((posterior_variance[1:2], posterior_variance[1:]))
+        )
+        posterior_mean_coef1 = (
+            betas * torch.sqrt(alphas_cumprod_prev)
             / (1.0 - alphas_cumprod)
-        ).float().to(device)
+        )
+        posterior_mean_coef2 = (
+            (1.0 - alphas_cumprod_prev)
+            * torch.sqrt(alphas)
+            / (1.0 - alphas_cumprod)
+        )
 
         assert log_add_exp(log_alpha, log_1_min_alpha).abs().sum().item() < 1.e-5
         assert log_add_exp(log_cumprod_alpha, log_1_min_cumprod_alpha).abs().sum().item() < 1e-5
@@ -156,6 +165,10 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         self.register_buffer('sqrt_one_minus_alphas_cumprod', sqrt_one_minus_alphas_cumprod.float().to(device))
         self.register_buffer('sqrt_recip_alphas_cumprod', sqrt_recip_alphas_cumprod.float().to(device))
         self.register_buffer('sqrt_recipm1_alphas_cumprod', sqrt_recipm1_alphas_cumprod.float().to(device))
+        self.register_buffer('posterior_variance', posterior_variance.float().to(device))
+        self.register_buffer('posterior_log_variance_clipped', posterior_log_variance_clipped.float().to(device))
+        self.register_buffer('posterior_mean_coef1', posterior_mean_coef1.float().to(device))
+        self.register_buffer('posterior_mean_coef2', posterior_mean_coef2.float().to(device))
 
         self.register_buffer('Lt_history', torch.zeros(num_timesteps))
         self.register_buffer('Lt_count', torch.zeros(num_timesteps))

@@ -171,6 +171,30 @@ class TabDDPMNativeTests(unittest.TestCase):
         self.assertTrue(bool(first_state_valid.all()))
         self.assertTrue(bool(second_state_valid.all()))
 
+    def test_diffusion_posterior_state_is_float32_registered_buffers(self) -> None:
+        """Keep sampling constants movable to MPS without float64 conversion."""
+
+        train_numerical, train_states = _mixed_blocks()
+        solver = TabDDPMSolver(
+            num_numerical_features=2,
+            cardinalities=[3, 2],
+            cfg=_tiny_config(),
+        )
+        solver.fit(train_numerical, train_states)
+        assert solver.diffusion is not None
+
+        buffers = dict(solver.diffusion.named_buffers())
+        for name in (
+            "posterior_variance",
+            "posterior_log_variance_clipped",
+            "posterior_mean_coef1",
+            "posterior_mean_coef2",
+        ):
+            with self.subTest(name=name):
+                self.assertIn(name, buffers)
+                self.assertEqual(buffers[name].dtype, torch.float32)
+                self.assertEqual(buffers[name].device.type, "cpu")
+
     def test_training_seed_controls_native_model_state(self) -> None:
         train_numerical, train_states = _mixed_blocks()
 
