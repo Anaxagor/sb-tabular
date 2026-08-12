@@ -13,6 +13,7 @@ from typing import Mapping
 
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import QuantileTransformer
 
 from sbtab.benchmark.contracts import (
     CategoricalView,
@@ -40,6 +41,18 @@ class _StandardTransform:
 
     mean: float
     scale: float
+
+
+@dataclass(frozen=True)
+class _QuantileNormalTransform:
+    """Train-fitted empirical marginal map used by native TabDDPM.
+
+    ``QuantileTransformer`` is retained only for its learned train quantiles
+    and inverse map. The configured sample bound disables subsampling, so no
+    random held-out or generated values can influence the fitted state.
+    """
+
+    transformer: QuantileTransformer
 
 
 @dataclass(frozen=True)
@@ -81,6 +94,10 @@ class ModelCodec:
         self._input_spec = input_spec
         self._schema: PreparedSchema | None = None
         self._standard: Mapping[str, _StandardTransform] = MappingProxyType({})
+        self._quantile_normal: Mapping[
+            str,
+            _QuantileNormalTransform,
+        ] = MappingProxyType({})
         self._states: Mapping[str, _StateTransform] = MappingProxyType({})
         self._raw_supports: Mapping[str, frozenset[object]] = MappingProxyType({})
 
@@ -191,6 +208,7 @@ class ModelCodec:
         train_dataset = self._training_dataset(train_raw)
 
         standard: dict[str, _StandardTransform] = {}
+        quantile_normal: dict[str, _QuantileNormalTransform] = {}
         states: dict[str, _StateTransform] = {}
         raw_supports: dict[str, frozenset[object]] = {}
         prepared_columns: list[pd.Series] = []
@@ -198,7 +216,12 @@ class ModelCodec:
         for column in self._columns:
             source = train_dataset.frame[column.name].reset_index(drop=True)
             if column.kind is ColumnKind.CONTINUOUS:
-                prepared = self._prepare_continuous(column.name, source, standard)
+                prepared = self._prepare_continuous(
+                    column.name,
+                    source,
+                    standard,
+                    quantile_normal,
+                )
             else:
                 prepared = self._prepare_finite(
                     column,
@@ -232,6 +255,7 @@ class ModelCodec:
         validate_prepared_table(prepared_table, expected_rows=len(train_raw))
 
         self._standard = MappingProxyType(standard)
+        self._quantile_normal = MappingProxyType(quantile_normal)
         self._states = MappingProxyType(states)
         self._raw_supports = MappingProxyType(raw_supports)
         self._schema = schema
@@ -248,11 +272,33 @@ class ModelCodec:
         name: str,
         source: pd.Series,
         standard: dict[str, _StandardTransform],
+        quantile_normal: dict[str, _QuantileNormalTransform],
     ) -> pd.Series:
         if self._input_spec.continuous_view is ContinuousView.RAW:
             return source.copy()
 
         values = source.to_numpy(dtype=np.float64)
+        if self._input_spec.continuous_view is ContinuousView.QUANTILE_NORMAL:
+            # Match the official TabDDPM preprocessing convention. The
+            # quantile count scales with fold size and is capped to avoid a
+            # needlessly fine empirical CDF on large tables.
+            transformer = QuantileTransformer(
+                output_distribution="normal",
+                # sklearn otherwise clips n_quantiles itself and emits a
+                # warning for tiny folds.  The outer minimum makes that
+                # behavior explicit while preserving TabDDPM's n_train // 30
+                # rule on normal benchmark folds.
+                n_quantiles=min(
+                    len(values),
+                    max(min(len(values) // 30, 1000), 10),
+                ),
+                subsample=1_000_000_000,
+                random_state=0,
+            )
+            prepared = transformer.fit_transform(values.reshape(-1, 1))
+            quantile_normal[name] = _QuantileNormalTransform(transformer)
+            return pd.Series(prepared[:, 0], dtype="float64")
+
         mean = float(np.mean(values))
         observed_scale = float(np.std(values, ddof=0))
         scale = observed_scale if observed_scale > 0.0 else 1.0
@@ -335,6 +381,12 @@ class ModelCodec:
             with np.errstate(over="ignore", invalid="ignore"):
                 decoded = values * standard.scale + standard.mean
             return pd.Series(decoded, dtype="float64")
+
+        quantile_normal = self._quantile_normal.get(column.name)
+        if quantile_normal is not None:
+            values = source.to_numpy(dtype=np.float64).reshape(-1, 1)
+            decoded = quantile_normal.transformer.inverse_transform(values)
+            return pd.Series(decoded[:, 0], dtype="float64")
 
         state = self._states.get(column.name)
         if state is not None:

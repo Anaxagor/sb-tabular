@@ -252,6 +252,7 @@ class InputAndPreparedValidationTests(unittest.TestCase):
             (
                 ContinuousView.RAW,
                 ContinuousView.STANDARD,
+                ContinuousView.QUANTILE_NORMAL,
                 ContinuousView.UNSUPPORTED,
             ),
         )

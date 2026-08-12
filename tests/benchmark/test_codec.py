@@ -296,6 +296,54 @@ class ModelCodecTests(unittest.TestCase):
 
         self.assertEqual(decoded["value"].tolist(), [7.0])
 
+    def test_quantile_normal_round_trip_is_fitted_on_train_only(self) -> None:
+        dataset = TabularDataset(
+            name="skewed-continuous",
+            frame=pd.DataFrame(
+                {"value": [0.0] * 30 + [1.0, 10.0, 100.0, 1000.0]}
+            ),
+            columns=(ColumnSpec("value", ColumnKind.CONTINUOUS),),
+        )
+        codec = compile_codec(
+            dataset,
+            InputSpec(
+                continuous_view=ContinuousView.QUANTILE_NORMAL,
+                discrete_view=DiscreteView.UNSUPPORTED,
+                categorical_view=CategoricalView.UNSUPPORTED,
+            ),
+        )
+        train = dataset.frame.iloc[:33].copy()
+        prepared = codec.fit_transform(train)
+
+        decoded = codec.inverse_transform(prepared)
+
+        np.testing.assert_allclose(decoded["value"], train["value"])
+        self.assertFalse(hasattr(codec, "transform"))
+
+    def test_quantile_normal_inverse_clips_to_train_observed_bounds(self) -> None:
+        dataset = TabularDataset(
+            name="bounded-quantile-inverse",
+            frame=pd.DataFrame({"value": np.linspace(0.0, 9.0, 60)}),
+            columns=(ColumnSpec("value", ColumnKind.CONTINUOUS),),
+        )
+        codec = compile_codec(
+            dataset,
+            InputSpec(
+                continuous_view=ContinuousView.QUANTILE_NORMAL,
+                discrete_view=DiscreteView.UNSUPPORTED,
+                categorical_view=CategoricalView.UNSUPPORTED,
+            ),
+        )
+        prepared = codec.fit_transform(dataset.frame.copy())
+        generated = PreparedTable(
+            frame=pd.DataFrame({"value": [-100.0, 100.0]}),
+            schema=prepared.schema,
+        )
+
+        decoded = codec.inverse_transform(generated)
+
+        np.testing.assert_allclose(decoded["value"], [0.0, 9.0])
+
     def test_inverse_supports_empty_finite_state_sample(self) -> None:
         dataset = _mixed_dataset()
         codec = compile_codec(dataset, _msbm_spec())

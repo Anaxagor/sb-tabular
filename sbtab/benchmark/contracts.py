@@ -44,12 +44,15 @@ class ContinuousView(str, Enum):
     """Train-fitted representation requested for continuous columns.
 
     ``RAW`` preserves raw numeric values. ``STANDARD`` requests location/scale
-    normalization fitted on train only. ``UNSUPPORTED`` rejects a dataset when
-    its continuous modeled group is non-empty.
+    normalization fitted on train only. ``QUANTILE_NORMAL`` requests a
+    train-fitted empirical quantile map to a standard-normal marginal; its
+    inverse map restores samples to decoded raw units. ``UNSUPPORTED`` rejects
+    a dataset when its continuous modeled group is non-empty.
     """
 
     RAW = "raw"
     STANDARD = "standard"
+    QUANTILE_NORMAL = "quantile_normal"
     UNSUPPORTED = "unsupported"
 
 

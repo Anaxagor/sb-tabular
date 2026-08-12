@@ -235,6 +235,7 @@ models and existing transforms:
 class ContinuousView(Enum):
     RAW = "raw"
     STANDARD = "standard"
+    QUANTILE_NORMAL = "quantile_normal"
     UNSUPPORTED = "unsupported"
 
 
@@ -254,6 +255,10 @@ Meaning:
 
 - `RAW` and `RAW_VALUES` preserve the raw values seen by the benchmark codec.
 - `STANDARD` fits location and scale on the training partition only.
+- `QUANTILE_NORMAL` fits each continuous column's empirical quantile map on
+  the training partition only and maps it to a standard-normal marginal. The
+  codec retains the fitted map and inversely decodes generated values to raw
+  space; test and generated rows never refit it.
 - `FINITE_STATE_CODES` fits a reversible mapping to integer codes `0..K-1` on
   the training partition only.
 - `UNSUPPORTED` rejects a dataset when the corresponding modeled group is
@@ -265,10 +270,10 @@ same view as every other column of that kind. Marking it in
 temporarily split it only when a native API requires that call shape, and must
 return it in the sampled table.
 
-`ONE_HOT` and `QUANTILE_NORMAL` are deliberately absent from the MVP. Add a new
-view only in a shared contract PR that includes a real model requirement, a
-fold-local implementation, inverse transformation, and tests. Do not add enum
-values for hypothetical future use.
+`ONE_HOT` is deliberately absent from the current contract. Add a new view only
+in a shared contract PR that includes a real model requirement, a fold-local
+implementation, inverse transformation where applicable, and tests. Do not add
+enum values for hypothetical future use.
 
 The following do not belong in `InputSpec`:
 
