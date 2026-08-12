@@ -79,8 +79,9 @@ rewrite generated tables.
 The MSBM and TabDDPM Online Shoppers entrypoints create `pilot-manifest.json` only after
 the tuning, five-fold generation, and final-evaluation manifests all exist.
 Its status is `complete`; the file links the three child artifact roots and
-records the canonical UCI ID, target, best trial, and tuning score. A missing
-root manifest means the pilot stopped before completing the benchmark.
+records the canonical UCI ID, target, best trial, tuning score, and per-fold
+fit/sample times with population mean/std. A missing root manifest means the
+pilot stopped before completing the benchmark.
 
 ## TabDDPM staged tuning
 

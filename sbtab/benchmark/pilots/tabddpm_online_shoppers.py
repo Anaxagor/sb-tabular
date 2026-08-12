@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from statistics import fmean, pstdev
 
 import pandas as pd
 import optuna
@@ -181,6 +182,8 @@ def run_tabddpm_online_shoppers_pilot(
         config.output_dir / "evaluation",
         generation_manifest=generation_manifest,
     )
+    fit_times = [fold.fit_seconds for fold in final.folds]
+    sample_times = [fold.sample_seconds for fold in final.folds]
     manifest = {
         "artifact_type": "tabddpm_online_shoppers_pilot",
         "artifact_version": TABDDPM_ONLINE_SHOPPERS_PILOT_VERSION,
@@ -189,6 +192,18 @@ def run_tabddpm_online_shoppers_pilot(
         "uci_id": ONLINE_SHOPPERS_UCI_ID,
         "target": ONLINE_SHOPPERS_TARGET,
         "best_rerank_score": tuning.best_score,
+        "runtime_seconds": {
+            "fit": {
+                "mean": fmean(fit_times),
+                "std": pstdev(fit_times),
+                "folds": fit_times,
+            },
+            "sample": {
+                "mean": fmean(sample_times),
+                "std": pstdev(sample_times),
+                "folds": sample_times,
+            },
+        },
         "tuning_manifest": str(tuning_manifest.relative_to(config.output_dir)),
         "generation_manifest": str(generation_manifest.relative_to(config.output_dir)),
         "evaluation_manifest": str(evaluation_manifest.relative_to(config.output_dir)),

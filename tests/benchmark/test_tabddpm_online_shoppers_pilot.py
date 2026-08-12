@@ -73,6 +73,8 @@ class TabDDPMOnlineShoppersPilotTests(unittest.TestCase):
                 (output_dir / "evaluation" / "metrics.json").read_text(encoding="utf-8")
             )
             self.assertEqual(pilot["status"], "complete")
+            self.assertEqual(len(pilot["runtime_seconds"]["fit"]["folds"]), 5)
+            self.assertGreaterEqual(pilot["runtime_seconds"]["fit"]["mean"], 0.0)
             self.assertEqual(len(result.final.folds), 5)
             self.assertIn("mmd_rbf", metrics["summary"]["continuous"])
             self.assertEqual(metrics["summary"]["utility"]["metric"], "macro_f1")
