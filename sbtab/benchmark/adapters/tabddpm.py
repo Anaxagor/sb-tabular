@@ -2,7 +2,7 @@
 
 Canonical -> native mapping
 ---------------------------
-Quantile-normal ``PreparedSchema.continuous_columns`` become one ``float32``
+Standardized ``PreparedSchema.continuous_columns`` become one ``float32``
 Torch tensor for the Gaussian diffusion block. Every name in
 ``PreparedSchema.column_order`` that has ``state_columns`` metadata becomes one
 ``int64`` tensor column for the multinomial block. The same ordered names
@@ -70,10 +70,10 @@ class TabDDPMAdapter:
 
     @property
     def input_spec(self) -> InputSpec:
-        """Request native quantile-normal values and finite-state codes."""
+        """Request benchmark-standard values and finite-state codes."""
 
         return InputSpec(
-            continuous_view=ContinuousView.QUANTILE_NORMAL,
+            continuous_view=ContinuousView.STANDARD,
             discrete_view=DiscreteView.FINITE_STATE_CODES,
             categorical_view=CategoricalView.FINITE_STATE_CODES,
         )

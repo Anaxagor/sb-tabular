@@ -109,7 +109,7 @@ class TabDDPMAdapterTests(unittest.TestCase):
 
         self.assertEqual(
             spec.continuous_view,
-            ContinuousView.QUANTILE_NORMAL,
+            ContinuousView.STANDARD,
         )
         self.assertEqual(spec.discrete_view, DiscreteView.FINITE_STATE_CODES)
         self.assertEqual(
