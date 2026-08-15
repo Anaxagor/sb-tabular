@@ -7,9 +7,12 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
+import optuna
 import pandas as pd
 
+from sbtab.baselines.tabddpm.native import TabDDPMConfig
 from sbtab.benchmark import (
     ColumnKind,
     ColumnSpec,
@@ -19,8 +22,13 @@ from sbtab.benchmark import (
 )
 from sbtab.benchmark.pilots.tabddpm_mixed_benchmark import (
     TabDDPMMixedBenchmarkConfig,
+    _run_one_dataset,
     _pickle_dataset_loader,
     run_tabddpm_mixed_benchmark,
+)
+from sbtab.benchmark.datasets import (
+    ONLINE_SHOPPERS_COLUMNS,
+    make_mixed_dataset,
 )
 from sbtab.benchmark.splitting import (
     HoldoutConfig,
@@ -117,6 +125,36 @@ def _fake_dataset_runner(
     return manifest_path
 
 
+def _online_shoppers_frame() -> pd.DataFrame:
+    rows = 20
+    values: dict[str, list[object]] = {}
+    for column in ONLINE_SHOPPERS_COLUMNS:
+        if column.kind is ColumnKind.CONTINUOUS:
+            values[column.name] = [float(index) for index in range(rows)]
+        elif column.kind is ColumnKind.DISCRETE:
+            values[column.name] = [index % 3 for index in range(rows)]
+        elif column.name in {"Weekend", "Revenue"}:
+            values[column.name] = [bool(index % 2) for index in range(rows)]
+        else:
+            values[column.name] = [
+                "a" if index % 2 == 0 else "b" for index in range(rows)
+            ]
+    return pd.DataFrame(values)
+
+
+def _tiny_config(trial: optuna.Trial) -> TabDDPMConfig:
+    width = trial.suggest_categorical("width", [4])
+    return TabDDPMConfig(
+        steps=1,
+        num_timesteps=2,
+        batch_size=4,
+        d_layers=[width],
+        weight_decay=0.0,
+        use_ema_for_sampling=False,
+        show_progress=False,
+    )
+
+
 class TabDDPMMixedBenchmarkTests(unittest.TestCase):
     """Check split policy, collection artifacts, and strict resume behavior."""
 
@@ -147,6 +185,56 @@ class TabDDPMMixedBenchmarkTests(unittest.TestCase):
         }
 
         self.assertEqual(observed_rows, expected_rows)
+
+    def test_real_solver_completes_one_dataset_collection(self) -> None:
+        dataset = make_mixed_dataset(
+            "online_shoppers",
+            _online_shoppers_frame(),
+        )
+        with TemporaryDirectory() as temporary_dir:
+            config = TabDDPMMixedBenchmarkConfig(
+                output_dir=Path(temporary_dir) / "run",
+                dataset_keys=("online_shoppers",),
+                target_complete_trials=1,
+                max_total_trials=1,
+                rerank_candidates=1,
+                rerank_seed_pairs=1,
+                show_native_progress=False,
+                dataset_source="test-fixture",
+            )
+
+            def run_dataset(
+                value: TabularDataset,
+                run_config: TabDDPMMixedBenchmarkConfig,
+            ) -> Path:
+                return _run_one_dataset(
+                    value,
+                    run_config,
+                    suggest_config=_tiny_config,
+                )
+
+            with patch(
+                "sbtab.benchmark.adapters.tabddpm_tuning.RERANK_STEPS",
+                1,
+            ):
+                result = run_tabddpm_mixed_benchmark(
+                    config,
+                    dataset_loader=lambda key: dataset,
+                    dataset_runner=run_dataset,
+                )
+
+            summary = json.loads(
+                result.summary_json_path.read_text(encoding="utf-8")
+            )[0]
+            self.assertEqual(summary["dataset_key"], "online_shoppers")
+            self.assertEqual(summary["utility"]["metric"], "macro_f1")
+            self.assertIsNotNone(summary["continuous"]["mmd_rbf"])
+            self.assertTrue(
+                (
+                    config.output_dir
+                    / "online_shoppers/generation/manifest.json"
+                ).is_file()
+            )
 
     def test_task_controls_the_shared_splitter_not_the_adapter(self) -> None:
         from sbtab.benchmark.pilots.tabddpm_mixed_benchmark import (
