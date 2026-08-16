@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,7 @@ import optuna
 import pandas as pd
 
 from sbtab.baselines.tabddpm.native import TabDDPMConfig
+from sbtab.baselines.tabddpm.utils import FoundNANsError
 from sbtab.benchmark import (
     ColumnKind,
     ColumnSpec,
@@ -32,6 +34,7 @@ from sbtab.benchmark.adapters.tabddpm_tuning import (
     tune_tabddpm,
     write_tabddpm_tuning_artifacts,
 )
+from sbtab.benchmark.missing import apply_missing_policy
 
 
 def _dataset() -> TabularDataset:
@@ -162,6 +165,101 @@ class TabDDPMTuningTests(unittest.TestCase):
             self.assertEqual(manifest["completed_phase_a_trials"], 2)
             self.assertEqual(len(manifest["fingerprint"]), 64)
             self.assertEqual(len(rerank), 1)
+
+    def test_resume_marks_an_interrupted_running_trial_failed(self) -> None:
+        with TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            with patch("sbtab.benchmark.adapters.tabddpm_tuning.RERANK_STEPS", 1):
+                first = tune_tabddpm(
+                    _dataset(),
+                    _run_config(root, target=1, resume=False),
+                    suggest_config=_tiny_config,
+                )
+                interrupted = first.study.ask()
+                resumed = tune_tabddpm(
+                    _dataset(),
+                    _run_config(root, target=2, resume=True),
+                    suggest_config=_tiny_config,
+                )
+
+            states = {
+                trial.number: trial.state for trial in resumed.study.trials
+            }
+            self.assertEqual(
+                states[interrupted.number],
+                optuna.trial.TrialState.FAIL,
+            )
+            self.assertEqual(
+                len(
+                    [
+                        state
+                        for state in states.values()
+                        if state is optuna.trial.TrialState.COMPLETE
+                    ]
+                ),
+                2,
+            )
+
+    def test_non_finite_sampling_fails_only_the_current_trial(self) -> None:
+        dataset = _dataset()
+        missing_report = apply_missing_policy(
+            dataset,
+            MissingPolicy.COMPLETE_CASE,
+        ).report
+        successful_holdout = SimpleNamespace(
+            dataset=dataset,
+            train_raw=dataset.frame.iloc[:16].reset_index(drop=True),
+            validation_raw=dataset.frame.iloc[16:].reset_index(drop=True),
+            synthetic_raw=dataset.frame.iloc[12:16].reset_index(drop=True),
+            fit_seconds=1.0,
+            sample_seconds=0.5,
+            missing_report=missing_report,
+        )
+        outcomes = iter(
+            (
+                FoundNANsError(),
+                successful_holdout,
+                successful_holdout,
+            )
+        )
+
+        def run_trial(*args, **kwargs):
+            outcome = next(outcomes)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        with TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            with (
+                patch(
+                    "sbtab.benchmark.adapters.tabddpm_tuning."
+                    "run_holdout_trial",
+                    side_effect=run_trial,
+                ),
+                patch(
+                    "sbtab.benchmark.adapters.tabddpm_tuning.RERANK_STEPS",
+                    1,
+                ),
+            ):
+                result = tune_tabddpm(
+                    dataset,
+                    _run_config(root, target=1, resume=False),
+                    suggest_config=_tiny_config,
+                )
+
+        self.assertEqual(
+            tuple(trial.state for trial in result.study.trials),
+            (
+                optuna.trial.TrialState.FAIL,
+                optuna.trial.TrialState.COMPLETE,
+            ),
+        )
+        failed = result.study.trials[0]
+        self.assertEqual(
+            failed.user_attrs["failure"]["type"],
+            "non_finite_sampling_trajectory",
+        )
 
     def test_resume_rejects_changed_protocol_fingerprint(self) -> None:
         with TemporaryDirectory() as temporary_dir:

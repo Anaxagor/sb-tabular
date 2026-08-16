@@ -87,6 +87,10 @@ python -m sbtab.benchmark.pilots.tabddpm_mixed_benchmark \
 
 The native model has no mid-fit checkpoint, so interruption restarts only the
 current fit. Completed rerank seed runs and completed datasets are reused.
+If native sampling detects a non-finite trajectory during Phase A, only that
+configuration is recorded as a failed Optuna trial; the study continues until
+it reaches the requested number of successful trials or the total-trial safety
+ceiling. Contract and unexpected model errors still stop the study.
 Five-fold final generation is currently create-only; interruption during that
 stage restarts the current dataset's final generation. An interruption while
 artifact files themselves are being finalized is reported explicitly rather

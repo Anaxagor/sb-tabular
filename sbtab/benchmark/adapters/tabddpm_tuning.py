@@ -21,6 +21,7 @@ import optuna
 import pandas as pd
 
 from sbtab.baselines.tabddpm.native import TabDDPMConfig
+from sbtab.baselines.tabddpm.utils import FoundNANsError
 from sbtab.benchmark.adapters.tabddpm import TabDDPMAdapter
 from sbtab.benchmark.contracts import TabularDataset
 from sbtab.benchmark.missing import MissingReport, apply_missing_policy
@@ -40,6 +41,17 @@ ARCHITECTURE_PROFILES: Mapping[str, tuple[int, ...]] = {
     "medium_6": (256, 512, 512, 512, 512, 256),
     "wide_4": (512, 1024, 1024, 512),
 }
+
+
+class TabDDPMNumericalTrialError(RuntimeError):
+    """Catchable Optuna signal for a native non-finite sampling trajectory.
+
+    The imported native ``FoundNANsError`` inherits directly from
+    ``BaseException`` and therefore bypasses Optuna's normal failed-trial
+    handling.  The tuning boundary translates only that known numerical
+    condition; contract, integration, and unexpected model errors still stop
+    the study immediately.
+    """
 
 
 @dataclass(frozen=True)
@@ -389,9 +401,19 @@ def _phase_a(
             run_id=f"{config.run.run_id}-trial-{trial.number}",
             artifact_dir=config.run.artifact_dir / f"trial-{trial.number}",
         )
-        holdout = run_holdout_trial(
-            dataset, lambda: TabDDPMAdapter(native_config), trial_run
-        )
+        try:
+            holdout = run_holdout_trial(
+                dataset, lambda: TabDDPMAdapter(native_config), trial_run
+            )
+        except FoundNANsError as error:
+            trial.set_user_attr(
+                "failure",
+                {
+                    "type": "non_finite_sampling_trajectory",
+                    "message": str(error),
+                },
+            )
+            raise TabDDPMNumericalTrialError(str(error)) from error
         score = evaluate_tuning_score(
             holdout.dataset,
             holdout.train_raw,
@@ -433,6 +455,7 @@ def _phase_a(
             timeout=remaining_timeout,
             gc_after_trial=True,
             show_progress_bar=False,
+            catch=(TabDDPMNumericalTrialError,),
         )
 
     complete = len(_completed_trials(study))
