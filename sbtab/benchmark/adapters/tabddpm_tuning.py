@@ -20,7 +20,10 @@ from time import monotonic
 import optuna
 import pandas as pd
 
-from sbtab.baselines.tabddpm.native import TabDDPMConfig
+from sbtab.baselines.tabddpm.native import (
+    TabDDPMConfig,
+    TabDDPMNonFiniteTrainingError,
+)
 from sbtab.baselines.tabddpm.utils import FoundNANsError
 from sbtab.benchmark.adapters.tabddpm import TabDDPMAdapter
 from sbtab.benchmark.contracts import TabularDataset
@@ -29,10 +32,11 @@ from sbtab.benchmark.runner import HoldoutRunConfig, run_holdout_trial
 from sbtab.benchmark.validation import ContractViolation
 from sbtab.evaluation import evaluate_tuning_score
 
-TABDDPM_TUNING_ARTIFACT_VERSION = 1
+TABDDPM_TUNING_ARTIFACT_VERSION = 2
 TABDDPM_TUNING_OBJECTIVE_VERSION = 1
 TABDDPM_SEARCH_SPACE_VERSION = 1
 TABDDPM_RERANK_VERSION = 1
+TABDDPM_TUNING_PROTOCOL_VERSION = 2
 PHASE_A_STEPS = 10_000
 RERANK_STEPS = 30_000
 ARCHITECTURE_PROFILES: Mapping[str, tuple[int, ...]] = {
@@ -41,17 +45,6 @@ ARCHITECTURE_PROFILES: Mapping[str, tuple[int, ...]] = {
     "medium_6": (256, 512, 512, 512, 512, 256),
     "wide_4": (512, 1024, 1024, 512),
 }
-
-
-class TabDDPMNumericalTrialError(RuntimeError):
-    """Catchable Optuna signal for a native non-finite sampling trajectory.
-
-    The imported native ``FoundNANsError`` inherits directly from
-    ``BaseException`` and therefore bypasses Optuna's normal failed-trial
-    handling.  The tuning boundary translates only that known numerical
-    condition; contract, integration, and unexpected model errors still stop
-    the study immediately.
-    """
 
 
 @dataclass(frozen=True)
@@ -66,8 +59,9 @@ class TabDDPMTuningConfig:
         Desired total number of successful Phase-A trials in the study. On
         resume this is a target, not a count of additional trials.
     max_total_trials:
-        Safety ceiling including failed trials. It prevents an invalid search
-        space from retrying indefinitely.
+        Per-invocation safety ceiling including pruned and failed trials. It
+        may be increased when resuming the same compatible study; it does not
+        change the objective or search space.
     sampler_seed:
         Seed for Optuna TPE proposals. Native training/sample seeds come from
         ``run`` and are identical across Phase-A trials.
@@ -88,7 +82,7 @@ class TabDDPMTuningConfig:
     max_total_trials: int = 45
     sampler_seed: int = 5
     timeout_seconds: float | None = None
-    study_name: str = "tabddpm-online-shoppers-phase-a-v1"
+    study_name: str = "tabddpm-online-shoppers-phase-a-v2"
     storage: str | None = None
     load_if_exists: bool = False
     rerank_candidates: int = 3
@@ -277,6 +271,7 @@ def _study_fingerprint(dataset: TabularDataset, config: TabDDPMTuningConfig) -> 
     ).hexdigest()
     spec = TabDDPMAdapter().input_spec
     payload = {
+        "tuning_protocol_version": TABDDPM_TUNING_PROTOCOL_VERSION,
         "objective_version": TABDDPM_TUNING_OBJECTIVE_VERSION,
         "search_space_version": TABDDPM_SEARCH_SPACE_VERSION,
         "phase_a_steps": PHASE_A_STEPS,
@@ -330,6 +325,10 @@ def _validate_or_initialize_study(
                 "Cannot resume an unversioned TabDDPM study; start a new study."
             )
         study.set_user_attr("fingerprint", fingerprint)
+        study.set_user_attr(
+            "tuning_protocol_version",
+            TABDDPM_TUNING_PROTOCOL_VERSION,
+        )
         study.set_user_attr("objective_version", TABDDPM_TUNING_OBJECTIVE_VERSION)
         study.set_user_attr("search_space_version", TABDDPM_SEARCH_SPACE_VERSION)
     elif stored != fingerprint:
@@ -405,15 +404,23 @@ def _phase_a(
             holdout = run_holdout_trial(
                 dataset, lambda: TabDDPMAdapter(native_config), trial_run
             )
-        except FoundNANsError as error:
+        except (FoundNANsError, TabDDPMNonFiniteTrainingError) as error:
+            failure_type = (
+                "non_finite_training_loss"
+                if isinstance(error, TabDDPMNonFiniteTrainingError)
+                else "non_finite_sampling_trajectory"
+            )
             trial.set_user_attr(
                 "failure",
                 {
-                    "type": "non_finite_sampling_trajectory",
+                    "type": failure_type,
                     "message": str(error),
                 },
             )
-            raise TabDDPMNumericalTrialError(str(error)) from error
+            # TPE excludes FAIL trials from its density model. PRUNED trials
+            # remain non-successful but enter its unfavorable observations,
+            # preventing repeated proposals from a numerically invalid region.
+            raise optuna.TrialPruned(str(error)) from error
         score = evaluate_tuning_score(
             holdout.dataset,
             holdout.train_raw,
@@ -455,15 +462,24 @@ def _phase_a(
             timeout=remaining_timeout,
             gc_after_trial=True,
             show_progress_bar=False,
-            catch=(TabDDPMNumericalTrialError,),
         )
 
     complete = len(_completed_trials(study))
     if complete < config.target_complete_trials:
+        pruned = sum(
+            trial.state is optuna.trial.TrialState.PRUNED
+            for trial in study.trials
+        )
+        failed = sum(
+            trial.state is optuna.trial.TrialState.FAIL
+            for trial in study.trials
+        )
         raise ContractViolation(
             "TabDDPM Phase A stopped before its successful-trial target: "
             f"complete={complete}, target={config.target_complete_trials}, "
-            f"total={len(study.trials)}. Resume the same SQLite study."
+            f"pruned={pruned}, failed={failed}, total={len(study.trials)}. "
+            "After reviewing the numerical failures, increase "
+            "max_total_trials and resume the same SQLite study."
         )
     return study, fingerprint
 
@@ -671,13 +687,19 @@ def write_tabddpm_tuning_artifacts(
         "status": "complete",
         "dataset": result.dataset.name,
         "fingerprint": result.fingerprint,
+        "tuning_protocol_version": TABDDPM_TUNING_PROTOCOL_VERSION,
         "objective_version": TABDDPM_TUNING_OBJECTIVE_VERSION,
         "search_space_version": TABDDPM_SEARCH_SPACE_VERSION,
         "rerank_version": TABDDPM_RERANK_VERSION,
         "phase_a_steps": PHASE_A_STEPS,
         "rerank_steps": RERANK_STEPS,
         "completed_phase_a_trials": len(_completed_trials(result.study)),
+        "pruned_phase_a_trials": sum(
+            trial.state is optuna.trial.TrialState.PRUNED
+            for trial in result.study.trials
+        ),
         "total_phase_a_trials": len(result.study.trials),
+        "max_total_trials_for_final_invocation": result.config.max_total_trials,
         "best_rerank_score": result.best_score,
         "storage_configured": result.config.storage is not None,
         "files": {

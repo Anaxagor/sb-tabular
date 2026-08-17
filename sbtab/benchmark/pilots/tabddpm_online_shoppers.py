@@ -47,7 +47,7 @@ from sbtab.evaluation import (
     write_evaluation_artifacts,
 )
 
-TABDDPM_ONLINE_SHOPPERS_PILOT_VERSION = 1
+TABDDPM_ONLINE_SHOPPERS_PILOT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ class TabDDPMOnlineShoppersPilotConfig:
     max_total_trials: int = 45
     device: str = "cpu"
     timeout_seconds: float | None = None
-    study_name: str = "tabddpm-online-shoppers-phase-a-v1"
+    study_name: str = "tabddpm-online-shoppers-phase-a-v2"
     storage: str | None = None
     resume: bool = False
     rerank_candidates: int = 3
@@ -236,7 +236,7 @@ def main() -> None:
     parser.add_argument("--timeout-seconds", type=float, default=None)
     parser.add_argument(
         "--study-name",
-        default="tabddpm-online-shoppers-phase-a-v1",
+        default="tabddpm-online-shoppers-phase-a-v2",
     )
     parser.add_argument("--storage", default=None)
     parser.add_argument("--resume", action="store_true")

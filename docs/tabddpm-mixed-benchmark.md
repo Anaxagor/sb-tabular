@@ -40,7 +40,7 @@ ignored and every frame is reconstructed through the explicit new schemas.
 ```bash
 conda activate lightning11
 python -m sbtab.benchmark.pilots.tabddpm_mixed_benchmark \
-  --output-dir artifacts/tabddpm-mixed-optuna-v1 \
+  --output-dir artifacts/tabddpm-mixed-optuna-v2 \
   --dataset-pickle sbtab/data/datasets/datasets_mixed.pkl \
   --device mps \
   --target-complete-trials 30 \
@@ -77,20 +77,31 @@ the next trial boundary:
 
 ```bash
 python -m sbtab.benchmark.pilots.tabddpm_mixed_benchmark \
-  --output-dir artifacts/tabddpm-mixed-optuna-v1 \
+  --output-dir artifacts/tabddpm-mixed-optuna-v2 \
   --dataset-pickle sbtab/data/datasets/datasets_mixed.pkl \
   --device mps \
   --target-complete-trials 30 \
-  --max-total-trials 45 \
+  --max-total-trials 60 \
   --resume
 ```
 
 The native model has no mid-fit checkpoint, so interruption restarts only the
 current fit. Completed rerank seed runs and completed datasets are reused.
-If native sampling detects a non-finite trajectory during Phase A, only that
-configuration is recorded as a failed Optuna trial; the study continues until
-it reaches the requested number of successful trials or the total-trial safety
-ceiling. Contract and unexpected model errors still stop the study.
+The successful-trial target is immutable. ``max_total_trials`` is only an
+invocation safety ceiling and may be increased after inspecting numerical
+failures; changing it does not change the study fingerprint or result meaning.
+
+If native training or sampling detects a non-finite trajectory during Phase A,
+only that configuration is recorded as a pruned Optuna trial. Pruned trials do
+not count toward the successful target, but TPE uses them as unfavorable
+observations and therefore learns to avoid the unstable region. Native
+training checks loss about 100 times per fit, aborting a diverged 10,000-step
+trial within one percent of its budget without changing finite-loss optimizer
+updates. Contract and unexpected model errors still stop the study.
+
+This is tuning protocol v2. A v1 study, where numerical trajectories were
+stored as ``FAIL`` and consequently ignored by TPE, must remain as diagnostic
+evidence and cannot be resumed into a v2 output root.
 Five-fold final generation is currently create-only; interruption during that
 stage restarts the current dataset's final generation. An interruption while
 artifact files themselves are being finalized is reported explicitly rather
@@ -101,7 +112,7 @@ than silently overwriting partial evidence.
 The collection root contains:
 
 - `run-spec.json`: immutable dataset order, source digest, seeds,
-  preprocessing, and budgets;
+  preprocessing, successful-trial target, and tuning protocol;
 - `progress.json`: currently completed and pending datasets;
 - `<dataset>/study.sqlite3`: resumable Optuna Phase-A state;
 - `<dataset>/tuning/`: trials, rerank evidence, and frozen native config;

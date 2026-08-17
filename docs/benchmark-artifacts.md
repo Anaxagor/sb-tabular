@@ -104,8 +104,15 @@ The live pilot root contains `study.sqlite3` and `live/rerank-live.json`.
 `--resume` continues Phase A to the requested count of successful trials and
 reuses completed Phase-B seed runs. A stored fingerprint rejects reuse after a
 change to data bytes, column semantics, `InputSpec`, missing policy, holdout,
-seeds, device, objective, search space, or either training budget. The storage
-URI is never copied into review artifacts.
+seeds, device, tuning protocol, objective, search space, or either training
+budget. The storage URI is never copied into review artifacts.
+
+Known non-finite native training losses and sampling trajectories are stored
+as pruned Phase-A trials. They do not satisfy the successful-trial target, but
+they remain visible to TPE as unfavorable observations. Unexpected model or
+contract exceptions still fail the study. The total-trial safety ceiling is an
+invocation control: after reviewing the recorded failures, it may be increased
+when resuming without changing the study fingerprint.
 
 Once selection completes, `tuning/` contains:
 

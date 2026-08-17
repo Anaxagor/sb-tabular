@@ -266,7 +266,7 @@ five-fold protocol:
 
 ```bash
 python -m sbtab.benchmark.pilots.tabddpm_online_shoppers \
-  --output-dir artifacts/tabddpm-online-shoppers-optuna-v1 \
+  --output-dir artifacts/tabddpm-online-shoppers-optuna-v2 \
   --device mps
 ```
 

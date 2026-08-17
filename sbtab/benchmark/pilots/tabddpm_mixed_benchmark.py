@@ -26,6 +26,7 @@ import pandas as pd
 from sbtab.baselines.tabddpm.native import TabDDPMConfig
 from sbtab.benchmark.adapters.tabddpm import TabDDPMAdapter
 from sbtab.benchmark.adapters.tabddpm_tuning import (
+    TABDDPM_TUNING_PROTOCOL_VERSION,
     TabDDPMTuningConfig,
     tune_tabddpm,
     write_tabddpm_tuning_artifacts,
@@ -61,7 +62,7 @@ from sbtab.evaluation import (
 )
 
 
-TABDDPM_MIXED_BENCHMARK_VERSION = 1
+TABDDPM_MIXED_BENCHMARK_VERSION = 2
 _PUBLISHED_NAME_BY_KEY: Mapping[str, str] = {
     "adult": "Adult",
     "credit_approval": "Credit Approval",
@@ -93,8 +94,9 @@ class TabDDPMMixedBenchmarkConfig:
         Ordered, unique subset of :data:`MIXED_DATASET_KEYS`. The default is
         the complete published collection.
     target_complete_trials, max_total_trials:
-        Successful Phase-A trial target and total-trial safety ceiling for
-        each independent dataset study.
+        Successful Phase-A trial target and per-invocation total-trial safety
+        ceiling for each independent dataset study. The target is immutable;
+        the ceiling may be increased on resume after failures are reviewed.
     device:
         Native Torch device label used by tuning, rerank, and final folds.
     timeout_seconds_per_dataset:
@@ -224,7 +226,6 @@ def _run_spec(config: TabDDPMMixedBenchmarkConfig) -> dict[str, object]:
         "model": "tabddpm",
         "dataset_keys": list(config.dataset_keys),
         "target_complete_trials": config.target_complete_trials,
-        "max_total_trials": config.max_total_trials,
         "device": config.device,
         "rerank_candidates": config.rerank_candidates,
         "rerank_seed_pairs": config.rerank_seed_pairs,
@@ -232,6 +233,7 @@ def _run_spec(config: TabDDPMMixedBenchmarkConfig) -> dict[str, object]:
         "dataset_source": config.dataset_source,
         "dataset_source_sha256": config.dataset_source_sha256,
         "protocol": {
+            "tuning_protocol_version": TABDDPM_TUNING_PROTOCOL_VERSION,
             "missing_policy": MissingPolicy.COMPLETE_CASE.value,
             "tuning_split": "80/20; seed=5; task-stratified classification",
             "final_split": "5-fold; seed=42; task-stratified classification",
@@ -258,7 +260,7 @@ def _prepare_collection_root(config: TabDDPMMixedBenchmarkConfig) -> Path:
         observed = json.loads(spec_path.read_text(encoding="utf-8"))
         if observed != expected:
             raise ContractViolation(
-                "Refusing to resume with dataset, trial, device, rerank, or "
+                "Refusing to resume with dataset, target, device, rerank, or "
                 "protocol controls different from run-spec.json."
             )
         return spec_path
@@ -470,7 +472,7 @@ def _run_one_dataset(
             max_total_trials=config.max_total_trials,
             sampler_seed=5,
             timeout_seconds=config.timeout_seconds_per_dataset,
-            study_name=f"tabddpm-{key}-phase-a-v1",
+            study_name=f"tabddpm-{key}-phase-a-v2",
             storage="sqlite:///" + str(study_path),
             load_if_exists=config.resume,
             rerank_candidates=config.rerank_candidates,

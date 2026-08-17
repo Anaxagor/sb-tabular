@@ -344,6 +344,46 @@ class TabDDPMMixedBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractViolation, "Refusing to resume"):
                 run_tabddpm_mixed_benchmark(changed)
 
+    def test_resume_accepts_a_larger_total_trial_safety_ceiling(self) -> None:
+        with TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir) / "run"
+            initial = TabDDPMMixedBenchmarkConfig(
+                output_dir=output_dir,
+                dataset_keys=("adult",),
+                target_complete_trials=1,
+                max_total_trials=1,
+                rerank_candidates=1,
+                rerank_seed_pairs=1,
+                show_native_progress=False,
+            )
+            first = run_tabddpm_mixed_benchmark(
+                initial,
+                dataset_loader=lambda key: _dataset(
+                    key, TaskType.CLASSIFICATION
+                ),
+                dataset_runner=_fake_dataset_runner,
+            )
+            resumed = TabDDPMMixedBenchmarkConfig(
+                output_dir=output_dir,
+                dataset_keys=("adult",),
+                target_complete_trials=1,
+                max_total_trials=5,
+                rerank_candidates=1,
+                rerank_seed_pairs=1,
+                resume=True,
+                show_native_progress=False,
+            )
+
+            second = run_tabddpm_mixed_benchmark(
+                resumed,
+                dataset_loader=lambda key: _dataset(
+                    key, TaskType.CLASSIFICATION
+                ),
+                dataset_runner=_fake_dataset_runner,
+            )
+
+            self.assertEqual(second.manifest_path, first.manifest_path)
+
     def test_config_rejects_unknown_and_duplicate_datasets(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "Unknown"):
             TabDDPMMixedBenchmarkConfig(
