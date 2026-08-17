@@ -13,6 +13,7 @@ import torch
 from sbtab.baselines.tabddpm.model import TabDDPMWrapper
 from sbtab.baselines.tabddpm.native import (
     TabDDPMConfig,
+    TabDDPMNonFiniteTrainingError,
     TabDDPMSolver,
     _is_compatible_device,
 )
@@ -170,6 +171,34 @@ class TabDDPMNativeTests(unittest.TestCase):
         )
         self.assertTrue(bool(first_state_valid.all()))
         self.assertTrue(bool(second_state_valid.all()))
+
+    def test_non_finite_training_loss_stops_before_optimizer_update(self) -> None:
+        """Abort an invalid native fit before it reaches sampling."""
+
+        train_numerical, train_states = _mixed_blocks()
+        solver = TabDDPMSolver(
+            num_numerical_features=2,
+            cardinalities=[3, 2],
+            cfg=_tiny_config(),
+        )
+        non_finite_losses = (
+            torch.tensor(float("nan")),
+            torch.tensor(0.0),
+        )
+
+        with patch(
+            "sbtab.baselines.tabddpm.native."
+            "GaussianMultinomialDiffusion.mixed_loss",
+            return_value=non_finite_losses,
+        ):
+            with self.assertRaisesRegex(
+                TabDDPMNonFiniteTrainingError,
+                "training step 0",
+            ):
+                solver.fit(train_numerical, train_states)
+
+        self.assertIsNone(solver.diffusion)
+        self.assertIsNone(solver.ema_model)
 
     def test_diffusion_posterior_state_is_float32_registered_buffers(self) -> None:
         """Keep sampling constants movable to MPS without float64 conversion."""

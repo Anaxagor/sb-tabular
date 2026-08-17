@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+import math
 
 import numpy as np
 import torch
@@ -93,6 +94,24 @@ class TabDDPMConfig:
     seed: int = 42
     use_ema_for_sampling: bool = True
     show_progress: bool = False
+
+
+class TabDDPMNonFiniteTrainingError(RuntimeError):
+    """Signal that a native fit can no longer produce a valid generator.
+
+    ``step`` is the zero-based optimizer step at which the periodic native
+    loss check observed a NaN or infinity. ``loss`` is retained for tuning
+    diagnostics. Raising this error only terminates an already invalid fit;
+    finite-loss training keeps the same optimizer and model updates.
+    """
+
+    def __init__(self, *, step: int, loss: float) -> None:
+        self.step = step
+        self.loss = loss
+        super().__init__(
+            "TabDDPM produced a non-finite loss "
+            f"{loss!r} at training step {step}."
+        )
 
 
 def _validate_seed(seed: int, field_name: str) -> None:
@@ -352,6 +371,23 @@ class TabDDPMSolver:
                 )
                 loss = loss_multinomial + loss_gaussian
 
+                inspect_loss = (
+                    step == 0
+                    or (step + 1) % loss_report_interval == 0
+                    or step + 1 == total_steps
+                )
+                loss_value = None
+                if inspect_loss:
+                    # A scalar read synchronizes accelerators, so inspect only
+                    # about 100 times per fit. This still aborts a diverged
+                    # 10k-step trial within 1% of its training budget.
+                    loss_value = float(loss.detach().item())
+                    if not math.isfinite(loss_value):
+                        raise TabDDPMNonFiniteTrainingError(
+                            step=step,
+                            loss=loss_value,
+                        )
+
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
@@ -360,16 +396,10 @@ class TabDDPMSolver:
                     diffusion._denoise_fn,
                     self.cfg.ema_decay,
                 )
-                if self.cfg.show_progress and (
-                    step == 0
-                    or (step + 1) % loss_report_interval == 0
-                    or step + 1 == total_steps
-                ):
-                    # Reading a device scalar synchronizes accelerators. Keep
-                    # loss reporting sparse so progress output does not
-                    # materially slow CUDA or MPS training.
+                if self.cfg.show_progress and inspect_loss:
+                    assert loss_value is not None
                     progress.set_postfix(
-                        loss=f"{loss.detach().item():.4f}",
+                        loss=f"{loss_value:.4f}",
                         refresh=False,
                     )
 

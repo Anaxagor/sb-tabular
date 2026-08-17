@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from sbtab.baselines.tabddpm.native import TabDDPMConfig, TabDDPMSolver
+from sbtab.baselines.tabddpm.native import (
+    TabDDPMConfig,
+    TabDDPMNonFiniteTrainingError,
+    TabDDPMSolver,
+)
 
-__all__ = ["TabDDPMConfig", "TabDDPMSolver", "TabDDPMWrapper"]
+__all__ = [
+    "TabDDPMConfig",
+    "TabDDPMNonFiniteTrainingError",
+    "TabDDPMSolver",
+    "TabDDPMWrapper",
+]
 
 
 def __getattr__(name: str) -> object:

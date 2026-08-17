@@ -113,7 +113,7 @@ repository sources for these claims are linked below for model-owner review.
 
 ## Explicit native corrections
 
-The extraction also makes five previously declared behaviors effective. They
+The extraction also makes six previously declared behaviors effective. They
 are model-internal corrections, not adapter compatibility logic:
 
 - `TabDDPMConfig.seed` is applied before denoiser construction, DataLoader
@@ -129,6 +129,10 @@ are model-internal corrections, not adapter compatibility logic:
 - Gaussian posterior coefficients are registered as device-local `float32`
   buffers. Their formulas are unchanged, but sampling no longer attempts to
   convert a retained `float64` tensor on MPS, which that backend rejects.
+- the native fit inspects its scalar loss about 100 times and raises a typed
+  numerical error when it observes NaN or infinity. This stops an already
+  invalid fit before sampling without changing any finite-loss optimizer or
+  EMA update.
 
 The default configuration still uses Gaussian MSE, so forwarding that default
 does not change its loss. Applying the documented training seed makes native
