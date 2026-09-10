@@ -1,0 +1,142 @@
+{
+  "Adult": {
+    "max_train_steps": 4000,
+    "batch_size": 512,
+    "n_frequencies": 512,
+    "lr": 0.0005957056933844926,
+    "weight_decay": 0.000001,
+    "cond_vel": "vp",
+    "ode_solver": "midpoint",
+    "ode_steps": 50
+  },
+  "Credit Approval": {
+    "max_train_steps": 4000,
+    "batch_size": 256,
+    "n_frequencies": 512,
+    "lr": 0.0011823166126105295,
+    "weight_decay": 0.0001,
+    "cond_vel": "ve",
+    "ode_solver": "midpoint",
+    "ode_steps": 100
+  },
+  "Online Shoppers": {
+    "max_train_steps": 4000,
+    "batch_size": 2048,
+    "n_frequencies": 256,
+    "lr": 0.0018702071890154379,
+    "weight_decay": 0,
+    "cond_vel": "ot",
+    "ode_solver": "rk4",
+    "ode_steps": 50
+  },
+  "Eucalyptus": {
+    "max_train_steps": 1000,
+    "batch_size": 1024,
+    "n_frequencies": 256,
+    "lr": 0.0014084660931204358,
+    "weight_decay": 0.000001,
+    "cond_vel": "ot",
+    "ode_solver": "midpoint",
+    "ode_steps": 100
+  },
+  "Forest Fires": {
+    "max_train_steps": 1000,
+    "batch_size": 2048,
+    "n_frequencies": 512,
+    "lr": 0.0028568455029807974,
+    "weight_decay": 0.0001,
+    "cond_vel": "ve",
+    "ode_solver": "euler",
+    "ode_steps": 20
+  },
+  "Auto MPG": {
+    "max_train_steps": 4000,
+    "batch_size": 256,
+    "n_frequencies": 128,
+    "lr": 0.0009055136291714538,
+    "weight_decay": 0.00001,
+    "cond_vel": "ot",
+    "ode_solver": "euler",
+    "ode_steps": 100
+  },
+  "Cardiovascular Disease": {
+    "max_train_steps": 4000,
+    "batch_size": 2048,
+    "n_frequencies": 256,
+    "lr": 0.0009643398227417203,
+    "weight_decay": 0,
+    "cond_vel": "ot",
+    "ode_solver": "rk4",
+    "ode_steps": 50
+  },
+  "Churn Modelling": {
+    "max_train_steps": 4000,
+    "batch_size": 1024,
+    "n_frequencies": 128,
+    "lr": 0.0008244150692859527,
+    "weight_decay": 0.0001,
+    "cond_vel": "cos",
+    "ode_solver": "euler",
+    "ode_steps": 50
+  },
+  "Insurance": {
+    "max_train_steps": 2000,
+    "batch_size": 256,
+    "n_frequencies": 512,
+    "lr": 0.0010376976099540592,
+    "weight_decay": 0.00001,
+    "cond_vel": "ot",
+    "ode_solver": "euler",
+    "ode_steps": 100
+  },
+  "Palmer Penguins": {
+    "max_train_steps": 1000,
+    "batch_size": 4096,
+    "n_frequencies": 128,
+    "lr": 0.0004943331066436531,
+    "weight_decay": 0,
+    "cond_vel": "ot",
+    "ode_solver": "euler",
+    "ode_steps": 50
+  },
+  "Real Estate": {
+    "max_train_steps": 1000,
+    "batch_size": 2048,
+    "n_frequencies": 256,
+    "lr": 0.0015483704871335794,
+    "weight_decay": 0,
+    "cond_vel": "ot",
+    "ode_solver": "euler",
+    "ode_steps": 50
+  },
+  "Stroke Prediction": {
+    "max_train_steps": 4000,
+    "batch_size": 512,
+    "n_frequencies": 256,
+    "lr": 0.001081873604943456,
+    "weight_decay": 0,
+    "cond_vel": "ot",
+    "ode_solver": "midpoint",
+    "ode_steps": 100
+  },
+  "Diamonds": {
+    "max_train_steps": 4000,
+    "batch_size": 4096,
+    "n_frequencies": 64,
+    "lr": 0.0028944021480105976,
+    "weight_decay": 0.00001,
+    "cond_vel": "ot",
+    "ode_solver": "rk4",
+    "ode_steps": 50
+  },
+  "House Sales": {
+    "max_train_steps": 1000,
+    "batch_size": 4096,
+    "n_frequencies": 128,
+    "lr": 0.002149543176829757,
+    "weight_decay": 0.000001,
+    "cond_vel": "vp",
+    "ode_solver": "euler",
+    "ode_steps": 50
+  }
+}

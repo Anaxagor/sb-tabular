@@ -1,0 +1,142 @@
+{
+  "Adult": {
+    "n_epochs": 200,
+    "num_timesteps": 250,
+    "batch_size": 1024,
+    "architecture": "256x512x512x256",
+    "lr": 0.0003077349492436553,
+    "weight_decay": 0.00001,
+    "dropout": 0.1,
+    "scheduler": "linear"
+  },
+  "Credit Approval": {
+    "n_epochs": 300,
+    "num_timesteps": 1000,
+    "batch_size": 512,
+    "architecture": "256x256",
+    "lr": 0.0000397530469705835,
+    "weight_decay": 0,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Online Shoppers": {
+    "n_epochs": 300,
+    "num_timesteps": 100,
+    "batch_size": 1024,
+    "architecture": "512x512",
+    "lr": 0.000907204708827944,
+    "weight_decay": 0,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Eucalyptus": {
+    "n_epochs": 100,
+    "num_timesteps": 100,
+    "batch_size": 256,
+    "architecture": "512x512",
+    "lr": 0.00012646701275732596,
+    "weight_decay": 0.000001,
+    "dropout": 0.2,
+    "scheduler": "linear"
+  },
+  "Forest Fires": {
+    "n_epochs": 100,
+    "num_timesteps": 500,
+    "batch_size": 4096,
+    "architecture": "256x512x512x256",
+    "lr": 0.00008617782466083681,
+    "weight_decay": 0.000001,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Auto MPG": {
+    "n_epochs": 300,
+    "num_timesteps": 1000,
+    "batch_size": 4096,
+    "architecture": "256x256",
+    "lr": 0.0013443670713767502,
+    "weight_decay": 0.0001,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Cardiovascular Disease": {
+    "n_epochs": 200,
+    "num_timesteps": 1000,
+    "batch_size": 1024,
+    "architecture": "512x512",
+    "lr": 0.0001650666275660296,
+    "weight_decay": 0.0001,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Churn Modelling": {
+    "n_epochs": 200,
+    "num_timesteps": 500,
+    "batch_size": 512,
+    "architecture": "512x512",
+    "lr": 0.0007564525602323961,
+    "weight_decay": 0.0001,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Insurance": {
+    "n_epochs": 300,
+    "num_timesteps": 1000,
+    "batch_size": 256,
+    "architecture": "128x128",
+    "lr": 0.0005127900900735316,
+    "weight_decay": 0.000001,
+    "dropout": 0.1,
+    "scheduler": "linear"
+  },
+  "Palmer Penguins": {
+    "n_epochs": 100,
+    "num_timesteps": 1000,
+    "batch_size": 4096,
+    "architecture": "128x128",
+    "lr": 0.001216332863708561,
+    "weight_decay": 0,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Real Estate": {
+    "n_epochs": 100,
+    "num_timesteps": 500,
+    "batch_size": 256,
+    "architecture": "128x128",
+    "lr": 0.0026496814470239986,
+    "weight_decay": 0.00001,
+    "dropout": 0.2,
+    "scheduler": "linear"
+  },
+  "Stroke Prediction": {
+    "n_epochs": 100,
+    "num_timesteps": 500,
+    "batch_size": 256,
+    "architecture": "512x512",
+    "lr": 0.0025745630627860127,
+    "weight_decay": 0.00001,
+    "dropout": 0,
+    "scheduler": "linear"
+  },
+  "Diamonds": {
+    "n_epochs": 200,
+    "num_timesteps": 250,
+    "batch_size": 256,
+    "architecture": "512x512",
+    "lr": 0.00004365407057775297,
+    "weight_decay": 0.0001,
+    "dropout": 0.1,
+    "scheduler": "linear"
+  },
+  "House Sales": {
+    "n_epochs": 100,
+    "num_timesteps": 500,
+    "batch_size": 256,
+    "architecture": "256x512x512x256",
+    "lr": 0.001440772360237394,
+    "weight_decay": 0.00001,
+    "dropout": 0.1,
+    "scheduler": "linear"
+  }
+}
