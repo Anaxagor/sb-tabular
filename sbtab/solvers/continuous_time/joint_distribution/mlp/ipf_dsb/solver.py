@@ -184,8 +184,12 @@ class IPFDSBSolver:
         g = self.timegrid.gammas()
         t = self.timegrid.times()
         K = self.timegrid.num_steps
-        gen = torch.Generator(device=str(self.device))
-        gen.manual_seed(int(seed))
+        # Index tensors are generated on CPU and then moved to the solver
+        # device. This is compatible with both CPU-only and CUDA PyTorch builds.
+        cpu_gen = torch.Generator(device="cpu")
+        cpu_gen.manual_seed(int(seed))
+        dev_gen = torch.Generator(device=str(self.device))
+        dev_gen.manual_seed(int(seed))
 
         xs = []
         ts = []
@@ -199,14 +203,16 @@ class IPFDSBSolver:
         # Repeat / sample init_x to size N
         if init_x.shape[0] >= N:
             
-            base = init_x[torch.randperm(init_x.shape[0], device=self.device, generator=gen)[:N]]
+            idx = torch.randperm(init_x.shape[0], generator=cpu_gen)[:N].to(self.device)
+            base = init_x[idx]
         else:
             reps = (N + init_x.shape[0] - 1) // init_x.shape[0]
             base = init_x.repeat((reps, 1))[:N]
-            base = base[torch.randperm(base.shape[0], device=self.device, generator=gen)]
+            perm = torch.randperm(base.shape[0], generator=cpu_gen).to(self.device)
+            base = base[perm]
 
         # Random step indices
-        k_idx = torch.randint(low=0, high=K, size=(N,), generator=gen, device=self.device)
+        k_idx = torch.randint(low=0, high=K, size=(N,), generator=cpu_gen).to(self.device)
 
         # For each step, we do one-step transition using the opposite model.
         # We keep it simple and local (no full-path simulation).
@@ -221,7 +227,13 @@ class IPFDSBSolver:
             # direction handling: for "backward" cache, we often want to simulate using net_f;
             # for "forward" cache, simulate using net_b.
             # Here, direction is passed for semantic clarity only.
-            x_next = self._simulate_one_step(x_k, k=k, net=net_opposite, direction=direction, gen=gen)
+            x_next = self._simulate_one_step(
+                x_k,
+                k=k,
+                net=net_opposite,
+                direction=direction,
+                gen=dev_gen,
+            )
 
             # target residual: x_prev - x_next
             target = x_k - x_next
@@ -235,7 +247,7 @@ class IPFDSBSolver:
         Y = torch.cat(ys, dim=0)
 
         # Shuffle cache
-        perm = torch.randperm(X.shape[0], generator=gen, device=self.device)
+        perm = torch.randperm(X.shape[0], generator=cpu_gen).to(self.device)
         X, T, Y = X[perm], T[perm], Y[perm]
         return TensorDataset(X, T, Y)
 
