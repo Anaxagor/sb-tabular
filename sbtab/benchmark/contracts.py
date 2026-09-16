@@ -59,9 +59,12 @@ class ContinuousView(str, Enum):
 class DiscreteView(str, Enum):
     """Train-fitted representation requested for numeric discrete columns.
 
-    ``RAW_VALUES`` preserves numeric support. ``FINITE_STATE_CODES`` requests a
-    reversible train-fitted mapping to ``0..K-1``. ``UNSUPPORTED`` rejects a
-    non-empty discrete modeled group.
+    ``RAW_VALUES`` preserves numeric values and their distances without a
+    codebook; generated values need not occur in train. The codec does not
+    round or constrain their range. Model-specific discrete output conventions
+    belong to the model integration. ``FINITE_STATE_CODES`` requests a
+    reversible train-fitted mapping to ``0..K-1`` whose decoded outputs belong
+    to train support. ``UNSUPPORTED`` rejects a non-empty discrete modeled group.
     """
 
     RAW_VALUES = "raw_values"

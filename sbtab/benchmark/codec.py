@@ -323,11 +323,16 @@ class ModelCodec:
                 is CategoricalView.FINITE_STATE_CODES
             )
 
-        values = self._state_values(column, source)
         if not finite_state:
-            raw_supports[column.name] = frozenset(values)
+            # Raw numeric discrete values may be generated outside the observed
+            # train support. Only nominal/raw category output is a closed set.
+            if column.kind is ColumnKind.CATEGORICAL:
+                raw_supports[column.name] = frozenset(
+                    self._state_values(column, source)
+                )
             return source.copy()
 
+        values = self._state_values(column, source)
         value_to_code = {value: code for code, value in enumerate(values)}
         transform = _StateTransform(
             values=values,

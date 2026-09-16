@@ -152,7 +152,7 @@ class ModelCodecTests(unittest.TestCase):
                 PreparedTable(frame=prepared.frame, schema=equivalent_schema)
             )
 
-    def test_raw_finite_views_reject_values_absent_from_train_support(self) -> None:
+    def test_raw_categories_reject_values_absent_from_train_support(self) -> None:
         dataset = _mixed_dataset()
         raw_spec = InputSpec(
             continuous_view=ContinuousView.RAW,
@@ -168,6 +168,27 @@ class ModelCodecTests(unittest.TestCase):
             codec.inverse_transform(
                 PreparedTable(frame=generated, schema=prepared.schema)
             )
+
+    def test_raw_discrete_values_preserve_novel_numeric_output(self) -> None:
+        dataset = _mixed_dataset()
+        spec = InputSpec(
+            continuous_view=ContinuousView.RAW,
+            discrete_view=DiscreteView.RAW_VALUES,
+            categorical_view=CategoricalView.FINITE_STATE_CODES,
+        )
+        codec = compile_codec(dataset, spec)
+        prepared = codec.fit_transform(dataset.frame.iloc[:4].copy())
+        self.assertEqual(prepared.frame["count"].tolist(), [10, 0, 10, 1])
+        self.assertNotIn("count", prepared.schema.state_columns)
+        generated = prepared.frame.copy()
+        generated["count"] = [-5.0, 3.5, 20.0, 1.0]
+
+        decoded = codec.inverse_transform(
+            PreparedTable(frame=generated, schema=prepared.schema)
+        )
+
+        self.assertEqual(decoded["count"].tolist(), [-5.0, 3.5, 20.0, 1.0])
+        self.assertEqual(decoded["label"].tolist(), ["yes", "no", "yes", "no"])
 
     def test_datetime_like_categories_round_trip_in_both_finite_views(self) -> None:
         cases = (

@@ -352,7 +352,7 @@ The fitted codec, not `PreparedSchema`, owns reversible implementation state:
 
 - means and scales;
 - category-to-code and code-to-category mappings;
-- raw discrete and categorical supports;
+- raw categorical supports (raw numeric discrete values have no codebook);
 
 Physical pandas dtypes are not a model capability and are therefore not part
 of `InputSpec` or `PreparedSchema`. Decoding restores exact finite-state raw
@@ -536,8 +536,12 @@ The v1 transforms are deterministic:
 - explicitly ordinal categorical codes follow `ordered_values`, filtered to
   values observed in train;
 - nominal categorical codes follow first appearance in train row order;
-- a generated `RAW_VALUES` discrete or categorical value must belong to that
-  column's train support.
+- a generated categorical `RAW_VALUES` value must belong to its train support;
+- discrete `RAW_VALUES` preserve numeric values and distances, with no fitted
+  codebook or restriction to train-observed values. The codec neither rounds
+  nor clips them. A model's explicit output convention may quantize its
+  numerical samples before returning the prepared table. Finite-state codes
+  remain strict: invalid codes are never repaired.
 
 `ModelCodec` is single-use and intentionally exposes no transform operation for
 held-out data. `compile_codec` validates dataset declarations, while learned
