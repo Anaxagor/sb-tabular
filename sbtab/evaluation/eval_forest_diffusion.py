@@ -24,6 +24,7 @@ from sbtab.transforms.drop_cols import DropDataCols
 from sbtab.transforms.missing import DropMissingRows
 from sbtab.transforms.pipeline import TransformPipeline
 from sbtab.solvers.ForestDiffusion import ForestDiffusionModel
+from sbtab.experiments.tuning_script.dataset_registry import DATASETS_PATH, DATASET_KEYS, KEY_NORMALIZER
 
 
 def seed_everything(seed: int) -> None:
@@ -132,20 +133,28 @@ def main():
     results_dir = Path("../experiments/tuning_script/forestdiff_optuna_results")
     output_csv = "cv_forestdiff_results.csv"
 
-    with open("../data/datasets/datasets_continuous_only.pkl", "rb") as f:
-        all_data = pickle.load(f)
+    with open(DATASETS_PATH, "rb") as f:
+        all_data_raw = pickle.load(f)
+
+    all_data = {KEY_NORMALIZER(k): v for k, v in all_data_raw.items()}
 
     all_cv_results = []
 
-    for ds_name in all_data.keys():
+    for ds_name in DATASET_KEYS:
+        ds_key = KEY_NORMALIZER(ds_name)
         print(f"\nEvaluating ForestDiffusion on {ds_name}")
-        df_raw = all_data[ds_name]
+
+        if ds_key not in all_data:
+            print(f"  Skipping {ds_name}: dataset not found in pickle")
+            continue
+
+        df_raw = all_data[ds_key]
 
         target_col = df_raw.attrs.get('target_variable')
         task_type = df_raw.attrs.get('task_type', 'classification')
 
-        param_file = results_dir / f"{ds_name}_final_metrics.json"
-        train_pkl = results_dir / f"{ds_name}_train.pkl"
+        param_file = results_dir / f"{ds_key}_final_metrics.json"
+        train_pkl = results_dir / f"{ds_key}_train.pkl"
 
         if not param_file.exists() or not train_pkl.exists():
             print(f"  Skipping {ds_name}: required files not found")
@@ -210,34 +219,44 @@ def main():
                 train_num_scaled = np.empty((len(train_fold), 0))
                 test_num_scaled = np.empty((len(test_fold), 0))
 
-            if all_cat_discrete:
+            if clean_cat:
                 fold_encoder = OrdinalEncoder(dtype=np.int64, handle_unknown='use_encoded_value', unknown_value=-1)
-                train_cat = fold_encoder.fit_transform(train_fold[all_cat_discrete])
+                train_cat = fold_encoder.fit_transform(train_fold[clean_cat])
                 train_cat = np.clip(train_cat, 0, None)  # Убираем -1 для train
-                cat_categories = {col: list(fold_encoder.categories_[i]) for i, col in enumerate(all_cat_discrete)}
+                cat_categories = {col: list(fold_encoder.categories_[i]) for i, col in enumerate(clean_cat)}
             else:
                 train_cat = np.empty((len(train_fold), 0), dtype=int)
                 cat_categories = {}
 
-            X_train = np.hstack([train_num_scaled, train_cat]) if clean_num else train_cat
-            cat_indexes = list(range(train_num_scaled.shape[1], X_train.shape[1])) if all_cat_discrete else []
+            train_disc = train_fold[clean_disc].to_numpy(dtype=np.float64) if clean_disc else np.empty(
+                (len(train_fold), 0))
+
+            X_train = np.hstack([train_num_scaled, train_disc, train_cat]) if clean_num else (
+                np.hstack([train_disc, train_cat]) if clean_disc else train_cat)
+
+            num_dim = train_num_scaled.shape[1]
+            disc_dim = train_disc.shape[1]
+            cat_indexes = list(range(num_dim + disc_dim, X_train.shape[1])) if clean_cat else []
+            int_indexes = list(range(num_dim, num_dim + disc_dim)) if clean_disc else []
 
             model = ForestDiffusionModel(
                 X=X_train, model='xgboost', diffusion_type=best_params["diffusion_type"],
                 n_t=best_params["n_t"], duplicate_K=best_params["duplicate_K"],
                 max_depth=best_params["max_depth"], n_estimators=best_params["n_estimators"],
                 eta=best_params["eta"], reg_lambda=0.0, reg_alpha=0.0,
-                cat_indexes=cat_indexes, int_indexes=[], seed=seed + fold_id,
+                cat_indexes=cat_indexes, int_indexes=int_indexes, seed=seed + fold_id,
                 n_jobs=1 if use_gpu else -1,
                 gpu_hist=use_gpu
             )
 
             synth_X = model.generate(batch_size=len(train_fold))
             num_dim = train_num_scaled.shape[1]
+            disc_dim = train_disc.shape[1]
 
             synth_num_scaled = synth_X[:, :num_dim] if num_dim > 0 else np.empty((synth_X.shape[0], 0))
-            synth_cat = synth_X[:, num_dim:].astype(int) if all_cat_discrete else np.empty((synth_X.shape[0], 0),
-                                                                                           dtype=int)
+            synth_disc = synth_X[:, num_dim:num_dim + disc_dim] if disc_dim > 0 else np.empty((synth_X.shape[0], 0))
+            synth_cat = synth_X[:, num_dim + disc_dim:].astype(int) if clean_cat else np.empty((synth_X.shape[0], 0),
+                                                                                               dtype=int)
 
             synth_df = pd.DataFrame(index=range(len(train_fold)))
             if clean_num:
@@ -246,9 +265,12 @@ def main():
             else:
                 synth_num_orig = np.empty((len(train_fold), 0))
 
-            if all_cat_discrete:
+            if clean_disc:
+                for i, col in enumerate(clean_disc): synth_df[col] = synth_disc[:, i].round().astype(int)
+
+            if clean_cat:
                 synth_cat_orig = []
-                for i, col in enumerate(all_cat_discrete):
+                for i, col in enumerate(clean_cat):
                     cats = cat_categories[col]
                     col_data = synth_cat[:, i]
                     out_range = (col_data < 0) | (col_data >= len(cats))

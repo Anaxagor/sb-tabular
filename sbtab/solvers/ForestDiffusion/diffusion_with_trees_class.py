@@ -123,16 +123,13 @@ class ForestDiffusionModel():
       self.sde = VPSDE(beta_min=self.beta_min, beta_max=self.beta_max, N=n_t)
 
     self.n_batch = n_batch
-    if self.n_batch == 0: 
-      if duplicate_K > 1: # we duplicate the data multiple times, so that X0 is k times bigger so we have more room to learn
-        X1 = np.tile(X1, (duplicate_K, 1))
-        if X_covs is not None:
-          X_covs = np.tile(X_covs, (duplicate_K, 1))
-
-      X0 = np.random.normal(size=X1.shape) # Noise data
-
-      # Make Datasets of interpolation
-      X_train, y_train = build_data_xt(X0, X1, X_covs, n_t=self.n_t, diffusion_type=self.diffusion_type, eps=self.eps, sde=self.sde)
+    if self.n_batch == 0:
+      # was: silently OK, materialise everything
+      # now: refuse — this was the path that caused OOM
+      raise ValueError(
+        "n_batch=0 materialises n_t * duplicate_K * n_rows rows. "
+        "Pass n_batch > 0 (e.g. 2048)."
+      )
 
     if self.label_y is not None:
       assert np.sum(np.isnan(self.label_y)) == 0 # cannot have missing values in the label (just make a special categorical for nan if you need)
@@ -291,10 +288,10 @@ class ForestDiffusionModel():
   def clean_onehot_data(self, X):
     if len(self.cat_indexes) > 0: # ex: [5, 3] and X_names_after [gender_a gender_b cartype_a cartype_b cartype_c]
       X_names_after = copy.deepcopy(self.X_names_after.to_numpy())
-      prefixes = [x.split('_')[0] for x in self.X_names_after if '_' in x] # for all categorical variables, we have prefix ex: ['gender', 'gender']
+      prefixes = [str(x).split('_', 1)[0] for x in self.X_names_after if '_' in str(x)]
       unique_prefixes = np.unique(prefixes) # uniques prefixes
       for i in range(len(unique_prefixes)):
-        cat_vars_indexes = [unique_prefixes[i] + '_' in my_name for my_name in self.X_names_after]
+        cat_vars_indexes = [str(my_name).split('_', 1)[0] == unique_prefixes[i] for my_name in self.X_names_after]
         cat_vars_indexes = np.where(cat_vars_indexes)[0] # actual indexes
         cat_vars = X[:, cat_vars_indexes] # [b, c_cat]
         # dummy variable, so third category is true if all dummies are 0
