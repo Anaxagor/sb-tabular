@@ -330,7 +330,10 @@ class IMFDSBMSolver:
         Train net_f or net_b for `inner_iters` steps on coupling endpoints (z0,z1).
         """
         dataset = TensorDataset(z0, z1)
-        loader = DataLoader(dataset, batch_size=self.cfg.batch_size, shuffle=True, drop_last=True)
+        # Keep small datasets trainable even when the tuned batch size is
+        # larger than the number of rows.
+        batch_size = min(int(self.cfg.batch_size), max(1, len(dataset)))
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
         it = iter(loader)
 
         net = self.model.net(fb)
