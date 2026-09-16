@@ -4,7 +4,11 @@ use the exact same dataset files and keys.
 """
 from pathlib import Path
 
-DATASETS_PATH = Path("../../data/datasets/datasets_mixed.pkl")
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
+DATASETS_PATH = PROJECT_ROOT / "data" / "datasets" / "datasets_mixed.pkl"
+
+
 
 DATASET_KEYS = [
     "Adult",
