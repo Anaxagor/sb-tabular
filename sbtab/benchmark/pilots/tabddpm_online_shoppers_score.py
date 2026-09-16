@@ -39,7 +39,7 @@ from sbtab.benchmark.validation import ContractViolation
 from sbtab.evaluation import TuningScore, evaluate_tuning_score
 
 
-TABDDPM_SCORE_ARTIFACT_VERSION = 1
+TABDDPM_SCORE_ARTIFACT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -105,6 +105,7 @@ def _score_payload(
             ],
         },
         "protocol": {
+            "discrete_modeling": "raw Gaussian input; np.rint output; no clipping",
             "validation_fraction": 0.2,
             "split_seed": 5,
             "training_seed": 42,

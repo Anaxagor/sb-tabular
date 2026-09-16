@@ -87,7 +87,7 @@ def _regression_dataset() -> TabularDataset:
 class TabDDPMRunnerSmokeTests(unittest.TestCase):
     """Exercise fold-local codec, real native sampling, and raw decoding."""
 
-    def test_real_tabddpm_decodes_finite_states_without_output_repair(
+    def test_real_tabddpm_decodes_categories_and_quantizes_discrete_gaussian(
         self,
     ) -> None:
         config = BenchmarkConfig(
@@ -120,9 +120,9 @@ class TabDDPMRunnerSmokeTests(unittest.TestCase):
             self.assertTrue(
                 np.isfinite(fold.synthetic_raw["value"].to_numpy()).all()
             )
-            self.assertTrue(
-                set(fold.synthetic_raw["count"]).issubset({0, 1, 2})
-            )
+            counts = fold.synthetic_raw["count"].to_numpy()
+            self.assertTrue(np.isfinite(counts).all())
+            np.testing.assert_array_equal(counts, np.rint(counts))
             self.assertTrue(
                 set(fold.synthetic_raw["label"]).issubset({"no", "yes"})
             )

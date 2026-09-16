@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import optuna
 import pandas as pd
@@ -343,6 +344,32 @@ class TabDDPMMixedBenchmarkTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ContractViolation, "Refusing to resume"):
                 run_tabddpm_mixed_benchmark(changed)
+
+    def test_resume_rejects_old_run_spec_before_acquisition(self) -> None:
+        with TemporaryDirectory() as temporary_dir:
+            config = TabDDPMMixedBenchmarkConfig(
+                output_dir=Path(temporary_dir) / "run",
+                dataset_keys=("adult",),
+                target_complete_trials=1,
+                max_total_trials=1,
+                show_native_progress=False,
+            )
+            run_tabddpm_mixed_benchmark(
+                config,
+                dataset_loader=lambda key: _dataset(key, TaskType.CLASSIFICATION),
+                dataset_runner=_fake_dataset_runner,
+            )
+            spec_path = config.output_dir / "run-spec.json"
+            spec = json.loads(spec_path.read_text(encoding="utf-8"))
+            spec["protocol"]["tuning_protocol_version"] = 2
+            spec_path.write_text(json.dumps(spec), encoding="utf-8")
+            loader = Mock()
+            with self.assertRaisesRegex(ContractViolation, "Refusing to resume"):
+                run_tabddpm_mixed_benchmark(
+                    replace(config, resume=True),
+                    dataset_loader=loader,
+                )
+            loader.assert_not_called()
 
     def test_resume_accepts_a_larger_total_trial_safety_ceiling(self) -> None:
         with TemporaryDirectory() as temporary_dir:

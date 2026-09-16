@@ -41,7 +41,7 @@ from sbtab.evaluation import (
     write_evaluation_artifacts,
 )
 
-TABDDPM_FIXED_REPORT_VERSION = 1
+TABDDPM_FIXED_REPORT_VERSION = 2
 
 
 def default_fixed_config() -> TabDDPMConfig:
@@ -218,6 +218,7 @@ def _comparison_payload(
         "model": "TabDDPM",
         "native_config": asdict(native_config),
         "protocol": {
+            "discrete_modeling": "raw Gaussian input; np.rint output; no clipping",
             "split": "StratifiedKFold",
             "n_splits": 5,
             "split_seed": 42,

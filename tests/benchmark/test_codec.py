@@ -190,6 +190,25 @@ class ModelCodecTests(unittest.TestCase):
         self.assertEqual(decoded["count"].tolist(), [-5.0, 3.5, 20.0, 1.0])
         self.assertEqual(decoded["label"].tolist(), ["yes", "no", "yes", "no"])
 
+    def test_raw_discrete_preserves_explicit_declared_domain_validation(self) -> None:
+        dataset = TabularDataset(
+            name="declared-discrete-domain",
+            frame=pd.DataFrame({"count": [0, 2]}),
+            columns=(ColumnSpec(
+                "count", ColumnKind.DISCRETE, ordered_values=(0, 2),
+            ),),
+        )
+        codec = compile_codec(dataset, InputSpec(
+            continuous_view=ContinuousView.RAW,
+            discrete_view=DiscreteView.RAW_VALUES,
+            categorical_view=CategoricalView.RAW_VALUES,
+        ))
+        prepared = codec.fit_transform(dataset.frame)
+        with self.assertRaisesRegex(ContractViolation, "ordered_values"):
+            codec.inverse_transform(PreparedTable(
+                frame=pd.DataFrame({"count": [1.0]}), schema=prepared.schema,
+            ))
+
     def test_datetime_like_categories_round_trip_in_both_finite_views(self) -> None:
         cases = (
             pd.Series(

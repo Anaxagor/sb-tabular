@@ -26,10 +26,12 @@ Final report metrics do not influence Optuna selection.
 
 The shared fold-local codec applies population `StandardScaler` semantics to
 continuous columns. Categorical values use reversible train-observed state
-codes. Numeric discrete values also use a reversible dense state index at the
-native TabDDPM boundary because the multinomial diffusion requires contiguous
-states; decoding restores their exact raw values before every metric. This is
-not ordinal scaling and does not change the declared dataset semantics.
+codes and enter multinomial diffusion. Numeric discrete values remain raw and
+join continuous values in Gaussian diffusion. The adapter applies `np.rint`
+only to generated discrete values (ties to even), without clipping or
+projection onto train support. All metrics and TSTR receive the same rounded
+table. Fractional discrete training values are unsupported by this convention;
+all 33 declared discrete columns in the current 14-dataset bundle are integral.
 
 ## Full command
 
@@ -40,7 +42,7 @@ ignored and every frame is reconstructed through the explicit new schemas.
 ```bash
 conda activate lightning11
 python -m sbtab.benchmark.pilots.tabddpm_mixed_benchmark \
-  --output-dir artifacts/tabddpm-mixed-optuna-v2 \
+  --output-dir artifacts/tabddpm-mixed-optuna-v3 \
   --dataset-pickle sbtab/data/datasets/datasets_mixed.pkl \
   --device mps \
   --target-complete-trials 30 \
@@ -77,7 +79,7 @@ the next trial boundary:
 
 ```bash
 python -m sbtab.benchmark.pilots.tabddpm_mixed_benchmark \
-  --output-dir artifacts/tabddpm-mixed-optuna-v2 \
+  --output-dir artifacts/tabddpm-mixed-optuna-v3 \
   --dataset-pickle sbtab/data/datasets/datasets_mixed.pkl \
   --device mps \
   --target-complete-trials 30 \
@@ -99,9 +101,11 @@ training checks loss about 100 times per fit, aborting a diverged 10,000-step
 trial within one percent of its budget without changing finite-loss optimizer
 updates. Contract and unexpected model errors still stop the study.
 
-This is tuning protocol v2. A v1 study, where numerical trajectories were
-stored as ``FAIL`` and consequently ignored by TPE, must remain as diagnostic
-evidence and cannot be resumed into a v2 output root.
+This is tuning protocol v3. Both v1 and v2 sent discrete columns to multinomial
+diffusion. Keep their results as evidence for that experimental variant;
+start a new v3 output root and study. Resume rejects old run specifications,
+studies, and rerank fingerprints. Tuning and final training must be repeated
+because routing changes the network dimensions and loss assignment.
 Five-fold final generation is currently create-only; interruption during that
 stage restarts the current dataset's final generation. An interruption while
 artifact files themselves are being finalized is reported explicitly rather

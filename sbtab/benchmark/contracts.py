@@ -61,7 +61,8 @@ class DiscreteView(str, Enum):
 
     ``RAW_VALUES`` preserves numeric values and their distances without a
     codebook; generated values need not occur in train. The codec does not
-    round or constrain their range. Model-specific discrete output conventions
+    round or infer a range from train. Explicit ``ColumnSpec.ordered_values``
+    remains a domain constraint on decoded values. Model-specific output conventions
     belong to the model integration. ``FINITE_STATE_CODES`` requests a
     reversible train-fitted mapping to ``0..K-1`` whose decoded outputs belong
     to train support. ``UNSUPPORTED`` rejects a non-empty discrete modeled group.

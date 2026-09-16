@@ -16,6 +16,7 @@ from sbtab.baselines.tabddpm.native import TabDDPMConfig
 
 from sbtab.benchmark.adapters.tabddpm import TabDDPMAdapter
 from sbtab.benchmark.adapters.tabddpm_tuning import (
+    TABDDPM_TUNING_PROTOCOL_VERSION,
     TabDDPMTuningConfig,
     TabDDPMTuningResult,
     tune_tabddpm,
@@ -47,7 +48,7 @@ from sbtab.evaluation import (
     write_evaluation_artifacts,
 )
 
-TABDDPM_ONLINE_SHOPPERS_PILOT_VERSION = 2
+TABDDPM_ONLINE_SHOPPERS_PILOT_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -65,7 +66,7 @@ class TabDDPMOnlineShoppersPilotConfig:
     max_total_trials: int = 45
     device: str = "cpu"
     timeout_seconds: float | None = None
-    study_name: str = "tabddpm-online-shoppers-phase-a-v2"
+    study_name: str = "tabddpm-online-shoppers-phase-a-v3"
     storage: str | None = None
     resume: bool = False
     rerank_candidates: int = 3
@@ -101,6 +102,18 @@ def _prepare_live_root(config: TabDDPMOnlineShoppersPilotConfig) -> None:
                 "The tuning artifact directory is incomplete. Preserve it for "
                 "diagnosis and resume into a new output root."
             )
+        if tuning_dir.exists():
+            manifest = json.loads(
+                (tuning_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            if (
+                manifest.get("tuning_protocol_version")
+                != TABDDPM_TUNING_PROTOCOL_VERSION
+            ):
+                raise ContractViolation(
+                    "Cannot resume tuning artifacts from an older TabDDPM "
+                    "routing protocol; start a new output root."
+                )
         return
     try:
         config.output_dir.mkdir(parents=True, exist_ok=False)
@@ -236,7 +249,7 @@ def main() -> None:
     parser.add_argument("--timeout-seconds", type=float, default=None)
     parser.add_argument(
         "--study-name",
-        default="tabddpm-online-shoppers-phase-a-v2",
+        default="tabddpm-online-shoppers-phase-a-v3",
     )
     parser.add_argument("--storage", default=None)
     parser.add_argument("--resume", action="store_true")

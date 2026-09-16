@@ -2,31 +2,34 @@
 
 Canonical -> native mapping
 ---------------------------
-Standardized ``PreparedSchema.continuous_columns`` become one ``float32``
-Torch tensor for the Gaussian diffusion block. Every name in
-``PreparedSchema.column_order`` that has ``state_columns`` metadata becomes one
-``int64`` tensor column for the multinomial block. The same ordered names
-provide real per-column cardinalities. TabDDPM treats those states
-symmetrically and does not consume the metadata's ordinal flag. Target remains
-in whichever semantic block its column kind selected; it is never separated as
-a conditioning label.
+Standardized continuous columns and raw integer-valued discrete columns form
+one ``float32`` tensor for Gaussian diffusion, in canonical column order.
+Only categorical columns become ``int64`` codes for multinomial diffusion;
+their named metadata supplies per-column cardinalities. Categorical states
+are symmetric. Target remains in the block selected by its declared kind.
 
 Native -> canonical mapping
 ---------------------------
-The native solver returns separate numerical and state tensors. The adapter
-labels them with the fitted block names and reassembles a DataFrame in exact
-``PreparedSchema.column_order``. It returns the identical fitted schema object.
+The native solver returns separate numerical and categorical tensors. Discrete
+Gaussian outputs are quantized with ``np.rint`` (ties to even), without range
+clipping or projection onto train support. They remain floating-point numbers
+so non-finite output reaches shared validation unchanged. Continuous outputs
+and categorical codes are not rounded. The adapter reassembles the exact
+canonical order and returns the identical fitted schema object. Fractional
+discrete training values are unsupported by this integer-output convention.
 
 The adapter does not change the native denoiser, Gaussian or multinomial loss,
 beta schedule, optimizer, fixed-step learning-rate annealing, EMA timing, or
-ancestral sampling. It performs no generic preprocessing, raw decoding,
-clipping, rounding, identifier handling, splitting, tuning, or evaluation.
+ancestral sampling. Routing and discrete quantization are explicit benchmark
+integration choices. The adapter fits no generic preprocessing and performs
+no raw decoding, clipping, splitting, tuning, or evaluation.
 """
 
 from __future__ import annotations
 
 import copy
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -58,7 +61,7 @@ class TabDDPMAdapter:
             config if config is not None else TabDDPMConfig()
         )
         self._schema: PreparedSchema | None = None
-        self._continuous_names: tuple[str, ...] = ()
+        self._numeric_names: tuple[str, ...] = ()
         self._state_names: tuple[str, ...] = ()
         self._solver: TabDDPMSolver | None = None
 
@@ -70,33 +73,44 @@ class TabDDPMAdapter:
 
     @property
     def input_spec(self) -> InputSpec:
-        """Request benchmark-standard values and finite-state codes."""
+        """Request standard continuous, raw discrete, and categorical codes."""
 
         return InputSpec(
             continuous_view=ContinuousView.STANDARD,
-            discrete_view=DiscreteView.FINITE_STATE_CODES,
+            discrete_view=DiscreteView.RAW_VALUES,
             categorical_view=CategoricalView.FINITE_STATE_CODES,
         )
 
     def fit(self, train: PreparedTable, context: RunContext) -> None:
         """Translate one prepared train fold and fit native TabDDPM."""
 
-        continuous_names = train.schema.continuous_columns
-        state_names = tuple(
+        numeric_names = tuple(
             name
             for name in train.schema.column_order
-            if name in train.schema.state_columns
+            if name in train.schema.continuous_columns
+            or name in train.schema.discrete_columns
         )
+        state_names = train.schema.categorical_columns
         cardinalities = [
             train.schema.state_columns[name].cardinality for name in state_names
         ]
+
+        # This is a model-specific support restriction: generic discrete data
+        # may be fractional, but this adapter's output uses integer rounding.
+        for name in train.schema.discrete_columns:
+            values = train.frame[name].to_numpy(dtype=np.float64)
+            if not np.equal(values, np.rint(values)).all():
+                raise ContractViolation(
+                    f"TabDDPM integer rounding requires integer-valued discrete "
+                    f"train column {name!r}; fractional values are unsupported."
+                )
 
         native_config = copy.deepcopy(self._config)
         native_config.device = context.device
         native_config.seed = context.seed
         device = torch.device(context.device)
         train_num = torch.tensor(
-            train.frame.loc[:, continuous_names].to_numpy(),
+            train.frame.loc[:, numeric_names].to_numpy(),
             dtype=torch.float32,
             device=device,
         )
@@ -106,14 +120,14 @@ class TabDDPMAdapter:
             device=device,
         )
         solver = TabDDPMSolver(
-            num_numerical_features=len(continuous_names),
+            num_numerical_features=len(numeric_names),
             cardinalities=cardinalities,
             cfg=native_config,
         )
         solver.fit(train_num, train_state)
 
         self._schema = train.schema
-        self._continuous_names = continuous_names
+        self._numeric_names = numeric_names
         self._state_names = state_names
         self._solver = solver
 
@@ -131,7 +145,7 @@ class TabDDPMAdapter:
             (
                 pd.DataFrame(
                     generated_num.detach().cpu().numpy(),
-                    columns=self._continuous_names,
+                    columns=self._numeric_names,
                 ),
                 pd.DataFrame(
                     generated_state.detach().cpu().numpy(),
@@ -140,6 +154,8 @@ class TabDDPMAdapter:
             ),
             axis=1,
         )
+        for name in self._schema.discrete_columns:
+            native_frame[name] = np.rint(native_frame[name])
         return PreparedTable(
             frame=native_frame.loc[:, self._schema.column_order],
             schema=self._schema,

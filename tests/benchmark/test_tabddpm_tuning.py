@@ -38,6 +38,10 @@ from sbtab.benchmark.adapters.tabddpm_tuning import (
     write_tabddpm_tuning_artifacts,
 )
 from sbtab.benchmark.missing import apply_missing_policy
+from sbtab.benchmark.pilots.tabddpm_online_shoppers import (
+    TabDDPMOnlineShoppersPilotConfig,
+    run_tabddpm_online_shoppers_pilot,
+)
 
 
 def _dataset() -> TabularDataset:
@@ -106,6 +110,22 @@ def _run_config(root: Path, *, target: int, resume: bool) -> TabDDPMTuningConfig
 class TabDDPMTuningTests(unittest.TestCase):
     """Verify search translation, resume guard, rerank, and artifacts."""
 
+    def test_online_shoppers_rejects_old_tuning_artifacts_before_training(self) -> None:
+        with TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            tuning_dir = root / "tuning"
+            tuning_dir.mkdir()
+            (tuning_dir / "manifest.json").write_text(
+                json.dumps({"tuning_protocol_version": 2}), encoding="utf-8"
+            )
+            config = TabDDPMOnlineShoppersPilotConfig(output_dir=root, resume=True)
+            with patch(
+                "sbtab.benchmark.pilots.tabddpm_online_shoppers.tune_tabddpm"
+            ) as tune:
+                with self.assertRaisesRegex(ContractViolation, "older TabDDPM"):
+                    run_tabddpm_online_shoppers_pilot(pd.DataFrame(), config)
+                tune.assert_not_called()
+
     def test_default_search_builds_reviewed_native_config(self) -> None:
         trial = optuna.trial.FixedTrial(
             {
@@ -166,7 +186,7 @@ class TabDDPMTuningTests(unittest.TestCase):
             )
             self.assertEqual(manifest["artifact_type"], "tabddpm_tuning")
             self.assertEqual(manifest["artifact_version"], 2)
-            self.assertEqual(manifest["tuning_protocol_version"], 2)
+            self.assertEqual(manifest["tuning_protocol_version"], 3)
             self.assertEqual(manifest["completed_phase_a_trials"], 2)
             self.assertEqual(manifest["pruned_phase_a_trials"], 0)
             self.assertEqual(len(manifest["fingerprint"]), 64)
@@ -205,6 +225,32 @@ class TabDDPMTuningTests(unittest.TestCase):
                 ),
                 2,
             )
+
+    def test_resume_rejects_previous_routing_protocol_before_training(self) -> None:
+        with TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            with (
+                patch("sbtab.benchmark.adapters.tabddpm_tuning.RERANK_STEPS", 1),
+                patch(
+                    "sbtab.benchmark.adapters.tabddpm_tuning."
+                    "TABDDPM_TUNING_PROTOCOL_VERSION", 2,
+                ),
+            ):
+                tune_tabddpm(
+                    _dataset(),
+                    _run_config(root, target=1, resume=False),
+                    suggest_config=_tiny_config,
+                )
+            with patch(
+                "sbtab.benchmark.adapters.tabddpm_tuning.run_holdout_trial"
+            ) as run_trial:
+                with self.assertRaisesRegex(ContractViolation, "Refusing to mix"):
+                    tune_tabddpm(
+                        _dataset(),
+                        _run_config(root, target=2, resume=True),
+                        suggest_config=_tiny_config,
+                    )
+                run_trial.assert_not_called()
 
     def test_non_finite_sampling_prunes_only_the_current_trial(self) -> None:
         dataset = _dataset()

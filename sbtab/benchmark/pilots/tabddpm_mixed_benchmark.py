@@ -62,7 +62,7 @@ from sbtab.evaluation import (
 )
 
 
-TABDDPM_MIXED_BENCHMARK_VERSION = 2
+TABDDPM_MIXED_BENCHMARK_VERSION = 3
 _PUBLISHED_NAME_BY_KEY: Mapping[str, str] = {
     "adult": "Adult",
     "credit_approval": "Credit Approval",
@@ -240,7 +240,8 @@ def _run_spec(config: TabDDPMMixedBenchmarkConfig) -> dict[str, object]:
             "training_seed": 42,
             "sample_seed": 10_042,
             "continuous_preprocessing": "train-fold standard; ddof=0",
-            "discrete_preprocessing": "reversible dense native state index",
+            "discrete_preprocessing": "raw numeric values; Gaussian diffusion",
+            "discrete_output": "np.rint; ties to even; no clipping or support projection",
             "categorical_preprocessing": "train-fold finite-state codes",
         },
     }
@@ -472,7 +473,7 @@ def _run_one_dataset(
             max_total_trials=config.max_total_trials,
             sampler_seed=5,
             timeout_seconds=config.timeout_seconds_per_dataset,
-            study_name=f"tabddpm-{key}-phase-a-v2",
+            study_name=f"tabddpm-{key}-phase-a-v3",
             storage="sqlite:///" + str(study_path),
             load_if_exists=config.resume,
             rerank_candidates=config.rerank_candidates,

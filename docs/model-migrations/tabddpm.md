@@ -1,9 +1,9 @@
 # TabDDPM migration note
 
-Status: the project-level semantic input decision, native tensor boundary, and
-benchmark adapter are implemented locally. Independent method and contract
-reviews found no implementation blocker. Maintainer/model-owner approval of
-the semantic change remains required before merge.
+Status: corrected routing uses Gaussian diffusion for continuous and numeric
+discrete columns, and multinomial diffusion only for categorical columns.
+Discrete Gaussian output uses the approved integer-rounding convention below.
+Previous finite-state discrete pilot results describe a different variant.
 
 ## Scope
 
@@ -28,7 +28,7 @@ handling, and output repair are not part of the new benchmark path.
 ```python
 InputSpec(
     continuous_view=ContinuousView.STANDARD,
-    discrete_view=DiscreteView.FINITE_STATE_CODES,
+    discrete_view=DiscreteView.RAW_VALUES,
     categorical_view=CategoricalView.FINITE_STATE_CODES,
 )
 ```
@@ -40,12 +40,11 @@ project's current experiment specification: continuous columns use
 StandardScaler semantics, while generated values are decoded back to raw units
 before final evaluation.
 
-This is an intentional correction to the legacy wrapper. That wrapper places
-numeric discrete columns in the Gaussian block, which can generate arbitrary
-real values, while its mixed-data tuning metric rounds those values before
-counting states. The unified benchmark does not repair model output. Declared
-finite supports are therefore represented as dense codes and modeled by
-TabDDPM's multinomial diffusion.
+Numeric discrete input retains its raw values and distances, matching the
+legacy wrapper's Gaussian routing. It is neither standardized nor renumbered.
+The previous adapter's multinomial treatment of discrete input was a protocol
+error. Correcting it changes network width and which loss models those columns;
+old Optuna trials and final samples cannot be reused for the corrected run.
 
 ## Canonical table to native API
 
@@ -53,15 +52,13 @@ The mapping is fixed:
 
 | Canonical source | Native value | Shape | dtype |
 | --- | --- | --- | --- |
-| standardized `PreparedSchema.continuous_columns` | numeric train block | `(N, D_num)` | `torch.float32` |
-| `column_order` filtered by `state_columns` | state train block | `(N, D_state)` | `torch.int64` |
+| `column_order` filtered by continuous + discrete (standard continuous, raw discrete) | numeric train block | `(N, D_num)` | `torch.float32` |
+| `PreparedSchema.categorical_columns` | state train block | `(N, D_state)` | `torch.int64` |
 | same state names | per-column cardinalities | `D_state` Python values | positive `int` |
 
-State columns remain in canonical table order. Discrete and categorical names
-are not independently regrouped, so data columns and cardinalities always use
-the same sequence. TabDDPM does not consume the `ordered` flag: its
-multinomial transitions treat the states symmetrically even when the raw
-column is numeric discrete or explicitly ordinal.
+Both native blocks follow canonical order. Only categorical names supply
+cardinalities. TabDDPM does not consume the categorical `ordered` flag: its
+multinomial transitions treat even ordinal categories symmetrically.
 
 The codec has already validated dense state codes and train-observed
 cardinalities. The adapter converts containers and dtypes but does not repeat
@@ -74,9 +71,16 @@ moves them to CPU, labels them with the fitted block names, and reassembles one
 DataFrame in `PreparedSchema.column_order`. The returned `PreparedTable`
 carries the exact schema object received by `fit`.
 
-The adapter never clips, rounds, pads, or replaces generated states. Shared
-runner validation checks the returned row count and prepared table, and the
-codec rejects invalid state codes before raw decoding.
+Only discrete Gaussian outputs are rounded by `np.rint`, with ties to even:
+`1.5 -> 2`, `2.5 -> 2`, `-1.5 -> -2`. Rounded output remains floating-point to
+avoid converting NaN/Inf into integers. There is no clipping or nearest-support
+projection: values outside the train range remain visible as model error.
+Categorical state codes and continuous values are untouched. Shared validation
+still rejects non-finite output and invalid categorical codes.
+
+This output convention is explicit and applies to the one synthetic table
+used by tuning, quality metrics, and TSTR. Legacy code rounded only inside JS;
+moving quantization before evaluation is a documented protocol change.
 
 ## Target handling
 
@@ -85,8 +89,9 @@ separate conditioning label:
 
 - a continuous target is standardized by the codec and enters the Gaussian
   block;
-- a discrete or categorical target is encoded by the codec and enters the
-  multinomial block;
+- a discrete target retains its raw numeric values, enters the Gaussian block,
+  and is rounded on output;
+- a categorical target is encoded and enters the multinomial block;
 - every sample contains the target in canonical table order.
 
 This intentionally differs from the TabDDPM paper's conditional
@@ -159,8 +164,9 @@ effect.
 
 - The legacy wrapper depends on `TabularSchema` and fitted transform metadata;
   the new adapter does not.
-- Legacy discrete numeric output is evaluated after rounding. The new path
-  instead models declared finite supports as multinomial states.
+- Legacy discrete JS rounds real and generated numeric values inside the
+  metric. The corrected path accepts integer discrete training values and
+  rounds generated discrete values once before any metric or TSTR pipeline.
 - Legacy sampling clips categorical codes and can resample training IDs. The
   new adapter returns native state samples unchanged, and identifiers never
   enter `PreparedTable`.
@@ -175,12 +181,17 @@ effect.
 
 ## Supported semantics
 
-The adapter supports canonical tables containing any combination of
-standardized continuous columns and encoded finite-state columns supported
-by the native solver. It uses per-column train cardinalities and ignores
-ordinal adjacency because TabDDPM has no ordered transition kernel.
+The adapter supports combinations of standardized continuous, raw integer
+discrete, and encoded categorical columns, including empty Gaussian or
+multinomial blocks. Fractional discrete training values fail explicitly before
+native construction because integer rounding would change their domain. The
+14-dataset bundle has 33 declared discrete columns, all integer-valued.
 
-Raw categorical values, raw numeric discrete values, missing-value handling,
+An explicit `ColumnSpec.ordered_values` still declares a closed raw domain:
+shared decoding rejects generated values outside it, without projection. The
+14-dataset declarations do not impose such a domain on numeric discrete columns.
+
+Raw categorical values, fractional discrete values, missing-value handling,
 identifiers, generic preprocessing, train/test splitting, tuning, and metrics
 are outside the adapter boundary.
 
@@ -198,20 +209,16 @@ conda run -n lightning11 python -m unittest \
   tests.benchmark.test_import_boundaries
 ```
 
-This focused command passes 22 tests. The complete benchmark test discovery on
-the fixed-score follow-up branch passes 152 tests:
+Run the complete benchmark suite with:
 
 ```bash
 conda run -n lightning11 python -m unittest discover \
   -s tests/benchmark -p 'test_*.py'
 ```
 
-Both commands were run in the `lightning11` environment. The native smoke
-tests emit the implementation's existing diffusion-timestep progress output.
-The full discovery also emits NumPy 2 deprecation warnings; neither changes
-the assertions. PyTorch 2.12.0 reports MPS as unavailable in the current
-execution environment, so the device-safe absent loss is covered structurally
-and on CPU but still needs a real MPS/CUDA run.
+Native smoke tests exercise CPU boundaries. They are not full quality runs
+or accelerator performance measurements. Exact verification counts and
+commands for this correction are recorded in the PR handoff.
 
 The native tests cover mixed, numerical-only, and state-only layouts, exact
 multinomial state output, effective training seeds, configured Gaussian loss,
@@ -220,23 +227,18 @@ wrapper. Adapter tests cover canonical block order, dtypes, per-column
 cardinalities, target preservation, config copying, schema identity, and exact
 agreement with a direct native call. The runner smoke creates mixed and pure
 Gaussian folds, fits fresh codecs and native models, preserves categorical and
-continuous targets, and decodes finite states without output repair.
+continuous targets, and decodes categorical states unchanged. Discrete tests
+exercise integer quantization, unsupported fractional input, and new numeric
+outputs outside train support.
 Import-boundary tests cover both the legacy-free adapter import and the lazy
 public compatibility export.
 
 ## Review and publication boundary
 
-Independent method review found no mathematical or behavioral blocker.
-Independent contract/test review found no implementation blocker, but treating
-the whole local branch as one PR would mix review concerns. Publication should
-therefore use dependent, human-created PRs in this order:
-
-1. project-level shared semantic decision;
-2. native tensor seam and explicit model-internal corrections;
-3. benchmark adapter, boundary tests, and migration documentation.
-
-The local commits preserve these layers. Agents do not push them or create the
-remote PRs.
+The routing correction is based on `feat/tabddpm-full-pilot`. Review its
+shared raw-discrete codec correction separately from its TabDDPM routing,
+quantization, and protocol-version change. No native solver formula is edited.
+Agents prepare local commits and handoff text; a human publishes the PR.
 
 ## Fixed-configuration holdout score
 
@@ -266,7 +268,7 @@ five-fold protocol:
 
 ```bash
 python -m sbtab.benchmark.pilots.tabddpm_online_shoppers \
-  --output-dir artifacts/tabddpm-online-shoppers-optuna-v2 \
+  --output-dir artifacts/tabddpm-online-shoppers-optuna-v3 \
   --device mps
 ```
 
@@ -274,6 +276,9 @@ The command creates a local SQLite study automatically. If it is stopped after
 a completed Phase-A trial or completed Phase-B seed run, repeat the same
 command with `--resume`. See `docs/benchmark-artifacts.md` for the exact
 recovery boundary and fingerprint checks.
+
+Start v3 in a new output directory and study. Do not resume v1/v2 trials,
+rerank state, or final generation: they used a different discrete routing.
 
 Final evaluation reports decoded raw-space WD, 50-bin continuous KL,
 exact-support discrete/categorical KL, Pearson/Spearman/NMI association

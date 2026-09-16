@@ -36,7 +36,7 @@ TABDDPM_TUNING_ARTIFACT_VERSION = 2
 TABDDPM_TUNING_OBJECTIVE_VERSION = 1
 TABDDPM_SEARCH_SPACE_VERSION = 1
 TABDDPM_RERANK_VERSION = 1
-TABDDPM_TUNING_PROTOCOL_VERSION = 2
+TABDDPM_TUNING_PROTOCOL_VERSION = 3
 PHASE_A_STEPS = 10_000
 RERANK_STEPS = 30_000
 ARCHITECTURE_PROFILES: Mapping[str, tuple[int, ...]] = {
@@ -82,7 +82,7 @@ class TabDDPMTuningConfig:
     max_total_trials: int = 45
     sampler_seed: int = 5
     timeout_seconds: float | None = None
-    study_name: str = "tabddpm-online-shoppers-phase-a-v2"
+    study_name: str = "tabddpm-online-shoppers-phase-a-v3"
     storage: str | None = None
     load_if_exists: bool = False
     rerank_candidates: int = 3

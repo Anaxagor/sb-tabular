@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,12 +16,19 @@ from sbtab.benchmark import (
     CategoricalView,
     ContinuousView,
     ContractViolation,
+    ColumnKind,
+    ColumnSpec,
     DiscreteView,
+    HoldoutConfig,
+    HoldoutRunConfig,
     PreparedSchema,
     PreparedTable,
     RunContext,
     StateColumn,
     TaskType,
+    TabularDataset,
+    compile_codec,
+    run_holdout_trial,
 )
 from sbtab.benchmark.adapters import TabDDPMAdapter
 from sbtab.benchmark.adapters import tabddpm as tabddpm_module
@@ -38,14 +46,13 @@ def _mixed_table() -> PreparedTable:
         task_type=TaskType.CLASSIFICATION,
         state_columns={
             "label": StateColumn(cardinality=2, ordered=False),
-            "count": StateColumn(cardinality=3, ordered=True),
         },
     )
     return PreparedTable(
         frame=pd.DataFrame(
             {
                 "amount": [1.0, 2.0, 3.0],
-                "count": pd.Series([0, 2, 1], dtype="int64"),
+                "count": pd.Series([10, 40, 20], dtype="int64"),
                 "label": pd.Series([1, 0, 1], dtype="int64"),
                 "duration": [10.0, 20.0, 30.0],
             }
@@ -111,7 +118,7 @@ class TabDDPMAdapterTests(unittest.TestCase):
             spec.continuous_view,
             ContinuousView.STANDARD,
         )
-        self.assertEqual(spec.discrete_view, DiscreteView.FINITE_STATE_CODES)
+        self.assertEqual(spec.discrete_view, DiscreteView.RAW_VALUES)
         self.assertEqual(
             spec.categorical_view,
             CategoricalView.FINITE_STATE_CODES,
@@ -124,22 +131,22 @@ class TabDDPMAdapterTests(unittest.TestCase):
         train_num, train_state = solver.fit.call_args.args
 
         self.assertEqual(adapter.name, "tabddpm")
-        self.assertEqual(constructor_args["num_numerical_features"], 2)
-        self.assertEqual(constructor_args["cardinalities"], [3, 2])
+        self.assertEqual(constructor_args["num_numerical_features"], 3)
+        self.assertEqual(constructor_args["cardinalities"], [2])
         self.assertIsInstance(config, TabDDPMConfig)
         self.assertEqual(config.device, "cpu")
         self.assertEqual(config.seed, 42)
         torch.testing.assert_close(
             train_num,
             torch.tensor(
-                [[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]],
+                [[1.0, 10.0, 10.0], [2.0, 40.0, 20.0], [3.0, 20.0, 30.0]],
                 dtype=torch.float32,
             ),
         )
         torch.testing.assert_close(
             train_state,
             torch.tensor(
-                [[0, 1], [2, 0], [1, 1]],
+                [[1], [0], [1]],
                 dtype=torch.int64,
             ),
         )
@@ -211,8 +218,19 @@ class TabDDPMAdapterTests(unittest.TestCase):
                     categorical_columns=(),
                     target_col=None,
                     task_type=None,
+                ),
+            ),
+            PreparedTable(
+                frame=pd.DataFrame({"label": pd.Series([0, 1], dtype="int64")}),
+                schema=PreparedSchema(
+                    column_order=("label",),
+                    continuous_columns=(),
+                    discrete_columns=(),
+                    categorical_columns=("label",),
+                    target_col="label",
+                    task_type=TaskType.CLASSIFICATION,
                     state_columns={
-                        "state": StateColumn(cardinality=2, ordered=True)
+                        "label": StateColumn(cardinality=2, ordered=False),
                     },
                 ),
             ),
@@ -225,18 +243,21 @@ class TabDDPMAdapterTests(unittest.TestCase):
                 constructor = solver_class.call_args.kwargs
                 self.assertEqual(
                     tuple(train_num.shape),
-                    (len(table.frame), len(table.schema.continuous_columns)),
+                    (
+                        len(table.frame),
+                        len(table.schema.continuous_columns)
+                        + len(table.schema.discrete_columns),
+                    ),
                 )
                 self.assertEqual(
                     tuple(train_state.shape),
-                    (len(table.frame), len(table.schema.state_columns)),
+                    (len(table.frame), len(table.schema.categorical_columns)),
                 )
                 self.assertEqual(
                     constructor["cardinalities"],
                     [
                         table.schema.state_columns[name].cardinality
-                        for name in table.schema.column_order
-                        if name in table.schema.state_columns
+                        for name in table.schema.categorical_columns
                     ],
                 )
 
@@ -244,8 +265,8 @@ class TabDDPMAdapterTests(unittest.TestCase):
         table = _mixed_table()
         adapter, solver, _ = _fit_with_mocked_training(table)
         solver.sample.return_value = (
-            torch.tensor([[0.5, 2.5], [1.5, 3.5]], dtype=torch.float32),
-            torch.tensor([[2, 1], [0, 0]], dtype=torch.int64),
+            torch.tensor([[0.5, 40.0, 2.5], [1.5, 10.0, 3.5]]),
+            torch.tensor([[1], [0]], dtype=torch.int64),
         )
 
         sample = adapter.sample(n=2, seed=11)
@@ -253,10 +274,9 @@ class TabDDPMAdapterTests(unittest.TestCase):
         self.assertEqual(tuple(sample.frame.columns), table.schema.column_order)
         self.assertIs(sample.schema, table.schema)
         self.assertEqual(sample.frame["amount"].tolist(), [0.5, 1.5])
-        self.assertEqual(sample.frame["count"].tolist(), [2, 0])
+        self.assertEqual(sample.frame["count"].tolist(), [40, 10])
         self.assertEqual(sample.frame["label"].tolist(), [1, 0])
         self.assertEqual(sample.frame["duration"].tolist(), [2.5, 3.5])
-        self.assertEqual(sample.frame["count"].dtype, np.dtype(np.int64))
         self.assertEqual(sample.frame["label"].dtype, np.dtype(np.int64))
         solver.sample.assert_called_once_with(n_samples=2, seed=11)
 
@@ -264,12 +284,8 @@ class TabDDPMAdapterTests(unittest.TestCase):
         table = _mixed_table()
         config = _lightweight_native_config()
         context = _context()
-        continuous_names = table.schema.continuous_columns
-        state_names = tuple(
-            name
-            for name in table.schema.column_order
-            if name in table.schema.state_columns
-        )
+        continuous_names = ("amount", "count", "duration")
+        state_names = ("label",)
         direct_solver = TabDDPMSolver(
             num_numerical_features=len(continuous_names),
             cardinalities=[
@@ -311,10 +327,101 @@ class TabDDPMAdapterTests(unittest.TestCase):
             ),
             axis=1,
         ).loc[:, table.schema.column_order]
+        expected["count"] = np.rint(expected["count"])
 
         pd.testing.assert_frame_equal(first.frame, expected)
         pd.testing.assert_frame_equal(repeated.frame, expected)
         self.assertIs(first.schema, table.schema)
+
+    def test_discrete_sampling_rounds_ties_without_clipping_or_code_mapping(self) -> None:
+        adapter, solver, _ = _fit_with_mocked_training()
+        discrete = [-2.5, -1.5, 0.5, 1.5, 3.7, 99.6]
+        solver.sample.return_value = (
+            torch.tensor([[0.25, value, 0.75] for value in discrete]),
+            torch.zeros((6, 1), dtype=torch.int64),
+        )
+
+        sample = adapter.sample(n=6, seed=1)
+
+        self.assertEqual(sample.frame["count"].tolist(), [-2, -2, 0, 2, 4, 100])
+        self.assertEqual(sample.frame["amount"].tolist(), [0.25] * 6)
+        self.assertEqual(sample.frame["duration"].tolist(), [0.75] * 6)
+        self.assertEqual(sample.frame["label"].tolist(), [0] * 6)
+
+    def test_fractional_discrete_train_is_rejected_before_native_fit(self) -> None:
+        table = _mixed_table()
+        table.frame["count"] = [0.0, 0.5, 1.5]
+        with patch.object(tabddpm_module, "TabDDPMSolver") as solver_class:
+            with self.assertRaisesRegex(ContractViolation, "count.*fractional"):
+                TabDDPMAdapter().fit(table, _context())
+            solver_class.assert_not_called()
+
+    def test_real_holdout_decodes_integer_gaussian_samples(self) -> None:
+        dataset = TabularDataset(
+            name="gaussian-discrete-holdout",
+            frame=pd.DataFrame({
+                "amount": np.arange(20, dtype=float),
+                "count": [10, 40] * 10,
+                "label": ["a", "b"] * 10,
+            }),
+            columns=(
+                ColumnSpec("amount", ColumnKind.CONTINUOUS),
+                ColumnSpec("count", ColumnKind.DISCRETE),
+                ColumnSpec("label", ColumnKind.CATEGORICAL),
+            ),
+        )
+        result = run_holdout_trial(
+            dataset,
+            lambda: TabDDPMAdapter(_lightweight_native_config()),
+            HoldoutRunConfig(split=HoldoutConfig(), device="cpu"),
+        )
+        self.assertEqual(tuple(result.synthetic_raw.columns), dataset.column_order)
+        self.assertEqual(len(result.synthetic_raw), len(result.validation_raw))
+        values = result.synthetic_raw["count"].to_numpy()
+        self.assertTrue(np.isfinite(values).all())
+        np.testing.assert_array_equal(values, np.rint(values))
+        self.assertTrue(set(result.synthetic_raw["label"]) <= {"a", "b"})
+
+    def test_discrete_target_uses_gaussian_block_and_rounding(self) -> None:
+        source = _mixed_table()
+        table = PreparedTable(
+            frame=source.frame,
+            schema=replace(
+                source.schema, target_col="count", task_type=TaskType.REGRESSION,
+            ),
+        )
+        adapter, solver, solver_class = _fit_with_mocked_training(table)
+        self.assertEqual(solver_class.call_args.kwargs["cardinalities"], [2])
+        torch.testing.assert_close(
+            solver.fit.call_args.args[0][:, 1],
+            torch.tensor([10.0, 40.0, 20.0]),
+        )
+        solver.sample.return_value = (
+            torch.tensor([[0.25, 3.7, 0.75]]),
+            torch.tensor([[1]]),
+        )
+        sample = adapter.sample(1, seed=1)
+        self.assertEqual(sample.frame["count"].tolist(), [4.0])
+        self.assertEqual(sample.schema.target_col, "count")
+
+    def test_nonfinite_discrete_sample_is_rejected_by_shared_codec(self) -> None:
+        dataset = TabularDataset(
+            name="integer-data",
+            frame=pd.DataFrame({"count": [0, 1]}),
+            columns=(ColumnSpec("count", ColumnKind.DISCRETE),),
+        )
+        adapter = TabDDPMAdapter()
+        codec = compile_codec(dataset, adapter.input_spec)
+        table = codec.fit_transform(dataset.frame)
+        with patch.object(tabddpm_module, "TabDDPMSolver") as solver_class:
+            solver_class.return_value.sample.return_value = (
+                torch.tensor([[float("inf")]]),
+                torch.empty((1, 0), dtype=torch.int64),
+            )
+            adapter.fit(table, _context())
+            sample = adapter.sample(1, seed=1)
+        with self.assertRaises(ContractViolation):
+            codec.inverse_transform(sample)
 
     def test_sample_before_fit_has_a_clear_error(self) -> None:
         with self.assertRaisesRegex(ContractViolation, "before sample"):
