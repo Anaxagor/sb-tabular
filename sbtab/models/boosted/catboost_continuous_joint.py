@@ -26,6 +26,12 @@ class CatBoostContinuousJointConfig:
     verbose: bool = False
     allow_writing_files: bool = False
 
+    # residual=True fits y - x and predicts x + model(.). Use it for MEAN-MATCHING
+    # targets (IPF-DSB next-state means): those maps are identity plus an O(gamma)
+    # correction, and trees cannot represent an identity map, so regressing y
+    # directly leaves an error far above the correction. Keep it False for drift /
+    # velocity targets (IMF-DSBM). The IPF solvers enforce True themselves.
+    residual: bool = False
 
 
 class CatBoostContinuousJoint:
@@ -82,6 +88,13 @@ class CatBoostContinuousJoint:
         else:
             X_feat = self._build_features(x, t=t)
             y_arr = np.asarray(y, dtype=np.float32)
+        y_arr = y_arr.reshape(len(X_feat), -1)
+        if self.cfg.residual:
+            # the first `dim` feature columns are the state x
+            y_arr = y_arr - np.asarray(X_feat, dtype=np.float32)[:, : self.dim]
+        loss_function = "MultiRMSE" if self.dim > 1 else "RMSE"
+        if self.dim == 1:
+            y_arr = y_arr.reshape(-1)
 
         boosting_type = "Plain" if self.cfg.task_type == "GPU" else "Ordered"
 
@@ -90,7 +103,7 @@ class CatBoostContinuousJoint:
             depth=self.cfg.depth,
             learning_rate=self.cfg.learning_rate,
             l2_leaf_reg=self.cfg.l2_leaf_reg,
-            loss_function="MultiRMSE",
+            loss_function=loss_function,
             task_type=self.cfg.task_type,
             boosting_type=boosting_type,
             thread_count=self.cfg.thread_count,
@@ -113,6 +126,8 @@ class CatBoostContinuousJoint:
         pred = np.asarray(pred, dtype=np.float32)
         if pred.ndim == 1:
             pred = pred[:, None]
+        if self.cfg.residual:
+            pred = pred + X_feat[:, : self.dim]
         return pred
 
 

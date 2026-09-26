@@ -1,0 +1,71 @@
+# Search space for `mixedsbm` (production). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: mixedsbm
+kind: production
+version: 1
+fixed:
+  n_stages: 5
+  warm_start: true
+  device: cpu
+params:
+  sigma:
+    type: float
+    low: 0.05
+    high: 1.0
+    log: true
+  num_steps:
+    type: categorical
+    choices:
+    - 50
+    - 100
+    - 200
+  epochs_per_direction:
+    type: categorical
+    choices:
+    - 20
+    - 40
+    - 80
+  lr:
+    type: float
+    low: 0.0001
+    high: 0.003
+    log: true
+  batch_size:
+    type: categorical
+    choices:
+    - 128
+    - 256
+    - 512
+  hidden_dim:
+    type: categorical
+    choices:
+    - 256
+    - 512
+  n_layers:
+    type: int
+    low: 3
+    high: 5
+  dropout:
+    type: categorical
+    choices:
+    - 0.0
+    - 0.1
+  lambda_num:
+    type: float
+    low: 0.2
+    high: 0.8
+  lambda_cat:
+    type: float
+    low: 0.2
+    high: 0.8
+  cat_mixing_rate:
+    type: float
+    low: 0.5
+    high: 8.0
+    log: true
+  cat_ordered_bandwidth:
+    type: float
+    low: 0.1
+    high: 0.6

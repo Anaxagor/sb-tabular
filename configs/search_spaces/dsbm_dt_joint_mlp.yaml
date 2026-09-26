@@ -1,0 +1,45 @@
+# Search space for `dsbm_dt_joint_mlp` (production). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: dsbm_dt_joint_mlp
+kind: production
+version: 1
+fixed:
+  first_coupling: ind
+  device: cpu
+params:
+  sigma:
+    type: float
+    low: 0.05
+    high: 1.0
+    log: true
+  n_stages:
+    type: categorical
+    choices:
+    - 3
+    - 5
+    - 7
+  num_steps:
+    type: categorical
+    choices:
+    - 16
+    - 32
+    - 48
+  n_epochs:
+    type: categorical
+    choices:
+    - 10
+    - 20
+    - 40
+  lr:
+    type: float
+    low: 0.0001
+    high: 0.002
+    log: true
+  hidden_dim:
+    type: categorical
+    choices:
+    - 64
+    - 128
+    - 256

@@ -1,254 +1,139 @@
+"""
+Discrete-time joint IPF-DSB with PER-STEP MLPs (registry id ``dsb_dt_joint_mlp``).
 
+The IPF algorithm (declared OU/Brownian reference, full-trajectory stochastic
+caches, mean-matching displacement targets, displacement-adding sampler,
+checkpointing) is shared with, and documented in,
+``sbtab.solvers.continuous_time.joint_distribution.mlp.ipf_dsb.solver``.
+
+What makes this solver discrete-time is the parameterisation: there is ONE
+independent plain MLP per edge k = 0..K-1 and per direction (2 K networks, no
+time input, no parameter sharing between edges). Edge k joins X_k and X_{k+1};
+``net_f.steps[k]`` is the forward displacement F_k(x) - x evaluated at X_k and
+``net_b.steps[k]`` the backward displacement B_k(x) - x evaluated at X_{k+1}.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Iterator, List
 
-import numpy as np
-import pandas as pd
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch import nn
 
-from sbtab.bridge.timegrid import TimeGrid
-from sbtab.bridge.reference import GaussianReference
-from sbtab.bridge.sde import EulerMaruyama
-from sbtab.models.neural.mlp import TimeConditionedMLP, TimeMLPConfig
-from sbtab.models.neural.time_embedding import SinusoidalTimeEmbeddingConfig
-from sbtab.models.neural.trainer import NeuralTrainer, NeuralTrainerConfig
-from sbtab.bridge.losses import RegressionLoss
+from sbtab.models.neural.mlp import StepIndexedMLP, StepMLPConfig
+from sbtab.solvers.continuous_time.joint_distribution.mlp.ipf_dsb.solver import (
+    CHECKPOINT_FORMAT,
+    IPFCache,
+    IPFDSBConfig as _TimeConditionedIPFDSBConfig,
+    IPFDSBSolver as _TimeConditionedIPFDSBSolver,
+)
+
+__all__ = ["CHECKPOINT_FORMAT", "IPFCache", "IPFDSBConfig", "IPFDSBSolver"]
 
 
 @dataclass
-class IPFDSBConfig:
+class IPFDSBConfig(_TimeConditionedIPFDSBConfig):
     """
-    Discrete-time joint IPF-DSB (MLP fields on a finite time grid).
+    Same fields as the time-conditioned config (reference, grid, noise, seed ...),
+    with these differences:
 
-    Algorithmically aligned with
-    ``sbtab.solvers.continuous_time.joint_distribution.mlp.ipf_dsb``:
-    two time-conditioned MLPs, alternating IPF phases, caches built by
-    one-step Euler–Maruyama transitions with per-step ``gamma[k]``.
+      - ``hidden_units`` / ``n_layers`` / ``dropout`` size EACH of the 2 K per-edge
+        MLPs (smaller defaults: 128 x 3).
+      - ``batch_size`` is the number of TRAJECTORIES per update: every update
+        trains all K edge networks, each on ``batch_size`` rows of its own edge.
+        A cache holds ``cache_batches * batch_size`` trajectories, so an epoch is
+        ``cache_batches`` updates (K times the rows of the time-conditioned solver).
+      - ``grad_clip`` is applied per edge network.
+      - ``time_features`` and ``time_scale`` are IGNORED: per-step networks take
+        no time input. They are kept for config compatibility.
     """
-
-    ipf_iters: int = 6
-
-    num_steps: int = 20
-    gamma_min: float = 1e-4
-    gamma_max: float = 1e-2
-    schedule: Literal["linear", "geom"] = "geom"
-    alpha_ou: float = 1.0
-
-    batch_size: int = 512
-    cache_batches: int = 200
-    steps_per_phase: Optional[int] = None
-    lr: float = 2e-4
-    weight_decay: float = 0.0
-    epochs_per_phase: int = 1
-    grad_clip: Optional[float] = 1.0
-
-    hidden_units: int = 256
-    time_features: int = 64
-
-    noise: bool = True
-
-    device: str = "cpu"
-    seed: int = 42
+    hidden_units: int = 128
+    n_layers: int = 3
 
 
-class IPFDSBSolver:
+class IPFDSBSolver(_TimeConditionedIPFDSBSolver):
     """
-    IPF + DSB-style training for fully continuous tabular features on a
-    discrete-time grid (joint distribution, MLP parameterization).
+    IPF-DSB with genuinely PER-STEP networks (``time_parameterization`` =
+    "per_step"): net_f / net_b are ``StepIndexedMLP`` with one MLP per edge.
 
-    Public API:
-      - ``fit(train)`` — train on real data in transformed space
-      - ``sample(n)`` — generate synthetic samples in transformed space
+    Invariants (asserted):
+      - every half-iteration updates every edge network k = 0..K-1 of the trained
+        direction (``stage_log[i]["edge_updates"]``);
+      - every simulation / sampling sweep evaluates every edge network exactly in
+        grid order with the index of the edge whose gamma_k is used.
+
+    Public API: identical to the time-conditioned solver (fit, sample,
+    sample_paths, save_checkpoint, load_checkpoint, describe, variant_id,
+    n_updates, stage_log).
     """
 
-    def __init__(self, dim: int, cfg: IPFDSBConfig):
-        self.dim = int(dim)
-        self.cfg = cfg
+    canonical_id = "dsb_dt_joint_mlp"
+    time_parameterization = "per_step"
+    config_class = IPFDSBConfig
 
-        torch.manual_seed(int(cfg.seed))
-        np.random.seed(int(cfg.seed))
-
-        self.device = torch.device(cfg.device)
-
-        gamma_min = cfg.gamma_min * cfg.alpha_ou
-        gamma_max = cfg.gamma_max * cfg.alpha_ou
-
-        self.timegrid = TimeGrid(
-            num_steps=cfg.num_steps,
-            gamma_min=gamma_min,
-            gamma_max=gamma_max,
-            schedule=cfg.schedule,
-            device=self.device,
-            dtype=torch.float32,
-        )
-        self.integrator = EulerMaruyama(noise=cfg.noise)
-        self.reference = GaussianReference(dim=self.dim, device=self.device)
-
-        te_dim = cfg.time_features if cfg.time_features % 2 == 0 else cfg.time_features + 1
-        mlp_cfg = TimeMLPConfig(
+    # ------------------------------------------------------------------ networks
+    def _build_network(self) -> nn.Module:
+        cfg = self.cfg
+        return StepIndexedMLP(StepMLPConfig(
             in_dim=self.dim,
+            num_steps=self.K,
             hidden_dim=cfg.hidden_units,
-            time_emb=SinusoidalTimeEmbeddingConfig(dim=te_dim),
-        )
-        self.net_f = TimeConditionedMLP(mlp_cfg).to(self.device)
-        self.net_b = TimeConditionedMLP(mlp_cfg).to(self.device)
+            n_layers=cfg.n_layers,
+            dropout=cfg.dropout,
+        ))
 
-        self.loss = RegressionLoss(kind="mse", reduction="mean")
+    def _displacement(self, net: nn.Module, direction: str, x: torch.Tensor, k) -> torch.Tensor:
+        """d(x, k) from the k-th edge network; all rows of x belong to edge k."""
+        if isinstance(k, torch.Tensor):
+            raise TypeError("per-step networks are evaluated one edge at a time (int k)")
+        k = int(k)
+        assert 0 <= k < self.K, f"edge index {k} outside 0..{self.K - 1}"
+        return net(x, k)
 
-        epochs = cfg.epochs_per_phase
-        if cfg.steps_per_phase is not None and cfg.steps_per_phase > 0:
-            epochs = max(1, cfg.steps_per_phase // cfg.cache_batches)
+    # ------------------------------------------------------------------ training
+    def _n_trajectories(self) -> int:
+        return int(self.cfg.cache_batches * self.cfg.batch_size)
 
-        self.trainer = NeuralTrainer(
-            NeuralTrainerConfig(
-                lr=cfg.lr,
-                weight_decay=cfg.weight_decay,
-                max_epochs=epochs,
-                grad_clip=cfg.grad_clip,
-                device=cfg.device,
-            ),
-            loss=self.loss,
-        )
+    def _iter_batches(self, cache: IPFCache, gen: torch.Generator) -> Iterator[tuple]:
+        """Shuffled minibatches of trajectories: (K, m, D) inputs and targets; partial batches kept."""
+        M = cache.x.shape[1]
+        perm = torch.randperm(M, generator=gen, device=self.device)
+        bs = int(self.cfg.batch_size)
+        for s in range(0, M, bs):
+            idx = perm[s:s + bs]
+            yield cache.x[:, idx], cache.y[:, idx]
 
-        self._fitted = False
+    def _batch_loss(self, net: nn.Module, direction: str, batch: tuple) -> torch.Tensor:
+        # Sum (not mean) over edges: the gradient of edge k is that of its own MSE,
+        # so the K regressions are independent.
+        xb, yb = batch
+        assert xb.shape[0] == self.K
+        total = xb.new_zeros(())
+        for k in range(self.K):
+            total = total + self.loss(self._displacement(net, direction, xb[k], k), yb[k])
+        return total
 
-    def _as_tensor(self, x: pd.DataFrame | np.ndarray | torch.Tensor) -> torch.Tensor:
-        if isinstance(x, pd.DataFrame):
-            arr = x.to_numpy(dtype=np.float32, copy=True)
-            return torch.from_numpy(arr).to(self.device)
-        if isinstance(x, np.ndarray):
-            return torch.from_numpy(x.astype(np.float32, copy=False)).to(self.device)
-        if isinstance(x, torch.Tensor):
-            return x.to(self.device, dtype=torch.float32)
-        raise TypeError(f"Unsupported type: {type(x)}")
+    def _clip_gradients(self, net: nn.Module) -> None:
+        if self.cfg.grad_clip is not None:
+            for step_net in net.steps:
+                torch.nn.utils.clip_grad_norm_(step_net.parameters(), float(self.cfg.grad_clip))
 
-    def _predict(self, net: torch.nn.Module, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        return net(x, t)
+    def _train_phase(self, iteration, direction, simulated_with, x_data, gen) -> dict:
+        self._edge_updates: List[int] = [0] * self.K
+        return super()._train_phase(iteration, direction, simulated_with, x_data, gen)
 
-    @torch.no_grad()
-    def _simulate_one_step(
-        self,
-        x: torch.Tensor,
-        k: int,
-        net: torch.nn.Module,
-        direction: Literal["forward", "backward"],
-        gen: Optional[torch.Generator],
-    ) -> torch.Tensor:
-        g = self.timegrid.gammas()
-        t = self.timegrid.times()
+    def _record_update(self, direction: str, batch: tuple) -> None:
+        xb, _ = batch
+        for k in range(self.K):
+            if xb[k].shape[0] > 0:
+                self._edge_updates[k] += 1
 
-        tk = t[k].expand(x.shape[0], 1)
-        drift = self._predict(net, x, tk)
-        return self.integrator.step(x, drift=drift, gamma=g[k], generator=gen)
+    def _check_phase(self, direction: str, entry: dict) -> None:
+        untrained = [k for k, n in enumerate(self._edge_updates) if n <= 0]
+        if untrained:
+            raise AssertionError(f"{direction} edge networks {untrained} received no update")
+        entry["edge_updates"] = list(self._edge_updates)
 
-    @torch.no_grad()
-    def _make_cache(
-        self,
-        init_x: torch.Tensor,
-        net_opposite: torch.nn.Module,
-        direction: Literal["forward", "backward"],
-        cache_batches: int,
-        batch_size: int,
-        seed: int,
-    ) -> TensorDataset:
-        t = self.timegrid.times()
-        K = self.timegrid.num_steps
-
-        gen = torch.Generator(device=str(self.device))
-        gen.manual_seed(int(seed))
-
-        xs = []
-        ts = []
-        ys = []
-
-        N = cache_batches * batch_size
-
-        if init_x.shape[0] >= N:
-            base = init_x[torch.randperm(init_x.shape[0], generator=gen)[:N]]
-        else:
-            reps = (N + init_x.shape[0] - 1) // init_x.shape[0]
-            base = init_x.repeat((reps, 1))[:N]
-            base = base[torch.randperm(base.shape[0], generator=gen)]
-
-        k_idx = torch.randint(low=0, high=K, size=(N,), generator=gen, device=self.device)
-
-        x = base
-        for k in range(K):
-            mask = (k_idx == k)
-            if not mask.any():
-                continue
-
-            x_k = x[mask]
-
-            x_next = self._simulate_one_step(x_k, k=k, net=net_opposite, direction=direction, gen=gen)
-
-            target = x_k - x_next
-
-            xs.append(x_next)
-            ts.append(t[k].expand(x_next.shape[0], 1))
-            ys.append(target)
-
-        X = torch.cat(xs, dim=0)
-        T = torch.cat(ts, dim=0)
-        Y = torch.cat(ys, dim=0)
-
-        perm = torch.randperm(X.shape[0], generator=gen, device=self.device)
-        X, T, Y = X[perm], T[perm], Y[perm]
-        return TensorDataset(X, T, Y)
-
-    def _train_phase(self, net_to_train: torch.nn.Module, cache: TensorDataset) -> None:
-        loader = DataLoader(cache, batch_size=self.cfg.batch_size, shuffle=True, drop_last=False)
-        self.trainer.fit(net_to_train, loader, predict_fn=self._predict)
-
-    def fit(self, train: pd.DataFrame | np.ndarray | torch.Tensor) -> "IPFDSBSolver":
-        x_data = self._as_tensor(train)
-        if x_data.ndim != 2 or x_data.shape[1] != self.dim:
-            raise ValueError(f"Expected train shape (N,{self.dim}), got {tuple(x_data.shape)}")
-
-        for it in range(self.cfg.ipf_iters):
-            cache_b = self._make_cache(
-                init_x=x_data,
-                net_opposite=self.net_f,
-                direction="forward",
-                cache_batches=self.cfg.cache_batches,
-                batch_size=self.cfg.batch_size,
-                seed=self.cfg.seed + 1000 * it + 1,
-            )
-            self._train_phase(self.net_b, cache_b)
-
-            x_prior = self.reference.sample(
-                n=self.cfg.cache_batches * self.cfg.batch_size, seed=self.cfg.seed + 1000 * it + 2
-            )
-            cache_f = self._make_cache(
-                init_x=x_prior,
-                net_opposite=self.net_b,
-                direction="backward",
-                cache_batches=self.cfg.cache_batches,
-                batch_size=self.cfg.batch_size,
-                seed=self.cfg.seed + 1000 * it + 3,
-            )
-            self._train_phase(self.net_f, cache_f)
-
-        self._fitted = True
-        return self
-
-    @torch.no_grad()
-    def sample(self, n: int, seed: Optional[int] = None) -> np.ndarray:
-        if not self._fitted:
-            raise RuntimeError("Call fit() before sample().")
-
-        x = self.reference.sample(n=n, seed=seed)
-        K = self.timegrid.num_steps
-
-        gen = None
-        if seed is not None:
-            gen = torch.Generator(device=str(self.device))
-            gen.manual_seed(int(seed))
-
-        for k in range(K - 1, -1, -1):
-            x = self._simulate_one_step(x, k=k, net=self.net_b, direction="backward", gen=gen)
-
-        return x.detach().cpu().numpy()
+    # ------------------------------------------------------------------ metadata
+    def _describe_clock(self):
+        return None  # no time input: the edge index selects the network

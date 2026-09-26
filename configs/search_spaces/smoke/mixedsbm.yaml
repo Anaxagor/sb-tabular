@@ -1,0 +1,28 @@
+# Search space for `mixedsbm` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: mixedsbm
+kind: smoke
+version: 1
+fixed:
+  n_stages: 3
+  epochs_per_direction: 2
+  num_steps: 8
+  hidden_dim: 32
+  n_layers: 2
+  time_dim: 16
+  cat_emb_dim: 4
+  dropout: 0.0
+  device: cpu
+params:
+  sigma:
+    type: float
+    low: 0.1
+    high: 1.0
+    log: true
+  lr:
+    type: float
+    low: 0.001
+    high: 0.01
+    log: true

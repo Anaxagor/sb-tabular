@@ -1,0 +1,40 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: diamonds
+source:
+  bundle: datasets_mixed.pkl
+  key: Diamonds
+task: regression
+target: price
+missing_policy: reject
+dropped_columns: []
+columns:
+- name: carat
+  role: feature
+  type: continuous
+- name: cut
+  role: feature
+  type: categorical
+- name: color
+  role: feature
+  type: categorical
+- name: clarity
+  role: feature
+  type: categorical
+- name: depth
+  role: feature
+  type: continuous
+- name: table
+  role: feature
+  type: continuous
+- name: price
+  role: target
+  type: continuous
+- name: x
+  role: feature
+  type: continuous
+- name: y
+  role: feature
+  type: continuous
+- name: z
+  role: feature
+  type: continuous

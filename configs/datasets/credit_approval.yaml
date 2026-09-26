@@ -1,0 +1,58 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: credit_approval
+source:
+  bundle: datasets_mixed.pkl
+  key: Credit Approval
+task: classification
+target: A16
+missing_policy: impute
+dropped_columns: []
+columns:
+- name: A15
+  role: feature
+  type: continuous
+- name: A14
+  role: feature
+  type: continuous
+- name: A13
+  role: feature
+  type: categorical
+- name: A12
+  role: feature
+  type: categorical
+- name: A11
+  role: feature
+  type: continuous
+- name: A10
+  role: feature
+  type: categorical
+- name: A9
+  role: feature
+  type: categorical
+- name: A8
+  role: feature
+  type: continuous
+- name: A7
+  role: feature
+  type: categorical
+- name: A6
+  role: feature
+  type: categorical
+- name: A5
+  role: feature
+  type: categorical
+- name: A4
+  role: feature
+  type: categorical
+- name: A3
+  role: feature
+  type: continuous
+- name: A2
+  role: feature
+  type: continuous
+- name: A1
+  role: feature
+  type: categorical
+- name: A16
+  role: target
+  type: categorical

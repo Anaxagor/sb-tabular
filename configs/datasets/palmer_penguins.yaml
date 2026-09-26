@@ -1,0 +1,43 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: palmer_penguins
+source:
+  bundle: datasets_mixed.pkl
+  key: Palmer Penguins
+task: classification
+target: Species
+missing_policy: impute
+dropped_columns: []
+columns:
+- name: Species
+  role: target
+  type: categorical
+- name: Island
+  role: feature
+  type: categorical
+- name: Clutch Completion
+  role: feature
+  type: categorical
+- name: Date Egg
+  role: feature
+  type: categorical
+- name: Culmen Length (mm)
+  role: feature
+  type: continuous
+- name: Culmen Depth (mm)
+  role: feature
+  type: continuous
+- name: Flipper Length (mm)
+  role: feature
+  type: continuous
+- name: Body Mass (g)
+  role: feature
+  type: continuous
+- name: Sex
+  role: feature
+  type: categorical
+- name: Delta 15 N (o/oo)
+  role: feature
+  type: continuous
+- name: Delta 13 C (o/oo)
+  role: feature
+  type: continuous

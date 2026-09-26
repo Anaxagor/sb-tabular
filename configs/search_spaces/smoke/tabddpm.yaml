@@ -1,0 +1,19 @@
+# Search space for `tabddpm` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration.
+model: tabddpm
+kind: smoke
+version: 1
+fixed:
+  steps: 60
+  num_timesteps: 30
+  batch_size: 64
+  n_layers: 2
+  layer_size: 32
+  device: cpu
+params:
+  lr:
+    type: float
+    low: 0.001
+    high: 0.01
+    log: true

@@ -31,7 +31,9 @@ class MixedSbmMlp(nn.Module):
 
         self.trunk = nn.Sequential(*layers)
 
-        self.head_cont = nn.Linear(hidden_dim, self.D_num)
+        # Either block may be absent; an absent block gets no head at all.
+        if self.D_num > 0:
+            self.head_cont = nn.Linear(hidden_dim, self.D_num)
 
         if self.D_cat > 0:
             self.head_cat = nn.Linear(hidden_dim, self.D_cat * self.S_max)
@@ -65,7 +67,7 @@ class MixedSbmMlp(nn.Module):
 
         h = self.trunk(h_input)
 
-        out_cont = self.head_cont(h)
+        out_cont = self.head_cont(h) if self.D_num > 0 else x_cont.new_zeros((B, 0))
 
         if self.D_cat > 0:
             logits = self.head_cat(h)

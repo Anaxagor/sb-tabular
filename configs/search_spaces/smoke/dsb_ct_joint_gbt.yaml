@@ -1,0 +1,25 @@
+# Search space for `dsb_ct_joint_gbt` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: dsb_ct_joint_gbt
+kind: smoke
+version: 1
+fixed:
+  cb_iterations: 15
+  cb_depth: 2
+  cb_thread_count: 2
+  gamma_min: 0.01
+  schedule: geom
+  num_steps: 4
+  ipf_iters: 1
+params:
+  gamma_max:
+    type: float
+    low: 0.05
+    high: 0.2
+    log: true
+  cb_learning_rate:
+    type: float
+    low: 0.1
+    high: 0.3

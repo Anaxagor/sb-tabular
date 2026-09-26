@@ -1,0 +1,34 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: online_shoppers
+source:
+  bundle: datasets_continuous_only.pkl
+  key: online_shoppers
+task: regression
+target: ProductRelated
+missing_policy: reject
+dropped_columns: []
+columns:
+- name: Administrative
+  role: feature
+  type: continuous
+- name: Administrative_Duration
+  role: feature
+  type: continuous
+- name: Informational_Duration
+  role: feature
+  type: continuous
+- name: ProductRelated
+  role: target
+  type: continuous
+- name: ProductRelated_Duration
+  role: feature
+  type: continuous
+- name: BounceRates
+  role: feature
+  type: continuous
+- name: ExitRates
+  role: feature
+  type: continuous
+- name: PageValues
+  role: feature
+  type: continuous

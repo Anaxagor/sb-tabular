@@ -24,12 +24,25 @@ class CatBoostContinuousScalarConfig:
     random_seed: int = 0
     verbose: bool = False
     allow_writing_files: bool = False
+    # Features are always [x, parents, t]: the model is time-conditioned, so t
+    # cannot be dropped. Any other value used to be accepted and silently ignored;
+    # it is now rejected.
     feature_mode: str = "x_x0_t"
+
+    # residual=True fits y - x and predicts x + model(.). Use it for MEAN-MATCHING
+    # targets (IPF-DSB next-state means): those maps are identity plus an O(gamma)
+    # correction, and trees cannot represent an identity map, so regressing y
+    # directly leaves an error far above the correction. Keep it False for drift /
+    # velocity targets (IMF-DSBM). The IPF solvers enforce True themselves.
+    residual: bool = False
 
 
 
 class CatBoostContinuousScalar:
     def __init__(self, cfg: CatBoostContinuousScalarConfig):
+        if cfg.feature_mode != "x_x0_t":
+            raise ValueError("CatBoostContinuousScalar always uses features [x, parents, t]; "
+                             f"feature_mode={cfg.feature_mode!r} is not supported")
         self.cfg = cfg
         self.model = None
         self._checked = False
@@ -89,6 +102,9 @@ class CatBoostContinuousScalar:
             ctx = np.empty((len(x), 0), dtype=np.float32) if x0 is None else np.asarray(x0, dtype=np.float32)
             X_feat = self._build_features(x, ctx, t=t)
             y_arr = np.asarray(y, dtype=np.float32).reshape(-1)
+        X_feat = np.asarray(X_feat, dtype=np.float32)
+        if self.cfg.residual:
+            y_arr = y_arr - X_feat[:, 0]
 
         boosting_type = "Plain" if self.cfg.task_type == "GPU" else "Ordered"
 
@@ -119,5 +135,7 @@ class CatBoostContinuousScalar:
             raise RuntimeError("Call fit() before predict().")
         ctx_arr = np.empty((len(x), 0), dtype=np.float32) if x0 is None else np.asarray(x0, dtype=np.float32)
         X_feat = self._build_features(x, ctx_arr, t=t)
-        pred = self.model.predict(X_feat)
-        return np.asarray(pred, dtype=np.float32).reshape(-1, 1)
+        pred = np.asarray(self.model.predict(X_feat), dtype=np.float32).reshape(-1)
+        if self.cfg.residual:
+            pred = pred + X_feat[:, 0]
+        return pred.reshape(-1, 1)

@@ -1,3 +1,21 @@
+"""
+LightSB: light Schrödinger bridge with a Gaussian-mixture adjusted potential
+(Korotin, Gushchin, Burnaev, "Light Schrödinger Bridge", ICLR 2024).
+
+Scope
+  - This module implements LightSB ONLY: the potential is fitted by minimising
+    E_{p0}[log C_theta(x0)] - E_{p1}[log v_theta(x1)].
+  - LightSB-M (Gushchin et al., "Light and Optimal Schrödinger Bridge Matching",
+    bridge-matching loss on the same parameterisation) is NOT implemented. There
+    is deliberately no ``LightSBM`` name in this module.
+  - ``epsilon`` is fixed at construction (it is part of the frozen config and of
+    the checkpoint). There is no ``set_epsilon``: the mixture weights are stored
+    as ``log_alpha_raw = epsilon * log(alpha)``, so changing epsilon in place
+    would silently rescale the weights. Build a new model to change epsilon.
+  - ``is_diagonal=False`` (full covariances) needs the optional package
+    ``geotorch``; that path is not exercised by the test-suite unless geotorch
+    is installed.
+"""
 from __future__ import annotations
 
 import math
@@ -35,7 +53,7 @@ class LightSBPotentialConfig:
 
 class LightSBPotential(nn.Module):
     """
-    Proper LightSB model.
+    LightSB model (NOT LightSB-M, see the module docstring).
 
     Implements the same core logic as the official LightSB reference model:
       - conditional plan sampling π_theta(x1 | x0) via `forward`
@@ -67,8 +85,10 @@ class LightSBPotential(nn.Module):
                 import geotorch  # noqa: F401
             except ImportError as e:
                 raise ImportError(
-                    "LightSBPotential with is_diagonal=False requires `geotorch`. "
-                    "Install it with: pip install geotorch"
+                    "LightSBPotential(is_diagonal=False) needs the optional dependency `geotorch` "
+                    "(orthogonal parametrisation of the covariance rotations), which is NOT installed "
+                    "in this environment. Install it with `pip install geotorch`, or use the "
+                    "dependency-free diagonal parameterisation (is_diagonal=True)."
                 ) from e
 
         self.register_buffer("epsilon", torch.tensor(float(cfg.epsilon), dtype=torch.float32))
@@ -337,9 +357,25 @@ class LightSBPotential(nn.Module):
     @torch.no_grad()
     def sample_at_time_moment(self, x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """
-        Sample from the Brownian bridge interpolation used by the model.
+        Sample x_t from the Brownian bridge between x0 and x1 ~ pi_theta(.|x0):
+            x_t = t x1 + (1 - t) x0 + sqrt(eps t (1 - t)) Z.
+
+        ``t`` is ONE time per batch row: a scalar (shared), or shape (B,) / (B, 1).
+        It is reshaped to (B, 1) so that it can never broadcast over the feature
+        axis; any other size is rejected.
         """
-        t = t.to(x0.device, dtype=x0.dtype)
+        if x0.ndim != 2 or x0.shape[1] != self.dim:
+            raise ValueError(f"x0 must have shape (B, {self.dim}), got {tuple(x0.shape)}")
+        B = x0.shape[0]
+        t = torch.as_tensor(t).to(x0.device, dtype=x0.dtype)
+        if t.numel() == 1:
+            t = t.reshape(1, 1).expand(B, 1)
+        elif t.numel() == B and (t.ndim == 1 or (t.ndim == 2 and t.shape[1] == 1)):
+            t = t.reshape(B, 1)
+        else:
+            raise ValueError(f"t must be a scalar or have shape ({B},) / ({B}, 1), got {tuple(t.shape)}")
+        if bool((t < 0).any()) or bool((t > 1).any()):
+            raise ValueError("t must lie in [0, 1]")
         y = self(x0)
         return t * y + (1.0 - t) * x0 + torch.sqrt(t * (1.0 - t) * self.epsilon) * torch.randn_like(x0)
 
@@ -395,11 +431,3 @@ class LightSBPotential(nn.Module):
 
         exp_argument = (x_S_x + 2.0 * x_r) / (2.0 * epsilon) + log_alpha[None, :]
         return torch.logsumexp(exp_argument, dim=-1)
-
-    def set_epsilon(self, new_epsilon: float) -> None:
-        with torch.no_grad():
-            self.epsilon.fill_(float(new_epsilon))
-
-
-# Backward-compatible alias; if existing code expects LightSBM, it can import this.
-LightSBM = LightSBPotential

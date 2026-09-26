@@ -171,8 +171,8 @@ class MLP(nn.Module):
             `make_baseline` is the recommended constructor.
         """
         super().__init__()
-        if isinstance(dropouts, float):
-            dropouts = [dropouts] * len(d_layers)
+        if isinstance(dropouts, (int, float)):
+            dropouts = [float(dropouts)] * len(d_layers)
         assert len(d_layers) == len(dropouts)
         assert activation not in ['ReGLU', 'GEGLU']
 
@@ -221,11 +221,15 @@ class MLP(nn.Module):
         References:
             * [gorishniy2021revisiting] Yury Gorishniy, Ivan Rubachev, Valentin Khrulkov, Artem Babenko, "Revisiting Deep Learning Models for Tabular Data", 2021
         """
-        assert isinstance(dropout, float)
-        if len(d_layers) > 2:
-            assert len(set(d_layers[1:-1])) == 1, (
-                'if d_layers contains more than two elements, then'
-                ' all elements except for the first and the last ones must be equal.'
+        # ``dropout=0`` (an int, e.g. read back from a JSON of tuned parameters) is valid.
+        dropout = float(dropout)
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError(f'dropout must be in [0, 1), got {dropout}.')
+        d_layers = [int(d) for d in d_layers]
+        if len(d_layers) > 2 and len(set(d_layers[1:-1])) != 1:
+            raise ValueError(
+                'if d_layers contains more than two elements, then all elements except for '
+                f'the first and the last ones must be equal, got {d_layers}.'
             )
         return MLP(
             d_in=d_in,
@@ -431,6 +435,7 @@ class MLPDiffusion(nn.Module):
 
         # d0 = rtdl_params['d_layers'][0]
 
+        rtdl_params = dict(rtdl_params)  # do not mutate the caller's dict
         rtdl_params['d_in'] = dim_t
         rtdl_params['d_out'] = d_in
 

@@ -1,0 +1,79 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: mushroom
+source:
+  bundle: datasets_categorical.pkl
+  key: Mushroom
+task: classification
+target: poisonous
+missing_policy: impute
+dropped_columns: []
+columns:
+- name: cap-shape
+  role: feature
+  type: categorical
+- name: cap-surface
+  role: feature
+  type: categorical
+- name: cap-color
+  role: feature
+  type: categorical
+- name: bruises
+  role: feature
+  type: categorical
+- name: odor
+  role: feature
+  type: categorical
+- name: gill-attachment
+  role: feature
+  type: categorical
+- name: gill-spacing
+  role: feature
+  type: categorical
+- name: gill-size
+  role: feature
+  type: categorical
+- name: gill-color
+  role: feature
+  type: categorical
+- name: stalk-shape
+  role: feature
+  type: categorical
+- name: stalk-root
+  role: feature
+  type: categorical
+- name: stalk-surface-above-ring
+  role: feature
+  type: categorical
+- name: stalk-surface-below-ring
+  role: feature
+  type: categorical
+- name: stalk-color-above-ring
+  role: feature
+  type: categorical
+- name: stalk-color-below-ring
+  role: feature
+  type: categorical
+- name: veil-type
+  role: feature
+  type: categorical
+- name: veil-color
+  role: feature
+  type: categorical
+- name: ring-number
+  role: feature
+  type: categorical
+- name: ring-type
+  role: feature
+  type: categorical
+- name: spore-print-color
+  role: feature
+  type: categorical
+- name: population
+  role: feature
+  type: categorical
+- name: habitat
+  role: feature
+  type: categorical
+- name: poisonous
+  role: target
+  type: categorical

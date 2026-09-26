@@ -1,0 +1,15 @@
+# Search space for `tabpfgen` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration.
+model: tabpfgen
+kind: smoke
+version: 1
+fixed:
+  n_sgld_steps: 10
+  device: cpu
+params:
+  sgld_step_size:
+    type: float
+    low: 0.001
+    high: 0.05
+    log: true

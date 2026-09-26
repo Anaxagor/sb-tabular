@@ -1,4 +1,7 @@
 # Core (data pipeline, bridge primitives, neural solvers)
+# NOTE: the tracked bundles sbtab/data/datasets/*.pkl were pickled with numpy 2.x / pandas 3.x.
+# Under numpy 1.26 / pandas 2.2 a plain pickle.load fails; sbtab.data.loading.load_bundle falls back
+# to a cross-version unpickler, and prepare_splits re-materialises each dataset as Parquet + JSON schema.
 numpy>=1.26
 pandas>=2.2
 scipy>=1.12
@@ -6,22 +9,32 @@ scikit-learn>=1.5
 torch>=2.6
 tqdm>=4.66
 
+# Experiment stages (sbtab/experiments): protocol/search-space configs, lossless local tables
+pyyaml>=6.0
+pyarrow>=15
+
 # Boosted solvers (CatBoost field models)
+# The TSTR utility evaluator freezes CatBoost's resolved defaults per dataset; pin the version for a
+# benchmark run (reference execution: catboost 1.2.7) so those defaults cannot drift.
 catboost>=1.2
 
 # Feature-wise (structural) solvers — DAG learning
 pgmpy>=1.0
 networkx>=3.2
 
-# Hyperparameter tuning (sbtab/experiments/tuning_script)
+# Hyperparameter tuning (sbtab.experiments.tune). The reference execution was run with optuna 4.2.1.
 optuna>=4.2
 
 # Baselines
 sdv          # CTGAN wrapper (CTGANSynthesizer)
 tabpfgen     # TabPFGen wrapper
 
-# Dataset download (sbtab/data/get_datasets.py)
+# Dataset download (sbtab/data/get_datasets.py) - not needed to run the benchmark on the tracked bundles
 ucimlrepo
+kagglehub
+
+# Tests
+pytest>=8
 
 # Optional
 # geotorch   # LightSB with full covariance (is_diagonal=False) only

@@ -172,7 +172,12 @@ def sliced_logsumexp(x, slices):
 def log_onehot_to_index(log_x):
     return log_x.argmax(1)
 
-class FoundNANsError(BaseException):
-    """Found NANs during sampling"""
+class FoundNANsError(RuntimeError):
+    """Found NANs during sampling.
+
+    Subclasses ``RuntimeError`` (upstream used ``BaseException``, which escapes every
+    ``except Exception`` handler and would abort e.g. a whole Optuna study instead of
+    failing a single trial).
+    """
     def __init__(self, message='Found NANs during sampling.'):
         super(FoundNANsError, self).__init__(message)

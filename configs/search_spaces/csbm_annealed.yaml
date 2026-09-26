@@ -1,0 +1,61 @@
+# Search space for `csbm_annealed` (production). HEURISTIC variant: the reference mixing rate is annealed between outer
+# iterations, so this is NOT the canonical fixed-reference CSBM (use `csbm` for that).
+model: csbm_annealed
+kind: production
+version: 1
+fixed:
+  device: cpu
+params:
+  num_outer_iterations:
+    type: categorical
+    choices:
+    - 2
+    - 3
+    - 4
+  epochs:
+    type: categorical
+    choices:
+    - 10
+    - 20
+    - 40
+  num_steps:
+    type: categorical
+    choices:
+    - 25
+    - 50
+    - 100
+  mixing_rate:
+    type: float
+    low: 0.5
+    high: 8.0
+    log: true
+  ordered_bandwidth:
+    type: float
+    low: 0.1
+    high: 0.6
+  lr:
+    type: float
+    low: 0.0001
+    high: 0.003
+    log: true
+  batch_size:
+    type: categorical
+    choices:
+    - 128
+    - 256
+    - 512
+  hidden_dim:
+    type: categorical
+    choices:
+    - 128
+    - 256
+    - 512
+  anneal_every:
+    type: categorical
+    choices:
+    - 1
+    - 2
+  anneal_multiplier:
+    type: float
+    low: 0.5
+    high: 0.95

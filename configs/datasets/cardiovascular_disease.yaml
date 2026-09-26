@@ -1,0 +1,46 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: cardiovascular_disease
+source:
+  bundle: datasets_mixed.pkl
+  key: Cardiovascular Disease
+task: classification
+target: cardio
+missing_policy: reject
+dropped_columns: []
+columns:
+- name: age
+  role: feature
+  type: continuous
+- name: gender
+  role: feature
+  type: categorical
+- name: height
+  role: feature
+  type: continuous
+- name: weight
+  role: feature
+  type: continuous
+- name: ap_hi
+  role: feature
+  type: continuous
+- name: ap_lo
+  role: feature
+  type: continuous
+- name: cholesterol
+  role: feature
+  type: discrete
+- name: gluc
+  role: feature
+  type: discrete
+- name: smoke
+  role: feature
+  type: categorical
+- name: alco
+  role: feature
+  type: categorical
+- name: active
+  role: feature
+  type: categorical
+- name: cardio
+  role: target
+  type: categorical
