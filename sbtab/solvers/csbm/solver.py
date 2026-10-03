@@ -16,7 +16,7 @@ class CSBMSolver:
     epochs: int = 15
     batch_size: int = 264
 
-    def fit(self, dataloader_p1, dataloader_p0, scheduler_outer_iterations=5, scheduler_alpha_multiplier=0.9):
+    def fit(self, dataloader_p1, dataloader_p0, scheduler_outer_iterations=None, scheduler_alpha_multiplier=0.9):
         K = self.sampler.timegrid.num_steps
         ref = self.sampler.reference
         device = ref.device
@@ -28,7 +28,7 @@ class CSBMSolver:
             print(f"\n{'=' * 10} CSBM Outer Iteration L={l} {'=' * 10}")
 
             # Alpha decay
-            if l % scheduler_outer_iterations == 0:
+            if (scheduler_outer_iterations is not None) and (l % scheduler_outer_iterations == 0):
                 ref.update_alpha(ref.alpha * scheduler_alpha_multiplier)
 
             # --- Forward update stage ---

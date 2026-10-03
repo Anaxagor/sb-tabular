@@ -1,0 +1,33 @@
+{
+    "dataset": "Mushroom",
+    "bad_cols (<=1 unique vals)": [
+        "veil-type"
+    ],
+    "best_trial": 56,
+    "n_trials": 60,
+    "elapsed_sec": 1073.9281663894653,
+    "best_params": {
+        "emb_dim": 22,
+        "hidden_dim": 128,
+        "time_dim": 128,
+        "n_layers": 6,
+        "dropout": 0.2685627930849895,
+        "steps": 100,
+        "num_outer_iterations": 8,
+        "epochs": 13,
+        "batch_size": 128,
+        "forward_lr": 0.001668766147260096,
+        "backward_lr": 0.00011521187398372439,
+        "forward_weight_decay": 4.351845928614009e-06,
+        "backward_weight_decay": 0.00029399481237493436,
+        "loss_lambda": 0.6355237628475847,
+        "alpha": 0.6829491115790625
+    },
+    "Best_Tuning_Loss_JS": 0.024409958091053587,
+    "Final_Mean_KL": 0.003252696250175741,
+    "Corr_Distance_Discrete_Spearman": null,
+    "F1_real": 1.0,
+    "F1_synth": 0.40109215727064695,
+    "delta_F1_abs": 0.598907842729353,
+    "delta_F1_pct": 59.890784272935306
+}

@@ -1,0 +1,31 @@
+{
+    "dataset": "Car Evaluation",
+    "bad_cols (<=1 unique vals)": [],
+    "best_trial": 53,
+    "n_trials": 60,
+    "elapsed_sec": 286.3405764102936,
+    "best_params": {
+        "emb_dim": 25,
+        "hidden_dim": 256,
+        "time_dim": 32,
+        "n_layers": 5,
+        "dropout": 0.12871594431088043,
+        "steps": 90,
+        "num_outer_iterations": 5,
+        "epochs": 20,
+        "batch_size": 64,
+        "forward_lr": 0.0003628953031088869,
+        "backward_lr": 0.0003051055968035248,
+        "forward_weight_decay": 2.597627147089158e-05,
+        "backward_weight_decay": 2.6279397615483104e-05,
+        "loss_lambda": 0.18915509889120802,
+        "alpha": 0.1076133778349745
+    },
+    "Best_Tuning_Loss_JS": 0.0237263538399094,
+    "Final_Mean_KL": 0.006829607642795913,
+    "Corr_Distance_Discrete_Spearman": null,
+    "F1_real": 0.9956545209176788,
+    "F1_synth": 0.8529221476527973,
+    "delta_F1_abs": 0.14273237326488153,
+    "delta_F1_pct": 14.335532081281304
+}
