@@ -10,7 +10,7 @@ from sbtab.solvers.csbm import AnnealedCSBMConfig, CSBMConfig, CSBMSolver
 from sbtab.solvers.msbm import MixedSBMConfig, MixedSBMSolver
 from sbtab.solvers.msbm.updater import MixedSBMUpdater
 
-TINY = dict(num_steps=8, epochs_per_direction=2, hidden_dim=32, n_layers=2, time_dim=16, cat_emb_dim=4, dropout=0.0, seed=1)
+TINY = dict(steps_per_direction=None, min_steps_per_direction=0, num_steps=8, epochs_per_direction=2, hidden_dim=32, n_layers=2, time_dim=16, cat_emb_dim=4, dropout=0.0, seed=1)
 
 
 def toy(n=60, seed=0):
@@ -29,7 +29,7 @@ def test_noise_corrected_target_equals_endpoint_conditioned_target(direction):
     g = torch.Generator().manual_seed(11)
     z0, z1 = torch.randn(4096, 3, generator=g), torch.randn(4096, 3, generator=g) * 2 + 1
     empty = torch.zeros(4096, 0, dtype=torch.long)
-    x_t, _, t, n, target, _ = s.updaters[direction]._make_training_tuple(z0, empty, z1, empty, direction, generator=g)
+    x_t, _, t, n, target, _ = s.updater._make_training_tuple(z0, empty, z1, empty, direction, generator=g)
 
     grid = s.timegrid.grid()
     assert torch.equal(t.view(-1), grid[n])                       # the network clock IS the bridge clock
@@ -81,9 +81,9 @@ def test_imf_stages_use_the_previous_learned_coupling_with_the_right_anchor(monk
     captured = []
     real = MixedSBMUpdater.train_epochs
 
-    def spy(self, direction, z0_num, z0_cat, z1_num, z1_cat, epochs, seed=None):
+    def spy(self, direction, z0_num, z0_cat, z1_num, z1_cat, **kwargs):
         captured.append((direction, z0_num.clone(), z0_cat.clone(), z1_num.clone(), z1_cat.clone()))
-        return real(self, direction, z0_num, z0_cat, z1_num, z1_cat, epochs, seed=seed)
+        return real(self, direction, z0_num, z0_cat, z1_num, z1_cat, **kwargs)
 
     monkeypatch.setattr(MixedSBMUpdater, "train_epochs", spy)
     s = MixedSBMSolver(2, [3, 7], torch.tensor([False, True]), MixedSBMConfig(fb_sequence=("b", "f", "b"), **TINY)).fit(num, cat)
@@ -101,8 +101,9 @@ def test_imf_stages_use_the_previous_learned_coupling_with_the_right_anchor(monk
     assert not torch.equal(c1n, a1n)
     # generation uses the LAST backward stage; every stage really trained
     assert s.generation_stage() == 2 and all(l["n_updates"] > 0 for l in s.stage_log)
-    # the two directions are separate networks
-    assert s.models["f"] is not s.models["b"]
+    # feature/tuning trains both directions through the same network and optimizer.
+    assert s.updater.model is s.model
+    assert s.updater.n_updates == s.n_updates
 
 
 def test_fb_sequence_must_alternate():

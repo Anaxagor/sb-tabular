@@ -23,10 +23,12 @@ class MixedSBMAdapter(ModelAdapter):
     registry_id = "mixedsbm"
     native_regimes = ("continuous", "discrete", "mixed")
     DEFAULTS = dict(
-        n_stages=5, epochs_per_direction=5, num_steps=100, sigma=0.1, lambda_num=0.8, lambda_cat=0.2,
-        ce_lambda=0.001, cat_mixing_rate=1.0, cat_ordered_bandwidth=0.2, lr=1e-4, batch_size=256,
+        n_stages=5, epochs_per_direction=5, steps_per_direction=None, min_steps_per_direction=0,
+        num_steps=100, sigma=0.1, lambda_num=0.8, lambda_cat=0.2,
+        ce_lambda=0.001, alpha=0.01, lr=1e-4, weight_decay=1e-2, batch_size=256,
         hidden_dim=512, n_layers=5, time_dim=128, cat_emb_dim=16, dropout=0.1, grad_clip=1.0,
-        warm_start=True, sample_batch_size=4096, device="cpu",
+        noise=True, num_ref_mean=0.0, num_ref_std=1.0, sim_batch_size=4096,
+        sample_batch_size=4096, device="cpu",
     )
 
     def _solver_config(self) -> MixedSBMConfig:
@@ -41,9 +43,14 @@ class MixedSBMAdapter(ModelAdapter):
             time_dim=int(c["time_dim"]), n_layers=int(c["n_layers"]), dropout=float(c["dropout"]),
             num_steps=int(c["num_steps"]), sigma=float(c["sigma"]), lambda_num=float(c["lambda_num"]),
             lambda_cat=float(c["lambda_cat"]), ce_lambda=float(c["ce_lambda"]),
-            cat_mixing_rate=float(c["cat_mixing_rate"]), cat_ordered_bandwidth=float(c["cat_ordered_bandwidth"]),
-            lr=float(c["lr"]), batch_size=int(c["batch_size"]), epochs_per_direction=int(c["epochs_per_direction"]),
-            grad_clip=None if c["grad_clip"] is None else float(c["grad_clip"]), warm_start=bool(c["warm_start"]),
+            alpha=float(c["alpha"]), weight_decay=float(c["weight_decay"]), noise=bool(c["noise"]),
+            num_ref_mean=float(c["num_ref_mean"]), num_ref_std=float(c["num_ref_std"]),
+            sim_batch_size=None if c["sim_batch_size"] is None else int(c["sim_batch_size"]),
+            lr=float(c["lr"]), batch_size=int(c["batch_size"]),
+            epochs_per_direction=None if c["epochs_per_direction"] is None else int(c["epochs_per_direction"]),
+            steps_per_direction=None if c["steps_per_direction"] is None else int(c["steps_per_direction"]),
+            min_steps_per_direction=int(c["min_steps_per_direction"]),
+            grad_clip=None if c["grad_clip"] is None else float(c["grad_clip"]),
             device=str(c["device"]), seed=int(self.seed),
         )
 
@@ -73,8 +80,11 @@ class MixedSBMAdapter(ModelAdapter):
 
     def describe(self) -> dict:
         s = self.solver
-        return {"orientation": {"x0": "data", "x1": "prior", "generation": "backward"},
-                "reference": {"numerical": {"kind": "brownian", "sigma": s.cfg.sigma, "horizon": 1.0},
+        return {"implementation": "feature/tuning", "networks": "shared_forward_backward",
+                "orientation": {"x0": "data", "x1": "prior", "generation": "backward"},
+                "reference": {"numerical": {"kind": "brownian", "sigma": s.cfg.sigma, "horizon": 1.0,
+                                            "noise": s.cfg.noise, "prior_mean": s.cfg.num_ref_mean,
+                                            "prior_std": s.cfg.num_ref_std},
                               "categorical": None if s.ref_cat is None else s.ref_cat.describe()},
                 "grid": {"schedule": "uniform", "num_steps": s.cfg.num_steps, "horizon": 1.0},
                 "stages": s.stage_log, "generation_stage": s.generation_stage(),

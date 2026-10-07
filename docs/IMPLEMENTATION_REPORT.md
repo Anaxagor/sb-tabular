@@ -1,5 +1,12 @@
 # SB-tabular — implementation report
 
+**Historical MSBM scope:** this report describes the two-network, semigroup-reference
+MSBM before the merge of `feature/tuning` (`0b9f15f`). The active MSBM now follows that
+branch's shared-network, per-step `alpha` implementation, with current adapter,
+checkpoint and reproducibility support. MSBM-specific correctness claims below
+do not describe the imported historical categorical kernel. CSBM and the common
+bridge primitives retain the refactored implementation. See the repository README.
+
 Follow-up: [review and corrections, 2026-09-23](REVIEW_2026-09-23.md). That report records the latest
 787-pass test run, additional defects fixed after this report, and remaining specification gaps.
 The execution counts and artifact descriptions below describe the original refactor validation.

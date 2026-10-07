@@ -1,0 +1,31 @@
+{
+    "dataset": "Student Perf",
+    "bad_cols (<=1 unique vals)": [],
+    "best_trial": 2,
+    "n_trials": 50,
+    "elapsed_sec": 689.5177857875824,
+    "best_params": {
+        "emb_dim": 29,
+        "hidden_dim": 128,
+        "time_dim": 128,
+        "n_layers": 3,
+        "dropout": 0.24598241850020625,
+        "steps": 60,
+        "num_outer_iterations": 8,
+        "epochs": 12,
+        "batch_size": 512,
+        "forward_lr": 0.0006636614397244285,
+        "backward_lr": 0.0011547804421278723,
+        "forward_weight_decay": 4.991671401359756e-05,
+        "backward_weight_decay": 8.05505697740027e-05,
+        "loss_lambda": 0.8137833672686066,
+        "alpha": 0.9274157890914355
+    },
+    "Best_Tuning_Loss_JS": 0.0704995374806415,
+    "Final_Mean_KL": 0.013707212711664515,
+    "Corr_Distance_Discrete_Spearman": 3.6965628763538736,
+    "F1_real": 0.29212236176521894,
+    "F1_synth": 0.09532807173212533,
+    "delta_F1_abs": 0.19679429003309362,
+    "delta_F1_pct": 67.36707482573989
+}

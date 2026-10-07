@@ -38,6 +38,15 @@ On top of that grid, three standalone solvers cover other points of the design s
   per-categorical-column logits simultaneously, combining the Gaussian and categorical
   reference processes. The only solver that handles mixed tables natively end-to-end.
 
+After merging `feature/tuning` (`0b9f15f`), MixedSBM uses one network and optimizer
+across forward/backward stages, the historical per-step `alpha` reference, and a
+configurable step or epoch budget. Its bridge helpers are isolated under
+`sbtab/solvers/msbm/`; CSBM keeps its semigroup reference. Production search-space
+version 2 restores the tuning ranges while retaining the canonical protocol's
+mandatory dynamics noise. New MSBM checkpoints use `sbtab.mixedsbm/3`; the former
+two-network `/2` checkpoints and `cat_mixing_rate` configurations require the
+pre-merge implementation. Existing tuning studies must start a new run.
+
 ### Data pipeline
 
 Every model (SB solver or baseline) sits behind the same pipeline:

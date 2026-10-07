@@ -1,5 +1,22 @@
 # `sbtab/experiments/legacy` — frozen historical scripts and result artifacts
 
+## Imported `feature/tuning` artifacts
+
+The merge imports `csbm_tuning.py`, `msbm_tuning.py`, 5 CSBM result JSON files and
+28 MSBM result JSON files from `0b9f15f`. The JSON files are byte-identical to that
+commit. Their historical protocol uses seed 5, a default 80/20 holdout and 60 trials;
+the older seed-42/50-trial description below applies to the original scripts only.
+The missing `Metrics` facade is restored verbatim from
+`45e77a5:sbtab/evaluation/metrics.py` inside `legacy_metrics.py`, with explicit
+provenance; this does not establish how the archived numbers were produced.
+
+Both new scripts import and answer `--help`. Neither has been run end-to-end.
+The CSBM script retains its historical solver API and its invalid epoch expression
+(`inner_iters * batch_size / train_cat_t`); it cannot train against the refactored
+CSBM API without a separate port. MSBM uses the imported solver, but historical
+metric calls and dataset preprocessing have not been validated end-to-end.
+Use the canonical stages for new experiments.
+
 **Status: LEGACY. Metric definitions: `legacy/0`. Not the canonical protocol.**
 
 Everything in this directory is superseded by the canonical stages

@@ -35,7 +35,7 @@ CONFIG = dict(
     n_stages=3,                 # alternating stages; the last one is the backward (generation) direction
     epochs_per_direction=100,   # training budget per stage (the table has only ~1k rows)
     num_steps=50, sigma=0.3,    # numerical block: Brownian reference on the unit horizon
-    cat_mixing_rate=1.0,        # finite-state block: mixing rate of the reference
+    alpha=0.1,                 # finite-state block: per-step reference parameter (feature/tuning)
     hidden_dim=256, n_layers=3, dropout=0.0, lr=1e-3, batch_size=128, device="cpu",
 )
 
