@@ -250,7 +250,7 @@ def test_batch_scripts_quote_paths_and_submit_correct_dependencies(tmp_path):
         subprocess.run(["bash", "-n", str(path)], check=True)
     batch_scripts = tmp_path / "local batch scripts"
     batch_scripts.mkdir()
-    for name in ("prepare", "experiment", "aggregate"):
+    for name in ("prepare", "experiment", "metrics", "aggregate"):
         (batch_scripts / f"{name}.sbatch").write_text("#!/usr/bin/env bash\nexit 0\n")
     fakebin = tmp_path / "fake bin"
     fakebin.mkdir()
@@ -267,8 +267,8 @@ def test_batch_scripts_quote_paths_and_submit_correct_dependencies(tmp_path):
             "--datasets", "diabetes", "--models", "lightsb", "--smoke"]
     submitted = subprocess.run(args, env=env, check=True, capture_output=True, text=True)
     calls = [json.loads(line) for line in Path(env["SBATCH_CALLS"]).read_text().splitlines()]
-    assert len(calls) == 3
-    for call, name in zip(calls, ("prepare", "experiment", "aggregate")):
+    assert len(calls) == 4
+    for call, name in zip(calls, ("prepare", "experiment", "metrics", "aggregate")):
         assert str(batch_scripts / f"{name}.sbatch") in call
     assert f"Cluster configuration: {config}" in submitted.stderr
     logged_calls = [shlex.split(line)[1:] for line in submitted.stderr.splitlines()
@@ -276,12 +276,19 @@ def test_batch_scripts_quote_paths_and_submit_correct_dependencies(tmp_path):
     assert logged_calls == calls
     assert "--dependency=afterok:100" in calls[1]
     assert "--kill-on-invalid-dep=yes" in calls[1]
-    assert "--dependency=afterany:101" in calls[2]
+    assert "--dependency=aftercorr:101" in calls[2]
+    assert "--kill-on-invalid-dep=yes" in calls[2]
+    assert "--dependency=afterany:100:101:102" in calls[3]
     assert "--array=0-0%8" in calls[1]
-    assert "--gpus=1" in calls[1] and "--cpus-per-task=8" in calls[1]
+    assert "--gpus=1" in calls[1] and "--cpus-per-task=4" in calls[1]
+    assert "--constraint=type_a|type_b|type_c" in calls[1]
+    assert "--gpus=0" in calls[2] and "--constraint=type_d" in calls[2]
+    assert [arg for arg in calls[1] if arg.startswith("--time=")][-1] == "--time=00:30:00"
+    assert calls[1][-2:] == ["generate", "0"]
     assert any(arg.endswith("experiment-%A_%a.err") for arg in calls[1])
     plan = read_json(calls[0][-1])
-    assert plan["device"] == "cuda"
+    assert plan["device"] == "auto"
+    assert plan["tasks"][0]["device"] == "cuda"
     from sbtab.experiments.experiment_common import load_yaml
     assert load_yaml(plan["search_spaces"]["lightsb"]["path"])["fixed"]["device"] == "cuda"
     assert all("--account=proj_1752" in call and "--partition=rocky" in call for call in calls)
@@ -292,6 +299,6 @@ def test_batch_scripts_quote_paths_and_submit_correct_dependencies(tmp_path):
     assert f"Cluster configuration: {config}" in preview.stderr
     preview_calls = [shlex.split(line)[1:] for line in preview.stderr.splitlines()
                      if line.startswith("sbatch ")]
-    assert len(preview_calls) == 3
+    assert len(preview_calls) == 4
     assert all("--account=proj_1752" in call for call in preview_calls)
-    assert len(Path(env["SBATCH_CALLS"]).read_text().splitlines()) == 3
+    assert len(Path(env["SBATCH_CALLS"]).read_text().splitlines()) == 4

@@ -46,7 +46,7 @@ def test_gpu_worker_rejects_cpu_before_allocating_trials(tmp_path, monkeypatch):
 
 
 GPU_MODELS = ["dsb_ct_joint_mlp", "dsbm_ct_joint_mlp", "lightsb", "csbm", "csbm_annealed",
-              "mixedsbm", "tabddpm", "ve_score_sde_simplified", "ctgan", "tabpfgen", "forestdiffusion"]
+              "mixedsbm", "tabddpm", "ve_score_sde_simplified", "ctgan", "tabbyflow", "forestdiffusion"]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires an allocated CUDA GPU; run this file on the cluster")

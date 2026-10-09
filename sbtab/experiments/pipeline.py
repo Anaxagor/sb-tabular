@@ -37,8 +37,8 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
     from sbtab.experiments.tune import load_search_space
 
     root = Path(output_root).resolve()
-    if device not in (None, "cpu", "cuda"):
-        raise StageError("undefined", "device must be cpu or cuda")
+    if device not in (None, "cpu", "cuda", "auto"):
+        raise StageError("undefined", "device must be cpu, cuda or auto")
     protocol = load_protocol(protocol_path, smoke=smoke)
     metrics = load_metric_config(protocol)
     MetricConfig.from_document(metrics)
@@ -51,6 +51,7 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
     chosen = sorted(set(models if models is not None else solver_registry))
     spaces_dir = Path(search_space_dir or ("configs/search_spaces/smoke" if smoke else "configs/search_spaces")).resolve()
     entries, spaces, excluded, generated_spaces = {}, {}, [], {}
+    model_devices = {}
     for model in chosen:
         entry = get_entry(model)
         reason = exclusion_reason(model) if models is None else None
@@ -68,18 +69,26 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
         path = spaces_dir / f"{model}.yaml"
         space = load_search_space(path, model, protocol.kind)
         spaces[model] = {"path": str(path), "hash": file_hash(path)}
-        if device is not None:
-            from sbtab.solvers.registry import get_adapter_class
-            keys = get_adapter_class(model).DEFAULTS
-            key = "device" if "device" in keys else "enable_gpu" if "enable_gpu" in keys else None
-            if key is None:
-                if device != "cpu":
-                    raise StageError("undefined", f"{model}: this adapter is CPU-only and cannot use --device {device}")
-                entries[model] = entry
-                continue                     # CPU-only adapters keep their original search space.
-            if key in space["params"]:
-                raise StageError("undefined", f"{model}: cannot fix execution device in this search space")
-            space["fixed"][key] = device if key == "device" else device == "cuda"
+        from sbtab.solvers.registry import get_adapter_class
+        keys = get_adapter_class(model).DEFAULTS
+        key = "device" if "device" in keys else "enable_gpu" if "enable_gpu" in keys else None
+        if key in space["params"]:
+            raise StageError("undefined", f"{model}: cannot search execution device within one resource allocation")
+        if device == "auto":
+            effective_device = "cpu" if model == "forestdiffusion" or key is None else "cuda"
+        elif device is not None:
+            effective_device = device
+        elif key == "device":
+            effective_device = space["fixed"].get(key, keys[key])
+        else:
+            effective_device = "cuda" if key == "enable_gpu" and space["fixed"].get(key, keys[key]) else "cpu"
+        if effective_device not in ("cpu", "cuda"):
+            raise StageError("undefined", f"{model}: unsupported execution device {effective_device!r}")
+        if key is None and effective_device != "cpu":
+            raise StageError("undefined", f"{model}: this adapter is CPU-only and cannot use --device {effective_device}")
+        model_devices[model] = effective_device
+        if device is not None and key is not None:
+            space["fixed"][key] = effective_device if key == "device" else effective_device == "cuda"
             # Use YAML's float spelling (1.0e-05), since YAML 1.1 can read JSON's
             # 1e-05 as a string. Keep every hyperparameter range unchanged.
             contents = yaml.safe_dump(space, sort_keys=False)
@@ -95,13 +104,10 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
                 excluded.append({"dataset": dataset, "model": model, "reason": "incompatible data regime"})
                 continue
             tasks.append({"task_id": len(tasks), "dataset": dataset, "model": model,
-                          "regime": schemas[dataset].regime, "model_status": entry.status})
+                          "regime": schemas[dataset].regime, "model_status": entry.status,
+                          "device": model_devices[model]})
     if not tasks:
         raise StageError("not_applicable", "no compatible dataset/model tasks remain")
-    pretrained = {}
-    if "tabpfgen" in entries:
-        from sbtab.experiments.cluster_environment import check_tabpfn_cache
-        pretrained["tabpfgen"] = check_tabpfn_cache()
     plan = {
         "version": PLAN_VERSION, "repo_root": str(REPO_ROOT), "output_root": str(root), "run_id": RUN_ID,
         "protocol_path": str(Path(protocol.path).resolve()), "protocol_hash": protocol.hash(),
@@ -113,7 +119,7 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
         "search_spaces": spaces, "tasks": tasks, "excluded": excluded,
         "basic_dsb_models": dict(BASIC_DSB_MODELS),
         "device": device,
-        "pretrained_models": pretrained,
+        "model_devices": model_devices,
         "implementation_hash_version": SOURCE_HASH_VERSION,
         "implementation_hash": implementation_hash(), "libraries": library_versions(),
         "statistical_note": protocol.data.get("statistical_note", ""),
@@ -176,16 +182,11 @@ def load_plan(path, verify=True):
             raise StageError("undefined", f"configuration changed after planning: {filename}")
     if library_versions() != plan["libraries"]:
         raise StageError("undefined", "Python/dependency versions differ from the pipeline plan")
-    if "tabpfgen" in plan.get("pretrained_models", {}):
-        from sbtab.experiments.cluster_environment import check_tabpfn_cache
-        if check_tabpfn_cache() != plan["pretrained_models"]["tabpfgen"]:
-            raise StageError("undefined", "TabPFN pretrained weights or cache location changed after planning")
     return plan
 
 
 def prepare(plan_path):
     from sbtab.experiments.prepare_splits import run
-    from sbtab.experiments import tune
     plan = load_plan(plan_path)
     root = Path(plan["output_root"])
     protocol = load_protocol(plan["protocol_path"], smoke=plan["smoke"])
@@ -194,14 +195,6 @@ def prepare(plan_path):
         for name in plan["datasets"]:
             try:
                 value = run(name, protocol, root, config_dir=plan["dataset_config_dir"])
-                if value["split_status"] == "ok" and "tabpfgen" in plan["search_spaces"]:
-                    try:
-                        preview = tune.run(name, "tabpfgen", root / name / "splits.json", plan["search_spaces"]["tabpfgen"]["path"],
-                                           resume=True, smoke=plan["smoke"], protocol_path=plan["protocol_path"], dry_run=True)
-                        support = {"status": "ok", "context": preview["tabpfgen_context"]}
-                    except Exception as error:
-                        support = {"status": getattr(error, "status", "undefined"), "error": str(error)}
-                    value["models"] = {"tabpfgen": support}
             except Exception as e:
                 value = {"dataset": name, "split_status": getattr(e, "status", "undefined"),
                          "error": str(e), "trace": traceback.format_exc()}
@@ -243,7 +236,7 @@ def worker(plan_path, task_id, stage="all", retry_failed_folds=False):
             support = dataset_status.get("models", {}).get(task["model"], {"status": "ok"})
             if support["status"] != "ok":
                 raise StageError(support["status"], support.get("error", "model preflight failed"))
-            if plan.get("device") == "cuda" and stage != "metrics":
+            if task.get("device", plan.get("device")) == "cuda" and stage != "metrics":
                 from sbtab.experiments.cluster_environment import check_cuda
                 record["cuda"] = check_cuda()
             from sbtab.experiments import tune, cross_validate, calculate_metrics
@@ -254,7 +247,7 @@ def worker(plan_path, task_id, stage="all", retry_failed_folds=False):
                 record["stages"][name] = output
                 write_json(status_path, record)
 
-            if stage in ("all", "tune"):
+            if stage in ("all", "generate", "tune"):
                 record["stages"].pop("cv", None)
                 record["stages"].pop("metrics", None)
                 record["stage"] = "tune"
@@ -265,7 +258,7 @@ def worker(plan_path, task_id, stage="all", retry_failed_folds=False):
                 save_stage("tune", tuned)
                 if tuned["selection"] != "final" or tuned["counts"]["allocated"] != plan["n_trials"]:
                     raise StageError("training_failed", "tuning did not produce a final selected configuration")
-            if stage in ("all", "cv"):
+            if stage in ("all", "generate", "cv"):
                 record["stages"].pop("metrics", None)
                 record["stage"] = "cv"
                 write_json(status_path, record)
@@ -349,8 +342,8 @@ def main(argv=None):
     plan.add_argument("--protocol", dest="protocol_path", default=None)
     plan.add_argument("--smoke", action="store_true")
     plan.add_argument("--search-space-dir", default=None)
-    plan.add_argument("--device", choices=("cpu", "cuda"), default=None,
-                      help="freeze a device override for all selected generators")
+    plan.add_argument("--device", choices=("cpu", "cuda", "auto"), default=None,
+                      help="freeze device selection; auto uses CPU for Forest/CPU-only adapters and CUDA for neural models")
     plan.add_argument("--dataset-config-dir", default="configs/datasets")
     plan.add_argument("--exclude-heuristic", dest="include_heuristic", action="store_false")
     for name in ("prepare", "worker", "aggregate"):
@@ -358,7 +351,7 @@ def main(argv=None):
         command.add_argument("--plan", required=True)
         if name == "worker":
             command.add_argument("--task-id", type=int, default=None)
-            command.add_argument("--stage", choices=("all", "tune", "cv", "metrics"), default="all")
+            command.add_argument("--stage", choices=("all", "generate", "tune", "cv", "metrics"), default="all")
             command.add_argument("--retry-failed-folds", action="store_true")
     args = vars(parser.parse_args(argv))
     command = args.pop("command")

@@ -35,6 +35,7 @@ from sbtab.experiments.experiment_common import (
 )
 from sbtab.experiments.prepare_splits import load_split_artifacts
 from sbtab.experiments.runner import read_synthetic
+from sbtab.experiments.model_selection import require_experiment_model
 
 EVAL_VERSION = "sbtab.evalstage/2"
 
@@ -289,6 +290,7 @@ def evaluate_fold(k: int, frame, schema, splits, run_dir: Path, out_dir: Path, m
 def run(cv_run_manifest, metrics_config_path, folds: Optional[List[int]] = None, dry_run: bool = False) -> dict:
     from sbtab import evaluation as ev
     cv_manifest = read_json(cv_run_manifest)
+    require_experiment_model(cv_manifest["model"])
     run_dir = Path(cv_manifest["run_dir"])
     metric_cfg_dict = load_yaml(metrics_config_path)
     if metric_cfg_dict.get("metric_version") != ev.METRIC_VERSION:

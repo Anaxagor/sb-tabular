@@ -8,7 +8,7 @@ dependency structure, backend, native vs adapted regimes and checkpoint support.
   supported     implemented, has an adapter, covered by tests
   heuristic     a declared non-canonical variant (kept under its own id)
   unavailable   not executable through the benchmark (absent implementation or
-                missing adapter). Never silently substituted by another model.
+                missing adapter, or explicitly excluded). Never silently substituted.
 """
 from __future__ import annotations
 
@@ -116,19 +116,23 @@ _ENTRIES = [
                   ("continuous",), _ADAPTED,
                   notes="A simplified VE score-SDE model. It is NOT a faithful STaSy: no per-sample self-paced weights, "
                         "no fine-tuning stage, no VP/sub-VP option, no probability-flow ODE sampler, no ncsnpp-tabular network."),
-    RegistryEntry("tabpfgen", "supported", "pretrained-prior baseline", "sbtab/baselines/tabpfn/",
-                  "sbtab.adapters.baselines:TabPFGenAdapter", "features via SGLD, target via TabPFN", "n/a",
-                  "energy-based; label prior restored to the training distribution by the wrapper", "tabpfgen + tabpfn",
-                  ("continuous", "discrete", "mixed"), (), requires=("tabpfgen", "tabpfn"),
-                  notes="No gradient updates in fit(): the conditioning rows ARE the model; all cost is at sampling time. "
-                        "Uses sebhaan/TabPFGen, an independent implementation, not an exact reproduction of the paper."),
     RegistryEntry("forestdiffusion", "supported", "tree flow/diffusion baseline",
                   "sbtab/baselines/forest_diffusion/", "sbtab.adapters.baselines:ForestDiffusionAdapter",
                   _CONT, "one XGBoost field per time level", "joint row incl. target, unconditional",
                   "XGBoost histogram trees", ("continuous",), _ADAPTED, requires=("xgboost",),
                   notes="Forest-Flow default; optional Forest-VP. Core imported from forest_diffusion/50635ca and audited. "
                         "Full one-hot and z-score wrapper; no continuous clipping."),
+    RegistryEntry("tabbyflow", "supported", "flow baseline", "sbtab/baselines/tabbyflow/",
+                  "sbtab.adapters.tabbyflow:TabbyFlowAdapter", "Gaussian numeric states + categorical endpoint heads",
+                  "time-conditioned vector field", "joint row incl. target, unconditional", "torch MLP",
+                  ("continuous", "discrete", "mixed"), (), requires=("torch", "sklearn"),
+                  notes="TabVFM-MLP-style OT flow; train-fitted numeric quantiles and nominal one-hot encoding. "
+                        "Ordered discrete values use numeric quantiles and training-support projection. "
+                        "Gaussian source; OT endpoint retains residual noise 0.001."),
     # ---------------------------------------------------------------- named elsewhere, not implemented
+    RegistryEntry("tabpfgen", "unavailable", "pretrained-prior baseline", None, None,
+                  notes="Excluded from tuning and experiment pipelines. The historical standalone wrapper remains "
+                        "in sbtab.baselines.tabpfn; benchmark runs require no TabPFN packages or pretrained weights."),
     RegistryEntry("stasy", "unavailable", "score-SDE baseline", None, None,
                   notes="No faithful STaSy implementation exists in this repository; see ve_score_sde_simplified. "
                         "Missing work: per-sample SPL weights with alpha0/beta0 thresholds, fine-tuning stage, VP/sub-VP SDEs, "
@@ -137,9 +141,6 @@ _ENTRIES = [
                   notes="Not implemented. A former class alias `LightSBM` pointed at the LightSB potential and "
                         "tuning_results/best_params/lightsbm_best_params.json holds LightSB-style parameters. "
                         "Missing work: the bridge-matching objective of Gushchin et al. with a differentiable drift."),
-    RegistryEntry("tabbyflow", "unavailable", "flow baseline", None, None,
-                  notes="Standalone implementation exists in sbtab/baselines/tabbyflow and is tested. "
-                        "Benchmark integration still needs an adapter and checkpoint support."),
     RegistryEntry("tabsyn", "unavailable", "latent diffusion baseline", None, None,
                   notes="Not implemented anywhere in the tracked tree. Missing work: the whole wrapper (VAE + latent diffusion)."),
 ]

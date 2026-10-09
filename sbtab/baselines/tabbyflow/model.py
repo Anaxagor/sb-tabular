@@ -11,8 +11,9 @@ source; use OT or cosine when an exact Gaussian source is required.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import math
+from pathlib import Path
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,12 +28,13 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, TensorDataset
 
 from sbtab.data.schema import TabularSchema
-from sbtab.baselines.base import FreshIdFactory, resolve_column_roles, validate_n
+from sbtab.baselines.base import FreshIdFactory, resolve_column_roles, to_python_scalar, validate_n
 from sbtab.baselines.encoding import fit_vocabulary, nearest_support_decode, numeric_matrix, restore_dtype
 
 
 TABBYFLOW_OFFICIAL_REPOSITORY = "https://github.com/rulnasution/tabular-flow-matching"
 TABBYFLOW_OFFICIAL_VARIANT = "baselines/tabvvfm (MLP TabVFM/TabbyFlow)"
+TABBYFLOW_CHECKPOINT_FORMAT = "sbtab.tabbyflow/1"
 
 
 @dataclass
@@ -61,6 +63,36 @@ class TabbyFlowConfig:
             raise ValueError(f"Unsupported TabbyFlow conditional path: {self.cond_vel!r}")
         if str(self.ode_solver).lower() not in {"euler", "midpoint", "rk4"}:
             raise ValueError(f"Unknown ODE method: {self.ode_solver!r}")
+        for name in ("lr", "weight_decay", "scheduler_factor"):
+            if not math.isfinite(float(getattr(self, name))):
+                raise ValueError(f"{name} must be finite")
+        if self.lr <= 0 or self.weight_decay < 0 or not 0 < self.scheduler_factor < 1:
+            raise ValueError("lr must be positive, weight_decay nonnegative, scheduler_factor in (0, 1)")
+        for name, minimum in (("scheduler_patience_epochs", 0), ("early_stopping_patience_epochs", 1)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or int(value) != value or value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+        if isinstance(self.seed, bool) or int(self.seed) != self.seed or self.seed < 0:
+            raise ValueError("seed must be a nonnegative integer")
+        if torch.device(self.device).type not in {"cpu", "cuda"}:
+            raise ValueError("TabbyFlow supports cpu or cuda devices")
+        # Keep checkpoint config independent of NumPy scalar pickle globals.
+        for name in ("max_train_steps", "batch_size", "n_frequencies", "ode_steps", "sample_batch_size",
+                     "scheduler_patience_epochs", "early_stopping_patience_epochs", "seed"):
+            setattr(self, name, int(getattr(self, name)))
+        for name in ("lr", "weight_decay", "scheduler_factor"):
+            setattr(self, name, float(getattr(self, name)))
+        for name in ("cond_vel", "ode_solver", "device"):
+            setattr(self, name, str(getattr(self, name)))
+
+
+def _checkpoint_category(value: Any, column: str) -> Any:
+    """The standalone categorical API accepts scalar labels portable to weights-only checkpoints."""
+    value = to_python_scalar(value)
+    if value is not None and type(value) not in {bool, int, float, str}:
+        raise TypeError(f"TabbyFlow categorical column {column!r} has unsupported label type "
+                        f"{type(value).__name__}; use string, bool, integer or float labels")
+    return value
 
 
 class TabbyFlowNet(nn.Module):
@@ -267,13 +299,15 @@ def integrate_tabbyflow_fixed_step(
 
 
 class TabbyFlowSynthesizer:
-    """Notebook wrapper around the official MLP TabVFM/TabbyFlow implementation."""
+    """Joint MLP TabVFM/TabbyFlow with inference-complete, train-fitted checkpoints."""
+
+    variant_id = "tabbyflow_tabvfm_mlp_joint_xy"
 
     def __init__(self, cfg: TabbyFlowConfig) -> None:
         self.cfg = cfg
         requested = str(cfg.device)
         if requested.startswith("cuda") and not torch.cuda.is_available():
-            requested = "cpu"
+            raise RuntimeError("CUDA was requested for TabbyFlow but is unavailable")
         self.device = torch.device(requested)
         self.net: Optional[TabbyFlowNet] = None
         self.path: Optional[TabbyFlowConditionalPath] = None
@@ -339,6 +373,15 @@ class TabbyFlowSynthesizer:
             self.categorical_cols_,
         ) = self._column_groups(data, schema, task_type)
 
+        # Validate every value that will be persisted, including unused levels of
+        # pandas categorical dtypes, before fitting any transform or network.
+        for col in self.categorical_cols_:
+            for value in pd.unique(data[col]):
+                _checkpoint_category(value, col)
+            if isinstance(data[col].dtype, pd.CategoricalDtype):
+                for value in data[col].dtype.categories:
+                    _checkpoint_category(value, col)
+
         if self.numeric_cols_:
             x_num = numeric_matrix(data, self.numeric_cols_)
             self.quantile = QuantileTransformer(
@@ -386,6 +429,15 @@ class TabbyFlowSynthesizer:
         schema: TabularSchema,
         task_type: str,
     ) -> "TabbyFlowSynthesizer":
+        # Any failed refit invalidates the old fitted model, including validation failures.
+        self._fitted = False
+        self.net = None
+        self.actual_train_steps_ = 0
+        devices = list(range(torch.cuda.device_count())) if self.device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            return self._fit(data, schema=schema, task_type=task_type)
+
+    def _fit(self, data: pd.DataFrame, *, schema: TabularSchema, task_type: str) -> "TabbyFlowSynthesizer":
         if not isinstance(data, pd.DataFrame):
             raise TypeError("TabbyFlowSynthesizer.fit expects a pandas DataFrame")
         if len(data) < 2:
@@ -403,9 +455,8 @@ class TabbyFlowSynthesizer:
             )
 
         seed = int(self.cfg.seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
+        torch.random.default_generator.manual_seed(seed)
+        if self.device.type == "cuda":
             torch.cuda.manual_seed_all(seed)
 
         matrix = self._fit_preprocessor(data.reset_index(drop=True), schema, task_type)
@@ -489,6 +540,8 @@ class TabbyFlowSynthesizer:
         return self
 
     def _decode(self, latent: np.ndarray, *, seed: int) -> pd.DataFrame:
+        if latent.ndim != 2 or latent.shape[1] != self.d_total_ or not np.isfinite(latent).all():
+            raise FloatingPointError("TabbyFlow produced invalid or non-finite latent samples")
         n = len(latent)
         out = pd.DataFrame(index=np.arange(n))
         self.decoding_report_ = {}
@@ -497,6 +550,8 @@ class TabbyFlowSynthesizer:
             if self.quantile is None:
                 raise RuntimeError("Missing fitted QuantileTransformer")
             numeric = self.quantile.inverse_transform(latent[:, : self.d_cont_])
+            if not np.isfinite(numeric).all():
+                raise FloatingPointError("TabbyFlow inverse quantile transform produced non-finite samples")
             for idx, col in enumerate(self.numeric_cols_):
                 values = numeric[:, idx]
                 if col in self.discrete_supports_:
@@ -504,25 +559,19 @@ class TabbyFlowSynthesizer:
                 out[col] = restore_dtype(values, str(self.raw_dtypes_[col]))
 
         if self.categorical_cols_:
-            if self.encoder is None:
-                raise RuntimeError("Missing fitted OneHotEncoder")
-            hard_blocks = []
             start = self.d_cont_
-            for width in self.cat_sizes_:
+            for col, width in zip(self.categorical_cols_, self.cat_sizes_):
                 end = start + width
                 idx = np.argmax(latent[:, start:end], axis=1)
-                hard_blocks.append(np.eye(width, dtype=np.float32)[idx])
-                start = end
-            hard = np.concatenate(hard_blocks, axis=1)
-            decoded = self.encoder.inverse_transform(hard)
-            for idx, col in enumerate(self.categorical_cols_):
+                # Full one-hot blocks are ordered by integer vocabulary position.
+                # Inference needs only that mapping, not a fitted sklearn encoder.
                 mapping = self.cat_decode_maps_[col]
-                fallback = next(iter(mapping.values()))
-                out[col] = [mapping.get(str(value), fallback) for value in decoded[:, idx]]
+                out[col] = [mapping[str(int(value))] for value in idx]
                 try:
                     out[col] = out[col].astype(self.raw_dtypes_[col])
                 except Exception:
                     pass
+                start = end
 
         if self._id_col is not None:
             out[self._id_col] = self._id_factory.make(n)
@@ -536,9 +585,7 @@ class TabbyFlowSynthesizer:
         if int(self.cfg.sample_batch_size) < 1:
             raise ValueError("sample_batch_size must be positive")
 
-        torch.manual_seed(int(seed))
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(int(seed))
+        generator = torch.Generator(device=self.device).manual_seed(int(seed))
         field = TabbyFlowODEField(
             self.net,
             self.path,
@@ -551,7 +598,7 @@ class TabbyFlowSynthesizer:
             _, source_std, _, _ = self.path.coefficients(torch.zeros(1, device=self.device))
             while remaining > 0:
                 size = min(int(self.cfg.sample_batch_size), remaining)
-                x_0 = source_std * torch.randn(size, self.d_total_, device=self.device)
+                x_0 = source_std * torch.randn(size, self.d_total_, device=self.device, generator=generator)
                 x_1 = integrate_tabbyflow_fixed_step(
                     field,
                     x_0,
@@ -562,3 +609,83 @@ class TabbyFlowSynthesizer:
                 remaining -= size
         latent = np.concatenate(chunks, axis=0)[: int(n)]
         return self._decode(latent, seed=int(seed))
+
+    @property
+    def n_updates(self) -> int:
+        return self.actual_train_steps_
+
+    def save_checkpoint(self, path) -> str:
+        """Save inference state as tensors and plain values; no training rows or optimizer."""
+        if not self._fitted or self.net is None:
+            raise RuntimeError("Call fit() before save_checkpoint()")
+        dtypes = {}
+        for col, dtype in self.raw_dtypes_.items():
+            dtypes[col] = {"name": str(dtype)}
+            if isinstance(dtype, pd.CategoricalDtype):
+                dtypes[col].update(categories=[_checkpoint_category(v, col) for v in dtype.categories], ordered=dtype.ordered)
+        quantile = None if self.quantile is None else {
+            "quantiles": torch.from_numpy(self.quantile.quantiles_.copy()),
+            "references": torch.from_numpy(self.quantile.references_.copy()),
+            "n_quantiles": int(self.quantile.n_quantiles_),
+            "n_features": int(self.quantile.n_features_in_),
+        }
+        state = {"format": TABBYFLOW_CHECKPOINT_FORMAT, "variant_id": self.variant_id,
+                 "config": asdict(TabbyFlowConfig(**asdict(self.cfg))),
+                 "columns": self.columns_, "numeric_columns": self.numeric_cols_,
+                 "categorical_columns": self.categorical_cols_, "categorical_sizes": self.cat_sizes_,
+                 "categorical_maps": {c: {k: _checkpoint_category(v, c) for k, v in m.items()}
+                                      for c, m in self.cat_decode_maps_.items()},
+                 "dtypes": dtypes, "quantile": quantile,
+                 "discrete_supports": {c: torch.from_numpy(s.copy()) for c, s in self.discrete_supports_.items()},
+                 "id_column": self._id_col,
+                 "id_factory": None if self._id_factory is None else self._id_factory.state_dict(),
+                 "d_cont": self.d_cont_, "d_total": self.d_total_, "n_updates": self.actual_train_steps_,
+                 "best_train_loss": self.best_train_loss_,
+                 "network": {k: v.detach().cpu().clone() for k, v in self.net.state_dict().items()}}
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(state, path)
+        return str(path)
+
+    @classmethod
+    def load_checkpoint(cls, path, *, device: Optional[str] = None) -> "TabbyFlowSynthesizer":
+        """Restore inference directly; quantiles, vocabularies and supports are never refitted."""
+        state = torch.load(path, map_location="cpu", weights_only=True)
+        if state.get("format") != TABBYFLOW_CHECKPOINT_FORMAT or state.get("variant_id") != cls.variant_id:
+            raise ValueError("unsupported TabbyFlow checkpoint")
+        cfg = dict(state["config"])
+        if device is not None:
+            cfg["device"] = str(device)
+        elif str(cfg["device"]).startswith("cuda") and not torch.cuda.is_available():
+            warnings.warn("CUDA checkpoint is being loaded on CPU for inference", UserWarning)
+            cfg["device"] = "cpu"
+        obj = cls(TabbyFlowConfig(**cfg))
+        obj.columns_ = list(state["columns"])
+        obj.numeric_cols_ = list(state["numeric_columns"])
+        obj.categorical_cols_ = list(state["categorical_columns"])
+        obj.cat_sizes_ = list(state["categorical_sizes"])
+        obj.cat_decode_maps_ = state["categorical_maps"]
+        obj.raw_dtypes_ = {c: pd.CategoricalDtype(s["categories"], ordered=s["ordered"])
+                           if "categories" in s else pd.api.types.pandas_dtype(s["name"])
+                           for c, s in state["dtypes"].items()}
+        obj.discrete_supports_ = {c: s.numpy().copy() for c, s in state["discrete_supports"].items()}
+        obj._id_col = state["id_column"]
+        obj._id_factory = FreshIdFactory.from_state(state["id_factory"])
+        obj.d_cont_, obj.d_total_ = int(state["d_cont"]), int(state["d_total"])
+        obj.actual_train_steps_ = int(state["n_updates"])
+        obj.best_train_loss_ = float(state["best_train_loss"])
+        if state["quantile"] is not None:
+            q = state["quantile"]
+            obj.quantile = QuantileTransformer(n_quantiles=q["n_quantiles"], output_distribution="uniform",
+                                               random_state=int(obj.cfg.seed))
+            obj.quantile.quantiles_ = q["quantiles"].numpy().copy()
+            obj.quantile.references_ = q["references"].numpy().copy()
+            obj.quantile.n_quantiles_ = int(q["n_quantiles"])
+            obj.quantile.n_features_in_ = int(q["n_features"])
+        with torch.random.fork_rng(devices=[]):
+            obj.net = TabbyFlowNet(obj.d_total_, int(obj.cfg.n_frequencies))
+        obj.net.load_state_dict(state["network"])
+        obj.net.to(obj.device).eval()
+        obj.path = TabbyFlowConditionalPath(obj.cfg.cond_vel)
+        obj._fitted = True
+        return obj

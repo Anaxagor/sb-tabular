@@ -1,5 +1,6 @@
 """Default matrix: one basic joint MLP per DSB family; explicit variants remain available."""
-from sbtab.solvers.registry import get_entry
+from sbtab.solvers.registry import get_entry, solver_registry
+from sbtab.experiments.experiment_common import StageError
 
 
 BASIC_DSB_MODELS = {
@@ -17,4 +18,13 @@ def exclusion_reason(model_id: str):
 
 
 def require_experiment_model(model_id: str):
-    return get_entry(model_id)
+    entry = get_entry(model_id)
+    if entry.status == "unavailable":
+        raise StageError("undefined", f"model {model_id!r} is unavailable for experiments: {entry.notes}")
+    return entry
+
+
+def unavailable_experiment_reason(model_id: str):
+    """Known excluded models are not included in new aggregates of historical files."""
+    entry = solver_registry.get(model_id)
+    return entry.notes if entry is not None and entry.status == "unavailable" else None

@@ -289,10 +289,9 @@ def implementation_hash(provenance: Optional[dict] = None) -> str:
 def library_versions() -> dict:
     out = {"python": sys.version.split()[0]}
     for mod in ("numpy", "pandas", "scipy", "sklearn", "torch", "catboost", "xgboost", "optuna", "pyarrow",
-                "pgmpy", "networkx", "sdv", "ctgan", "tabpfgen", "tabpfn", "yaml", "tqdm", "geotorch"):
+                "pgmpy", "networkx", "sdv", "ctgan", "yaml", "tqdm", "geotorch"):
         try:
-            # Some packages (including TabPFGen) expose no __version__. Read the
-            # installed distribution so environment drift is still detected.
+            # Read installed distribution metadata without importing optional packages.
             out[mod] = metadata.version({"sklearn": "scikit-learn", "yaml": "PyYAML"}.get(mod, mod))
         except metadata.PackageNotFoundError:
             out[mod] = None

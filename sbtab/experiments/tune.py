@@ -210,17 +210,6 @@ def run(dataset: str, model_id: str, splits_path, search_space_path, resume: boo
         raise StageError("not_applicable", f"model {model_id!r} does not support the {schema.regime!r} regime")
 
     space = load_search_space(search_space_path, model_id, protocol.kind)
-    context_plan = None
-    if model_id == "tabpfgen":
-        from sbtab.baselines.tabpfn.model import plan_tabpfn_context
-        train = frame.loc[splits["T_row_ids"]]
-        n_features = sum(train[c].nunique(dropna=False) if c in schema.categorical else 1
-                         for c in schema.column_order if c != schema.target)
-        n_classes = train[schema.target].nunique() if schema.task == "classification" else 0
-        try:
-            context_plan = plan_tabpfn_context(len(train), n_features, n_classes, space["fixed"].get("device", "cpu"))
-        except ValueError as error:
-            raise StageError("not_applicable", str(error)) from error
     metric_cfg = load_metric_config(protocol)
     from sbtab.evaluation import MetricConfig
     metric_config = MetricConfig.from_document(metric_cfg)
@@ -246,8 +235,6 @@ def run(dataset: str, model_id: str, splits_path, search_space_path, resume: boo
             "split": {"test_size": splits["split"]["test_size"], "random_state": splits["split"]["random_state"]},
             "cv": splits["cv"], "sampler_seed": protocol["tuning"]["sampler_seed"], "regime": schema.regime,
             "searched": sorted(space["params"]), "fixed": space["fixed"]}
-    if context_plan is not None:
-        plan["tabpfgen_context"] = context_plan
     if dry_run:
         return {**plan, "dry_run": True}
 

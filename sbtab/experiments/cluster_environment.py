@@ -1,4 +1,4 @@
-"""Check the pinned cluster environment and cache the two default TabPFN v2 priors."""
+"""Check the pinned experiment environment and optional CUDA execution support."""
 from __future__ import annotations
 
 import argparse
@@ -6,7 +6,7 @@ from importlib import import_module, metadata
 import json
 import sys
 
-from sbtab.experiments.experiment_common import REPO_ROOT, StageError, file_hash
+from sbtab.experiments.experiment_common import REPO_ROOT, StageError
 
 
 def check_cuda() -> dict:
@@ -43,30 +43,12 @@ def check_packages() -> dict:
     return versions
 
 
-def check_tabpfn_cache(download=False) -> dict:
-    from tabpfn.model.loading import download_model, resolve_model_path
-
-    weights = {}
-    for which in ("classifier", "regressor"):
-        path, _, _, _ = resolve_model_path(None, which, "v2")
-        if not path.is_file() and download:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            result = download_model(path, version="v2", which=which)
-            if result != "ok":
-                raise RuntimeError(f"TabPFN {which} download failed: {result}")
-        if not path.is_file() or path.stat().st_size == 0:
-            raise RuntimeError(f"Missing TabPFN weights: {path}; run with --download-tabpfn on a node with Internet access")
-        weights[which] = {"path": str(path), "sha256": file_hash(path), "bytes": path.stat().st_size}
-    return weights
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-cuda", action="store_true", help="run on an allocated GPU node")
-    parser.add_argument("--download-tabpfn", action="store_true", help="download missing weights before batch submission")
     args = parser.parse_args(argv)
     try:
-        report = {"packages": check_packages(), "tabpfn_weights": check_tabpfn_cache(args.download_tabpfn)}
+        report = {"packages": check_packages()}
         if args.require_cuda:
             report["cuda"] = check_cuda()
         report["status"] = "ok"

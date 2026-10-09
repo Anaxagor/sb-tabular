@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from sbtab.experiments.experiment_common import StageError, read_json, write_json
+from sbtab.experiments.model_selection import unavailable_experiment_reason
 
 ELIGIBLE = ("ok", "incomplete_conditional_coverage")     # a value exists; incompleteness is carried along, not averaged away
 RECORD_COLUMNS = ["protocol_id", "metric_version", "metric_config_hash", "dataset", "dataset_fingerprint", "model", "run_id",
@@ -75,6 +76,10 @@ def summarise(df: pd.DataFrame, n_expected: int) -> List[dict]:
 def aggregate_run(evaluation_dir, n_expected: int = 5) -> dict:
     evaluation_dir = Path(evaluation_dir)
     df = load_fold_records(evaluation_dir)
+    for model in df["model"].dropna().unique():
+        reason = unavailable_experiment_reason(model)
+        if reason:
+            raise StageError("undefined", f"model {model!r} is excluded from new experiment aggregates: {reason}")
     tmp = evaluation_dir / "per_fold.csv.tmp"
     df[RECORD_COLUMNS].to_csv(tmp, index=False)
     tmp.replace(evaluation_dir / "per_fold.csv")
@@ -170,23 +175,38 @@ def average_ranks(per_fold: pd.DataFrame, metric: str, models: Optional[List[str
 
 def aggregate_root(output_root, rank_metrics: Optional[List[str]] = None, models: Optional[List[str]] = None) -> dict:
     root = Path(output_root)
-    frames, summaries = [], []
+    frames, summaries, excluded = [], [], []
+    if models is not None:
+        for model in models:
+            reason = unavailable_experiment_reason(model)
+            if reason:
+                excluded.append({"model": model, "reason": reason, "source": "requested rank comparison"})
+        models = [model for model in models if unavailable_experiment_reason(model) is None]
     for per_fold in sorted(root.glob("*/*/*/evaluation/*/per_fold.csv")):
         df = pd.read_csv(per_fold)
+        blocked = {model: reason for model in df["model"].dropna().unique()
+                   if (reason := unavailable_experiment_reason(model)) is not None}
+        for model, reason in blocked.items():
+            excluded.append({"model": model, "reason": reason, "evaluation_dir": str(per_fold.parent),
+                             "n_records": int((df["model"] == model).sum())})
+        df = df.loc[~df["model"].isin(blocked)].copy()
+        if df.empty:
+            continue
         df["namespace"] = per_fold.parent.name
         frames.append(df)
         s = read_json(per_fold.parent / "summary.json")
         summaries.append({k: v for k, v in s.items() if k != "metrics"} | {"namespace": per_fold.parent.name,
                                                                           "evaluation_dir": str(per_fold.parent)})
-    if not frames:
+    if not frames and not excluded:
         return {"n_runs": 0}
-    all_folds = pd.concat(frames, ignore_index=True)
+    all_folds = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=RECORD_COLUMNS + ["namespace"])
     out = root / "aggregate"
     out.mkdir(parents=True, exist_ok=True)
     all_folds.to_csv(out / "per_fold_all.csv", index=False)
     all_folds.to_parquet(out / "per_fold_all.parquet", index=False)
     result = {"n_runs": len(frames), "runs": summaries, "namespaces": sorted(all_folds["namespace"].unique()),
-              "incomplete_runs": [s for s in summaries if not s.get("complete_five_fold")], "ranks": []}
+              "incomplete_runs": [s for s in summaries if not s.get("complete_five_fold")], "ranks": [],
+              "excluded_models": excluded}
     for ns, g in all_folds.groupby("namespace"):              # never rank across metric definitions
         for metric in rank_metrics or []:
             result["ranks"].append({"namespace": ns, **average_ranks(g, metric, models)})

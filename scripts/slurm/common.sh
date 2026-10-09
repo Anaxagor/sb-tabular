@@ -17,7 +17,5 @@ export MKL_NUM_THREADS="$OMP_NUM_THREADS"
 export OPENBLAS_NUM_THREADS="$OMP_NUM_THREADS"
 export NUMEXPR_NUM_THREADS="$OMP_NUM_THREADS"
 export TQDM_DISABLE=1
-# Compute nodes have no Internet access; pretrained weights must already be cached.
-export HF_HUB_OFFLINE=1
 # sbatch --export=ALL is used; this also preserves that environment for any srun.
 export SLURM_EXPORT_ENV=ALL

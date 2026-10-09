@@ -16,6 +16,4 @@ optuna==4.2.1
 pytest==8.3.5
 sdv==1.17.4
 ctgan==0.10.2
-tabpfgen==0.1.4
-tabpfn==2.0.9
 geotorch==0.3.0

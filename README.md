@@ -3,7 +3,7 @@
 A research framework for **synthetic tabular data generation with Schrödinger Bridges (SB)**.
 
 The repository implements several SB solver families under one data pipeline and compares them
-against non-SB generative baselines (CTGAN, TabDDPM, a simplified VE score-SDE, TabPFGen and
+against non-SB generative baselines (CTGAN, TabDDPM, a simplified VE score-SDE, TabbyFlow and
 ForestDiffusion) under one
 versioned experimental protocol: separate, reproducible stages for splitting, tuning, cross-validation
 and metric calculation, with every artifact saved locally.
@@ -37,7 +37,7 @@ On top of that grid, three standalone solvers cover other points of the design s
   `CategoricalReference` Markov semigroup `Q(s) = exp(sR)` (uniform or ordered kernel).
 - **MixedSBM** — a mixed-type SBM: a single network predicts the continuous drift and
   per-categorical-column logits simultaneously, combining the Gaussian and categorical
-  reference processes. The only solver that handles mixed tables natively end-to-end.
+  reference processes. The SB solver that handles mixed tables natively end-to-end.
 
 MixedSBM shares one network and optimizer across forward and backward training stages. Its
 categorical reference uses exact transition powers and log-space bridge probabilities; continuous
@@ -59,9 +59,11 @@ Every model (SB solver or baseline) sits behind the same pipeline:
    vocabulary is never expanded by held-out data.
 3. **Model adapter** (`sbtab/adapters/`) — `fit(train, schema, config, seed)`, `sample(n, seed)`,
    `save_checkpoint(path)`, `load_checkpoint(path)`. Continuous-only solvers see nominal columns
-   one-hot and discrete columns standardised; native solvers see finite states. Decoding is declared
+   one-hot and discrete columns standardised; native bridge solvers see finite states. Decoding is declared
    and measured (argmax; nearest *training-support* value with the rounding rate recorded). Continuous
-   outputs are never clipped to the training range. Configs are strict: an unknown key raises.
+   outputs receive no generic postprocessing that clips them to the training range. TabbyFlow's
+   empirical quantile inverse is intrinsically bounded by its training range; this is part of its
+   declared model representation. Configs are strict: an unknown key raises.
 4. **Metrics** (`sbtab/evaluation/`) always read the common representation.
 
 ---
@@ -73,7 +75,7 @@ sb-tabular/
 ├── configs/
 │   ├── protocols/                     # sbtab_8515_hpo100_cv5_v4 (default), sbtab_smoke_v4
 │   ├── datasets/                      # explicit per-dataset schema metadata (28 datasets)
-│   ├── search_spaces/                 # one per registry id; smoke/ holds the bounded variants
+│   ├── search_spaces/                 # benchmark adapter profiles; smoke/ holds bounded variants
 │   └── metrics/                       # metrics_v2.yaml (metric version sbtab.metrics/2)
 ├── docs/CLUSTER_EXPERIMENT.md         # deployment and run instructions
 ├── examples/                          # thin runnable demos built on the adapters
@@ -118,15 +120,18 @@ as reusable compatibility APIs; the experiment stages use the explicit schema an
 | `tabddpm` | baseline | diffusion steps | joint row (X, y) | torch | all |
 | `ve_score_sde_simplified` | baseline | VE SDE | joint | torch | continuous → discrete, mixed |
 | `ctgan` | baseline | – | joint | `sdv` | all |
-| `tabpfgen` | baseline | – | SGLD + TabPFN | `tabpfgen`, `tabpfn` | all |
+| `tabbyflow` | baseline | flow matching | joint row (X, y) | torch | all |
 | `forestdiffusion` | Forest-Flow / Forest-VP | field per time level | joint row (X, y) | XGBoost | continuous → discrete, mixed |
 
 `csbm_annealed` is a registered **heuristic** (the reference is annealed between outer iterations); canonical
 `csbm` keeps its reference fixed. Registered as **unavailable** — named in papers, result files or parameter
 JSONs but without an executable benchmark adapter, and never silently substituted: `stasy` (the repository's "STaSy" is a simplified
 VE score-SDE: no self-paced per-sample weights, fine-tuning stage, VP/sub-VP SDEs, probability-flow ODE sampler or
-ncsnpp-tabular network), `lightsb_m` (the code is LightSB), `tabbyflow` (tested standalone implementation;
-benchmark adapter/checkpoints pending), and `tabsyn`.
+ncsnpp-tabular network), `lightsb_m` (the code is LightSB), and `tabsyn`.
+
+`tabpfgen` is explicitly excluded from experiments: planning, tuning, CV and metric entrypoints reject
+it, including explicit requests. New aggregates exclude its historical records with a recorded reason
+and preserve the original saved results. Its optional standalone wrapper remains in `sbtab.baselines.tabpfn`.
 
 CSBM and `csbm_annealed` accept `n_layers`, `dropout`, `forward_lr`, `backward_lr`,
 `forward_weight_decay`, and `backward_weight_decay`. A direction-specific learning rate overrides `lr`;
@@ -134,11 +139,19 @@ when omitted, it inherits `lr`. Defaults remain two hidden layers, zero dropout,
 in each direction, so existing `sbtab.csbm/2` checkpoints retain their architecture. The production search
 spaces tune depth, dropout, and the two optimizers independently; all settings survive checkpoint reload.
 
+TabbyFlow generates the joint row `(X, y)` with train-fitted uniform quantiles for numerical columns
+and full one-hot encoding for nominal columns. Discrete numerical outputs are projected to their
+training support. The production profile uses a Gaussian source, the OT conditional path and Euler
+integration, with residual endpoint noise of `0.001`. Checkpoints include the fitted
+representation and network for inference without retaining training rows. They do not resume the
+optimizer or scheduler.
+
 ForestDiffusion uses joint unconditional generation,
 train-fitted z-scores and full one-hot encoding, with no continuous clipping. Its iterator avoids materializing
 all time levels, but XGBoost's QuantileDMatrix retains quantized training data in memory. The default search
 space uses Forest-Flow. The separate [Forest-VP production profile](configs/search_spaces/forest_vp/forestdiffusion.yaml)
-keeps the same search ranges and fixes `diffusion_type: vp`. XGBoost >= 2.1 is required.
+keeps the same search ranges and fixes `diffusion_type: vp`. Both profiles default to CPU with four
+threads, including automatic cluster routing. XGBoost >= 2.1 is required.
 
 Create a Forest-VP plan through the existing pipeline:
 
@@ -222,23 +235,30 @@ new `evaluation/<metric-version>-<hash>/` namespace.
 
 ### Complete pipeline and SLURM arrays
 
-The [cluster run guide](docs/CLUSTER_EXPERIMENT.md) connects all stages into an array with one task
-per compatible dataset/model pair. Each task performs tuning, fresh CV fits, test metrics and TSTR;
-aggregation retains failures as well as successful results. Resources are configured locally for the
-selected models. `*.sbatch`, `scripts/slurm/cluster.local.sh`, and Slurm logs are ignored by Git.
-Copy `cluster.example.sh` to `cluster.local.sh` and supply local batch scripts before using the
-submitter. The sync helper uploads local deployment files while
-preserving cluster environments, caches, `artifacts/` and logs.
+The [cluster run guide](docs/CLUSTER_EXPERIMENT.md) connects all stages with one array index per
+compatible dataset/model pair. The submitter defaults to `SBTAB_DEVICE=auto`: ForestDiffusion and
+boosted solvers run on CPU; neural generators, including TabbyFlow, use one V100 GPU. Generation
+arrays perform tuning and fresh CV fits. Separate CPU metric arrays perform evaluation and TSTR,
+each task depending on its matching successful generator through `aftercorr`. Aggregation waits for
+all submitted arrays, including failures. No GPU is allocated to metric-only jobs.
 
-Default plans select `dsb_ct_joint_mlp` and `dsbm_ct_joint_mlp` for the two DSB families. Other
+`*.sbatch`, `scripts/slurm/cluster.local.sh`, and Slurm logs are ignored by Git. Copy
+`cluster.example.sh` to `cluster.local.sh` and supply local `prepare.sbatch`, `experiment.sbatch`,
+`metrics.sbatch`, and `aggregate.sbatch` before using the submitter. These ignored files must exist
+on the cluster too. The sync helper uploads local deployment files while preserving cluster
+environments, caches, `artifacts/` and logs.
+
+Default plans include TabbyFlow and ForestDiffusion and select `dsb_ct_joint_mlp` and
+`dsbm_ct_joint_mlp` for the two DSB families. Other
 implemented variants can be selected explicitly with `--models` and use the same tuning/CV contract.
 Unavailable adapters and missing optional dependencies are reported; models are never substituted.
 
 ```bash
 python -m sbtab.experiments.pipeline plan --output-root artifacts/smoke \
-  --smoke --datasets insurance --models mixedsbm --device cpu
+  --smoke --datasets insurance --models tabbyflow --device cpu
 python -m sbtab.experiments.pipeline prepare --plan artifacts/smoke/pipeline/plan.json
-python -m sbtab.experiments.pipeline worker --plan artifacts/smoke/pipeline/plan.json --task-id 0
+python -m sbtab.experiments.pipeline worker --plan artifacts/smoke/pipeline/plan.json --task-id 0 --stage generate
+python -m sbtab.experiments.pipeline worker --plan artifacts/smoke/pipeline/plan.json --task-id 0 --stage metrics
 python -m sbtab.experiments.pipeline aggregate --plan artifacts/smoke/pipeline/plan.json
 ```
 
@@ -318,15 +338,14 @@ pip install -r requirements.txt
 python -m pytest tests            # from the repository root
 ```
 
-`requirements.txt` is grouped by purpose. `sdv` (CTGAN) and `tabpfgen` (TabPFGen) are optional: `import sbtab`
-works without them, their stages report the missing package, and their tests **skip — a skip is not a validation
-of the adapter**. `geotorch` is only needed for LightSB with a full covariance. Pin `catboost` for a benchmark run:
+`requirements.txt` is grouped by purpose. `sdv` (CTGAN) is optional: `import sbtab` works without it,
+planning reports the missing package, and its integration tests **skip — a skip is not a validation
+of the adapter**. The optional TabPFGen dependencies serve only the historical standalone wrapper;
+the experiment pipeline neither uses them nor downloads pretrained weights. `geotorch` is only needed
+for LightSB with a full covariance. Pin `catboost` for a benchmark run:
 the utility evaluator uses the same declared defaults across datasets and folds for each task type. Python ≥ 3.10; run from the repository root.
 For the GPU cluster experiment, use the pinned Python 3.11 environment and setup commands in the
 [cluster run guide](docs/CLUSTER_EXPERIMENT.md).
-TabPFGen uses a reproducible training-only context subset when its training input exceeds
-10,000 rows on GPU or 1,000 on CPU. Classification subsets retain all target classes; generated
-sample sizes still follow the experiment protocol. Context selections are saved in checkpoints.
 
 ## Reproducibility and limitations
 
