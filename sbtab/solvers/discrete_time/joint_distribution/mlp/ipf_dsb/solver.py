@@ -21,6 +21,7 @@ import torch
 from torch import nn
 
 from sbtab.models.neural.mlp import StepIndexedMLP, StepMLPConfig
+from sbtab.numerics import check_gradients
 from sbtab.solvers.continuous_time.joint_distribution.mlp.ipf_dsb.solver import (
     CHECKPOINT_FORMAT,
     IPFCache,
@@ -113,10 +114,12 @@ class IPFDSBSolver(_TimeConditionedIPFDSBSolver):
             total = total + self.loss(self._displacement(net, direction, xb[k], k), yb[k])
         return total
 
-    def _clip_gradients(self, net: nn.Module) -> None:
+    def _clip_gradients(self, net: nn.Module, **context) -> None:
+        # Reject every bad edge before modifying any gradients; keep per-edge clipping.
+        check_gradients(net.parameters(), **context)
         if self.cfg.grad_clip is not None:
-            for step_net in net.steps:
-                torch.nn.utils.clip_grad_norm_(step_net.parameters(), float(self.cfg.grad_clip))
+            for edge, step_net in enumerate(net.steps):
+                check_gradients(step_net.parameters(), max_norm=self.cfg.grad_clip, edge=edge, **context)
 
     def _train_phase(self, iteration, direction, simulated_with, x_data, gen) -> dict:
         self._edge_updates: List[int] = [0] * self.K

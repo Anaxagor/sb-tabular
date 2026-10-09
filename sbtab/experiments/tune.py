@@ -37,7 +37,7 @@ from sbtab.experiments.experiment_common import (
     load_protocol, load_yaml, read_json, source_provenance, write_json,
 )
 from sbtab.experiments.prepare_splits import load_split_artifacts, require_ok
-from sbtab.experiments.runner import fit_generate, read_synthetic
+from sbtab.experiments.runner import InvalidGeneratedData, failure_record, fit_generate, generated_validity, read_synthetic
 from sbtab.experiments.model_selection import require_experiment_model
 from sbtab.solvers.registry import get_adapter_class, missing_requirements
 
@@ -167,14 +167,31 @@ def write_best(study: optuna.Study, tuning_dir: Path, budget: int, final: bool, 
                    checkpoint=str(Path(d.name) / "checkpoint"), config=str(Path(d.name) / "config.json"),
                    validation_table=str(Path(d.name) / "synthetic.parquet"), reload_verified=None)
         if final:
-            # final only after the budget is spent AND the exact selected checkpoint reloads
+            # Keep the exact minimum trial even if load or subsequent sampling fails.
             adapter_cls = get_adapter_class(model_id)
+            out.update(checkpoint_loaded=False, sampling_probe=None)
             try:
                 reloaded = adapter_cls.load_checkpoint(d / "checkpoint")
-                reloaded.sample(2, seed=0)
-                out.update(selection="final", reload_verified=True)
             except Exception as e:
-                out.update(selection="failed", reload_verified=False, reason=f"selected checkpoint does not reload: {e}")
+                out.update(selection="failed", reload_verified=False, failure_kind="checkpoint_load_failed",
+                           failure=failure_record(e, "checkpoint_load"), reason=f"selected checkpoint failed to load: {e}")
+            else:
+                out["checkpoint_loaded"] = True
+                stage = "validation_context"
+                try:
+                    pre = CommonPreprocessor.load(d / "preprocessor", reloaded.schema)
+                    stage = "sampling_probe"
+                    out["sampling_probe"] = {"ok": False, "rows": 2, "seed": 0}
+                    probe = reloaded.sample(2, seed=0)
+                    validity = generated_validity(probe, pre, 2)
+                    out["sampling_probe"]["validity"] = validity
+                    if validity["status"] != "ok":
+                        raise InvalidGeneratedData(validity)
+                    out["sampling_probe"]["ok"] = True
+                    out.update(selection="final", reload_verified=True, failure_kind=None)
+                except Exception as e:
+                    out.update(selection="failed", reload_verified=False, failure_kind=stage + "_failed",
+                               failure=failure_record(e, stage), reason=f"selected checkpoint loaded; {stage} failed: {e}")
     write_json(tuning_dir / "best.json", out)
     if out["selection"] == "final":
         cfg = read_json(trial_dir(tuning_dir, best.number) / "config.json")
@@ -301,7 +318,7 @@ def run(dataset: str, model_id: str, splits_path, search_space_path, resume: boo
                 cfg = suggest(trial, space)
                 save_sampler(study, sampler_path)
                 rec = fit_generate(model_id, T_raw, schema, cfg, seeds, ("trial", trial.number), len(V_raw), d)
-                metrics = {"status": rec["status"], "objective": None}
+                metrics = {"status": rec["status"], "objective": None, "validity": rec.get("validity")}
                 if rec["status"] == "ok":
                     pre = CommonPreprocessor.load(d / "preprocessor", schema)
                     V = pre.transform(V_raw)
@@ -321,7 +338,9 @@ def run(dataset: str, model_id: str, splits_path, search_space_path, resume: boo
                 write_json(d / "metrics.json", metrics)
                 write_json(d / "status.json", {"trial": trial.number, "state": state.name, "status": metrics["status"],
                                                "failure": rec["failure"], "n_updates": rec["n_updates"],
-                                               "reload_verified": rec["reload_verified"], "describe": rec["describe"]})
+                                               "reload_verified": rec["reload_verified"], "describe": rec["describe"],
+                                               **{key: rec.get(key) for key in ("failure_kind", "checkpoint_loaded",
+                                                   "sampling_probe", "validity", "numerical_diagnostics", "serialization_failure")}})
                 for k in ("mean_wd", "mean_js"):
                     trial.set_user_attr(k, metrics.get(k))
                 trial.set_user_attr("status", metrics["status"])

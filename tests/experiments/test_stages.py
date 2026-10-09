@@ -305,9 +305,9 @@ def test_ranks_use_identical_fold_sets_and_never_compare_across_datasets():
     assert d1["models"] == ["A", "D"] and d1["excluded_models"] == ["B"] and d1["n_models"] == 2 and d1["n_cells"] == 5
 
     hi = _records([("d", f, m, v, "ok") for f in range(3) for m, v in (("A", 0.9), ("B", 0.2))]).assign(direction="higher_is_better")
-    assert aggregate_results.average_ranks(hi, "wd")["overall"]["ranks"] == {"A": 1.0, "B": 2.0}     # higher is better
+    assert aggregate_results.average_ranks(hi, "wd", n_expected=3)["overall"]["ranks"] == {"A": 1.0, "B": 2.0}     # higher is better
     signed = _records([("d", f, m, v, "ok") for f in range(3) for m, v in (("A", -0.001), ("B", 0.2))]).assign(direction="closer_to_zero_is_better")
-    assert aggregate_results.average_ranks(signed, "wd")["overall"]["ranks"] == {"A": 1.0, "B": 2.0}  # signed MMD: |value|
+    assert aggregate_results.average_ranks(signed, "wd", n_expected=3)["overall"]["ranks"] == {"A": 1.0, "B": 2.0}  # signed MMD: |value|
 
 
 # --------------------------------------------------------------------------- stale RUNNING trials

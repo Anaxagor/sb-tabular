@@ -67,6 +67,7 @@ from sbtab.baselines.base import (
     validate_n,
 )
 from sbtab.baselines.encoding import MixedToContinuousCodec
+from sbtab.numerics import check_gradients, require_finite
 
 VARIANT_ID = "ve_score_sde_simplified"
 
@@ -101,6 +102,20 @@ _NOT_STASY = (
 
 _CHECKPOINT_FORMAT = "sbtab.baselines.ve_score_sde"
 _CHECKPOINT_VERSION = 1
+
+
+def _langevin_step_size(score: torch.Tensor, noise: torch.Tensor, snr: float, **context) -> torch.Tensor:
+    """The original batch-mean SNR rule, with reductions in double precision.
+
+    Squaring finite float32 scores in their native precision can overflow their
+    norm and silently turn the corrector step into zero. Only the scalar
+    reduction uses float64; the score, state and Langevin update stay unchanged.
+    """
+    grad_norm = score.to(torch.float64).norm(dim=-1).mean().clamp(min=1e-8)
+    noise_norm = noise.to(torch.float64).norm(dim=-1).mean().clamp(min=1e-8)
+    alpha = 2.0 * (snr * noise_norm / grad_norm) ** 2
+    require_finite(alpha, "corrector_step_size", **context)
+    return alpha
 
 
 @dataclass
@@ -337,6 +352,9 @@ class VEScoreSDEBaseline(BaselineGenerativeModel):
         signature compatibility and ignored: the frame is modelled in the representation given.
         """
         self._reject_unknown_kwargs(kwargs, f"{type(self).__name__}.fit()")
+        # A failed refit must not leave the old network paired with a new codec.
+        self._score_net = None
+        self.n_updates_ = 0
         cfg = self.cfg
         seed_everything(cfg.seed)   # model init, batch order, time / noise draws
 
@@ -409,11 +427,12 @@ class VEScoreSDEBaseline(BaselineGenerativeModel):
 
             score_pred = score_net(x_noisy, sigma)
             loss = (sigma * score_pred + noise).pow(2).mean()
+            context = dict(model=VARIANT_ID, stage="training", step=step)
+            require_finite(loss, "loss", **context)
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            if cfg.grad_clip is not None:
-                nn.utils.clip_grad_norm_(score_net.parameters(), cfg.grad_clip)
+            check_gradients(score_net.parameters(), max_norm=cfg.grad_clip, **context)
             opt.step()
             n_done += 1
             last_loss = loss.detach()
@@ -445,26 +464,37 @@ class VEScoreSDEBaseline(BaselineGenerativeModel):
         N = int(cfg.n_sampling_steps)
         ts = torch.linspace(1.0, cfg.eps, N + 1, device=device)
         x = randn((n, self._dim)) * cfg.sigma_max
+        require_finite(x, "initial_state", model=VARIANT_ID, stage="sampling")
 
         for i in range(N):
             sigma_cur = self._sigma(ts[i])
             diff = sigma_cur ** 2 - self._sigma(ts[i + 1]) ** 2
             sigma_cur_vec = sigma_cur.view(1, 1).expand(n, 1)
+            context = dict(model=VARIANT_ID, stage="sampling", step=i,
+                           time=float(ts[i]), sigma=float(sigma_cur))
 
-            for _ in range(int(cfg.n_corrector_steps)):
+            for corrector_step in range(int(cfg.n_corrector_steps)):
+                corrector_context = dict(context, corrector_step=corrector_step)
                 score = net(x, sigma_cur_vec)
+                require_finite(score, "corrector_score", **corrector_context)
                 noise = randn(x.shape)
-                grad_norm = score.norm(dim=-1).mean().clamp(min=1e-8)
-                noise_norm = noise.norm(dim=-1).mean().clamp(min=1e-8)
-                alpha = 2.0 * (cfg.corrector_snr * noise_norm / grad_norm) ** 2
+                alpha = _langevin_step_size(score, noise, cfg.corrector_snr, **corrector_context)
                 x = x + alpha * score + (2.0 * alpha).sqrt() * noise
+                require_finite(x, "corrector_state", **corrector_context)
 
             score = net(x, sigma_cur_vec)
+            require_finite(score, "predictor_score", **context)
             x = x + diff * score + diff.sqrt() * randn(x.shape)
+            require_finite(x, "predictor_state", **context)
 
         if cfg.denoise:
             sigma_last = self._sigma(ts[-1]).view(1, 1).expand(n, 1)
-            x = x + (sigma_last ** 2) * net(x, sigma_last)
+            context = dict(model=VARIANT_ID, stage="sampling", step=N,
+                           time=float(ts[-1]), sigma=float(sigma_last[0, 0]))
+            score = net(x, sigma_last)
+            require_finite(score, "denoise_score", **context)
+            x = x + (sigma_last ** 2) * score
+            require_finite(x, "denoise_state", **context)
 
         return x.detach().cpu().numpy()
 

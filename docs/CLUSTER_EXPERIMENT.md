@@ -203,5 +203,18 @@ checkpoint I/O and inverse transformation. GPU timers synchronize CUDA at their 
 include valid-fold counts and sample standard deviation (`ddof=1`), preserving undefined metrics
 and failures instead of replacing them with zero.
 
+Inspect trial `status.json` and fold `manifest.json` for `failure_kind` and structured
+`failure.details`: numerical failures include the available solver direction, step, noise level
+and chunk. `checkpoint_loaded` and `sampling_probe` distinguish a loading error from failed
+generation after loading. `numerical_diagnostics` flags extreme finite outputs without changing
+selection or clipping values. Reuse of a final selection requires the minimum-objective trial's
+checkpoint and sampling probe to pass; a failed winner is never replaced silently.
+
+Evaluation writes to a new `*-eval3` namespace and reports generation, fidelity, utility and
+evaluation completeness separately. `complete_five_fold` requires successful evaluation in all
+five folds. Overall metric ranks use complete five-fold datasets shared by every compared model.
+Old per-run summaries remain intact; new aggregation recomputes their completion from fold evidence.
+Use a fresh output root for runs after an implementation change.
+
 The same plan/prepare/worker/aggregate commands can run locally without Slurm; the README contains
 a complete CPU smoke example. Production results require completing all 100 trials and five folds.

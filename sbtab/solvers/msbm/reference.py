@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 
 from sbtab.bridge.reference import IncompatibleBridgeError
+from sbtab.numerics import require_finite
 
 
 @dataclass
@@ -113,10 +114,14 @@ class CategoricalReference:
         return K
 
     @staticmethod
-    def _normalise(log_w: torch.Tensor) -> torch.Tensor:
+    def _normalise(log_w: torch.Tensor, **context) -> torch.Tensor:
+        # Structural zeros are -inf in log space; NaN/+inf indicate numerical failure.
+        require_finite(log_w.masked_fill(torch.isneginf(log_w), 0.0), "categorical_log_weights",
+                       model="mixedsbm", **context)
         z = torch.logsumexp(log_w, dim=-1, keepdim=True)
-        if not torch.isfinite(z).all():
+        if torch.isneginf(z).any():
             raise IncompatibleBridgeError("The categorical reference cannot realise the requested endpoint pair")
+        require_finite(z, "categorical_log_normalizer", model="mixedsbm", **context)
         return log_w - z
 
     def _stack(self, columns: list[torch.Tensor], *, log: bool = False) -> torch.Tensor:
@@ -149,7 +154,13 @@ class CategoricalReference:
         columns = []
         for d, q in enumerate(self._log_powers):
             S = self.cardinalities[d]
-            log_p = torch.log_softmax(model_logits[:, d, :S].double(), dim=-1)
+            logits = model_logits[:, d, :S].double()
+            context = dict(stage="categorical_transition", direction="f" if forward else "b", column=d)
+            require_finite(logits.masked_fill(torch.isneginf(logits), 0.0), "categorical_logits",
+                           model="mixedsbm", **context)
+            log_p = torch.log_softmax(logits, dim=-1)
+            require_finite(log_p.masked_fill(torch.isneginf(log_p), 0.0), "endpoint_log_probabilities",
+                           model="mixedsbm", **context)
             reach = q[K - n, x_t[:, d], :] if forward else q[n, :, x_t[:, d]]
             # Periodic/reducible kernels can have genuinely unreachable endpoints.
             reachable = torch.isfinite(reach)
@@ -166,7 +177,7 @@ class CategoricalReference:
             possible = torch.isfinite(terms).any(dim=-1)
             safe_terms = torch.where(possible[..., None], terms, torch.zeros_like(terms))
             future = torch.logsumexp(safe_terms, dim=-1).masked_fill(~possible, float("-inf"))
-            columns.append(self._normalise(step + future))
+            columns.append(self._normalise(step + future, **context))
         return self._stack(columns, log=log)
 
     def model_induced_next_step(self, model_logits, x_t, n, K):

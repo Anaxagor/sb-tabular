@@ -26,6 +26,7 @@ from sbtab.experiments.experiment_common import (
 )
 from sbtab.solvers.registry import get_entry, missing_requirements, solver_registry
 from sbtab.experiments.model_selection import BASIC_DSB_MODELS, exclusion_reason, require_experiment_model
+from sbtab.experiments.status_policy import fold_completion
 
 PLAN_VERSION = "sbtab.pipeline/1"
 RUN_ID = "run-pipeline"
@@ -209,6 +210,20 @@ def _task(plan, task_id):
     return plan["tasks"][task_id]
 
 
+def _evaluation_problems(evaluation, n_expected):
+    problems = {}
+    for k in range(n_expected):
+        path = Path(evaluation) / f"fold-{k}" / "metrics.json"
+        try:
+            completion = fold_completion(read_json(path) if path.is_file() else None)
+        except (OSError, ValueError, TypeError, AttributeError):
+            problems[str(k)] = ["invalid_evaluation_artifact"]
+            continue
+        if not completion["evaluation_complete"]:
+            problems[str(k)] = completion["problems"]
+    return problems
+
+
 def worker(plan_path, task_id, stage="all", retry_failed_folds=False):
     # Validate inside the status handler so even a provenance failure is visible to aggregation.
     plan = load_plan(plan_path, verify=False)
@@ -284,14 +299,7 @@ def worker(plan_path, task_id, stage="all", retry_failed_folds=False):
                     raise StageError("training_failed", "no CV manifest; complete CV first")
                 result = calculate_metrics.run(cv_manifest, plan["metrics_path"])
                 save_stage("metrics", result)
-                evaluation = Path(result["evaluation_dir"])
-                problems = {}
-                for k in range(plan["n_folds"]):
-                    fold = read_json(evaluation / f"fold-{k}" / "metrics.json")
-                    statuses = {fold["status"], fold.get("utility", {}).get("status", "ok")}
-                    bad = statuses - {"ok", "not_applicable", "incomplete_conditional_coverage"}
-                    if bad:
-                        problems[str(k)] = sorted(bad)
+                problems = _evaluation_problems(result["evaluation_dir"], plan["n_folds"])
                 if problems:
                     record["fold_problems"] = problems
                     raise StageError("evaluation_failed", "metrics saved, but one or more folds failed; see fold_problems")
@@ -320,6 +328,13 @@ def aggregate(plan_path):
                 saved = {**saved, "status": "unfinished", "note": "worker did not record completion; may have been killed"}
             if saved.get("plan_hash", plan["plan_hash"]) != plan["plan_hash"]:
                 raise StageError("undefined", "task status belongs to another plan")
+            evaluation = saved.get("stages", {}).get("metrics", {}).get("evaluation_dir")
+            if saved["status"] == "ok" and "metrics" in saved.get("stages", {}):
+                problems = (_evaluation_problems(evaluation, plan["n_folds"]) if evaluation else
+                            {"all": ["evaluation_not_recorded"]})
+                if problems:
+                    saved = {**saved, "status": "evaluation_failed", "fold_problems": problems,
+                             "note": "completion recomputed from saved fold evidence"}
             tasks.append(saved)
         result = {"plan_hash": plan["plan_hash"], "n_tasks": len(tasks), "tasks": tasks,
                   "counts": dict(Counter(t["status"] for t in tasks)), "excluded": plan["excluded"],

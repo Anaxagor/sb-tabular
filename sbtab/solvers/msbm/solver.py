@@ -174,6 +174,7 @@ class MixedSBMSolver:
                 seed=seed,
                 batch_size=self._resolve_sim_batch_size(start_num, start_cat),
                 noise=True,  # IMF couplings use the Brownian reference even for deterministic generation.
+                stage="coupling",
             )
         finally:
             self.model.load_state_dict(orig_state)

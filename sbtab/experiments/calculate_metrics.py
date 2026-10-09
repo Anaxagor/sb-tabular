@@ -36,8 +36,10 @@ from sbtab.experiments.experiment_common import (
 from sbtab.experiments.prepare_splits import load_split_artifacts
 from sbtab.experiments.runner import read_synthetic
 from sbtab.experiments.model_selection import require_experiment_model
+from sbtab.experiments.status_policy import fold_completion
+from sbtab.evaluation.validity import numerical_diagnostics
 
-EVAL_VERSION = "sbtab.evalstage/2"
+EVAL_VERSION = "sbtab.evalstage/3"
 
 _SKIP_KEYS = {"metric_version", "context_spec_hash", "validity", "seeds", "subsets", "floor_subsets", "reasons",
               "missing_columns", "extra_columns", "per_column", "predictions", "params", "label_universe",
@@ -172,8 +174,15 @@ def evaluate_fold(k: int, frame, schema, splits, run_dir: Path, out_dir: Path, m
     if manifest is None or manifest["status"] != "ok":
         status = "training_failed" if manifest is None else manifest["status"]
         rec("fold_status", None, status)
-        write_json(d / "metrics.json", {"fold": k, "status": status, "reason": None if manifest is None else manifest.get("failure"),
-                                       "records": records})
+        document = {"fold": k, "status": status, "reason": None if manifest is None else manifest.get("failure"),
+                    "records": records}
+        if manifest is not None:
+            for key in ("validity", "numerical_diagnostics", "checkpoint_loaded", "sampling_probe", "failure_kind",
+                        "serialization_failure"):
+                if manifest.get(key) is not None:
+                    document[key] = manifest[key]
+        document["completion"] = fold_completion(document)
+        write_json(d / "metrics.json", document)
         return records
 
     f = splits["folds"][k]
@@ -205,6 +214,9 @@ def evaluate_fold(k: int, frame, schema, splits, run_dir: Path, out_dir: Path, m
     with timer.measure("fidelity_metrics_seconds"):
         validity = ev.check_validity(synth, schema, ctx)
         summary["validity"] = validity
+        # Compute from the fold's own training rows, including for legacy saved
+        # generations. These flags never change validity or completion.
+        summary["numerical_diagnostics"] = numerical_diagnostics(synth, schema, T_k)
         for name, value, status in flatten({k2: v for k2, v in validity.items() if k2.endswith("_rate") or k2 == "n_invalid_rows"}, "validity", validity["status"]):
             rec(name, value, "ok", **counts)
         if validity["status"] != "ok":
@@ -282,7 +294,9 @@ def evaluate_fold(k: int, frame, schema, splits, run_dir: Path, out_dir: Path, m
                                    "generator_timing_source": str(fold_dir / "timing.json")})
     for name, value in timer.to_dict().items():
         rec(f"evaluation.{name}", float(value), "ok", **counts)
-    write_json(d / "metrics.json", {**summary, "records": records, "counts": counts})
+    document = {**summary, "records": records, "counts": counts}
+    document["completion"] = fold_completion(document)
+    write_json(d / "metrics.json", document)
     return records
 
 
@@ -301,7 +315,7 @@ def run(cv_run_manifest, metrics_config_path, folds: Optional[List[int]] = None,
     for key in ("membership_hash", "schema_hash", "dataset_fingerprint"):
         if splits[key] != cv_manifest[key]:
             raise StageError("undefined", f"the CV run was produced under a different {key}")
-    namespace = f"{ev.METRIC_VERSION.replace('/', '_')}-{canonical_hash(metric_cfg_dict)[:8]}-eval2"
+    namespace = f"{ev.METRIC_VERSION.replace('/', '_')}-{canonical_hash(metric_cfg_dict)[:8]}-eval3"
     out_dir = run_dir / "evaluation" / namespace
     n_splits = splits["cv"]["n_splits"]
     fold_ids = list(range(n_splits)) if folds is None else sorted(set(folds))

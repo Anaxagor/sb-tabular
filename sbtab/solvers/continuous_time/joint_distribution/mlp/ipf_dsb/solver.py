@@ -74,6 +74,7 @@ from sbtab.bridge.sde import EulerMaruyama
 from sbtab.bridge.timegrid import TimeGrid
 from sbtab.models.neural.mlp import TimeConditionedMLP, TimeMLPConfig
 from sbtab.models.neural.time_embedding import SinusoidalTimeEmbeddingConfig
+from sbtab.numerics import check_gradients, require_finite
 
 CHECKPOINT_FORMAT = "sbtab.ipf_dsb_mlp.v1"
 
@@ -369,12 +370,19 @@ class IPFDSBSolver:
         zero = torch.zeros_like(x_start)
 
         x_old = x_start
+        require_finite(x_old, "state", model=self.canonical_id, stage="coupling", direction=direction)
         for k in order:
+            context = dict(model=self.canonical_id, stage="coupling", direction=direction, step=k,
+                           simulated_with=simulated_with)
             mean_old = self._mean_map(simulated_with, x_old, k)
+            require_finite(mean_old, "mean_map", **context)
             x_new = self._cache_integrator.step(mean_old, drift=zero, gamma=self._gamma[k], generator=gen)
+            require_finite(x_new, "state", **context)
             mean_new = self._mean_map(simulated_with, x_new, k)
+            require_finite(mean_new, "mean_map_at_next_state", **context)
             xs[k] = x_new
             ys[k] = mean_old - mean_new
+            require_finite(ys[k], "regression_target", **context)
             path[k + 1 if forward_sim else k] = x_new
             x_old = x_new
 
@@ -404,9 +412,8 @@ class IPFDSBSolver:
         xb, kb, yb = batch
         return self.loss(self._displacement(net, direction, xb, kb), yb)
 
-    def _clip_gradients(self, net: nn.Module) -> None:
-        if self.cfg.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(net.parameters(), float(self.cfg.grad_clip))
+    def _clip_gradients(self, net: nn.Module, **context) -> None:
+        check_gradients(net.parameters(), max_norm=self.cfg.grad_clip, **context)
 
     def _record_update(self, direction: Direction, batch: tuple) -> None:
         """Hook: called once per optimizer update."""
@@ -435,10 +442,13 @@ class IPFDSBSolver:
             rows += cache.n_rows
             net.train()
             for batch in self._iter_batches(cache, gen):
+                context = dict(model=self.canonical_id, stage="training", direction=direction,
+                               iteration=iteration, step=n_updates)
                 loss = self._batch_loss(net, direction, batch)
+                require_finite(loss, "loss", **context)
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
-                self._clip_gradients(net)
+                self._clip_gradients(net, **context)
                 opt.step()
                 n_updates += 1
                 last_loss = float(loss.detach())
@@ -503,12 +513,14 @@ class IPFDSBSolver:
         return int(sum(s["n_updates"] for s in self.stage_log))
 
     # ------------------------------------------------------------------ sampling
-    def _sampler_step(self, x: torch.Tensor, k: int, gen: Optional[torch.Generator]) -> torch.Tensor:
+    def _sampler_step(self, x: torch.Tensor, k: int, gen: Optional[torch.Generator], *, chunk: int = 0) -> torch.Tensor:
         """
         One backward step on edge k: x + d_b(x, k) [+ sigma sqrt(gamma_k) Z].
         The displacement is ADDED as is; it is not multiplied by gamma_k.
         """
         mean = self._mean_map("net_b", x, k)
+        require_finite(mean, "mean_map", model=self.canonical_id, stage="sampling", direction="backward", step=k,
+                       chunk=chunk)
         return self._sample_integrator.step(mean, drift=torch.zeros_like(mean), gamma=self._gamma[k], generator=gen)
 
     @torch.no_grad()
@@ -530,10 +542,13 @@ class IPFDSBSolver:
         for s in range(0, n, bs):
             m = min(bs, n - s)
             x = self.reference.sample(n=m, generator=gen)
+            context = dict(model=self.canonical_id, stage="sampling", direction="backward", chunk=s // bs)
+            require_finite(x, "initial_state", **context)
             path = [x]
             self._edge_trace = []
             for k in order:
-                x = self._sampler_step(x, k, gen)
+                x = self._sampler_step(x, k, gen, chunk=s // bs)
+                require_finite(x, "state", step=k, **context)
                 if return_paths:
                     path.append(x)
             self._assert_trace("net_b", order, calls_per_edge=1)

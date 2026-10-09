@@ -231,7 +231,19 @@ split, search space, metric config, checkpoint format, protocol, dependency vers
 CV checks the same data/implementation compatibility and verifies saved artifact hashes before reusing a fold.
 After changing the implementation, start a new run instead of extending an existing CV run.
 `calculate_metrics` never fits a generator and never loads a checkpoint; a changed metric configuration writes to a
-new `evaluation/<metric-version>-<hash>/` namespace.
+new `evaluation/<metric-version>-<hash>-eval3/` namespace. The evaluation-stage suffix also separates completion
+and diagnostic changes from earlier evaluations; the metric formulas remain `sbtab.metrics/2`.
+
+Generation validates every output against the training vocabulary before reporting success, including both
+samples used to check checkpoint round trips. Trial status and CV manifests distinguish `checkpoint_load_failed`,
+`sampling_probe_failed`, and `checkpoint_mismatch`. Final tuning selection keeps the exact minimum-objective
+trial: a failed final probe blocks selection instead of silently substituting a different trial.
+
+Neural bridge, VE and TabDDPM training reject non-finite loss/gradients before optimizer updates. Sampling guards
+record the first failing state or network output with the available direction, step, time, sigma and chunk.
+Categorical reference errors distinguish numerical failure from genuinely unreachable endpoints. VE corrector
+norms use float64 reductions to avoid overflow of finite float32 scores; this does not guarantee stability for
+every learned score network or hyperparameter configuration.
 
 ### Complete pipeline and SLURM arrays
 
@@ -286,6 +298,19 @@ python -m sbtab.experiments.pipeline aggregate --plan artifacts/smoke/pipeline/p
 Invalid generated data (non-finite values, unknown categories) is a status, never a perfect score; inapplicable
 metrics are `null`, never 0; JSON output contains no NaN/Infinity tokens. Aggregates are means with **sample** standard
 deviation (`ddof=1`) and `n_expected / n_valid / n_failed`.
+
+`numerical_diagnostics` in trial status, CV manifests and evaluated fold JSON reports numeric ranges, absolute
+quantiles, non-finite counts and tail fractions. It flags magnitudes above 100 times `max(1, max(abs(training)))`
+in the common representation. This training-only diagnostic does not clip values, reject finite outputs, or
+change Optuna selection. If an invalid mixed-type table cannot be saved as Parquet, its validity record remains
+the primary failure and `serialization_failure` records the additional storage error.
+
+Summaries report generation, fidelity, utility and evaluation completion separately. `complete_five_fold`
+requires complete evaluation of all five folds; a failed TSTR fit cannot count as a completed run. Inapplicable
+blocks and individually undefined metrics (such as MAPE at zero targets) do not invalidate otherwise available
+scores. Overall ranks for a metric use only datasets with that metric on all five folds for every compared model;
+missing folds are never silently dropped to create a four-fold comparison. Completion is recomputed from fold
+evidence when aggregating historical results, without rewriting their saved per-run summaries.
 
 ## Quickstart
 

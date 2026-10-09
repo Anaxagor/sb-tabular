@@ -54,6 +54,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from sbtab.numerics import check_gradients, require_finite
 
 from sbtab.baselines.base import (
     ArrayLike,
@@ -506,6 +507,8 @@ class TabDDPMWrapper(BaselineGenerativeModel):
             representation discovery).  Explicit lists take precedence.
         """
         self._reject_unknown_kwargs(kwargs, "TabDDPMWrapper.fit()")
+        self._fitted = False
+        self.n_updates_ = 0
         # D5: seed BEFORE anything random (model init, timestep sampling, noise, batch order)
         seed_everything(self.cfg.seed)
 
@@ -592,9 +595,12 @@ class TabDDPMWrapper(BaselineGenerativeModel):
 
             loss_multi, loss_gauss = self.diffusion.mixed_loss(x_batch, out_dict={"y": None})
             loss = loss_multi.to(self.device) + loss_gauss.to(self.device)
+            context = dict(model=self.variant_id, stage="training", step=step)
+            require_finite(loss, "loss", **context)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            check_gradients(self.diffusion._denoise_fn.parameters(), **context)
             optimizer.step()
 
             self._update_ema(

@@ -14,6 +14,7 @@ from sbtab.bridge.losses import RegressionLoss
 from sbtab.bridge.reference import GaussianReference
 from sbtab.models.neural.mlp import TimeConditionedMLP, TimeMLPConfig
 from sbtab.models.neural.time_embedding import SinusoidalTimeEmbeddingConfig
+from sbtab.numerics import check_gradients, require_finite
 
 
 FB = Literal["f", "b"]
@@ -291,6 +292,7 @@ class IMFDSBMSolver:
         steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
         noise: bool = True,
+        stage: str = "sampling",
     ) -> torch.Tensor:
         """
         Euler-Maruyama over t in [0,1] with N steps, dt = 1/N:
@@ -318,6 +320,7 @@ class IMFDSBMSolver:
 
         z = zstart.detach().clone()
         B = z.shape[0]
+        require_finite(z, "initial_state", model=self.canonical_id, stage=stage, direction=fb)
 
         for i in range(N):
             tau = float(i) / float(N)
@@ -326,11 +329,14 @@ class IMFDSBMSolver:
             tau_net = min(max(tau, eps_t), 1.0 - eps_t)
             t = torch.full((B, 1), tau_net, device=z.device, dtype=z.dtype)
 
+            context = dict(model=self.canonical_id, stage=stage, direction=fb, step=i, time=tau)
             drift = net(z, t)  # (B,D)
+            require_finite(drift, "drift", **context)
             z = z + drift * dt
             if noise:
                 eps = torch.randn(z.shape, device=z.device, dtype=z.dtype, generator=generator)
                 z = z + sigma * sqrt_dt * eps
+            require_finite(z, "state", **context)
 
         return z
 
@@ -363,13 +369,15 @@ class IMFDSBMSolver:
                 return z0, x1[perm], "independent"
             if self.cfg.first_coupling == "ref":
                 noise = torch.randn(z0.shape, device=self.device, dtype=z0.dtype, generator=gen)
-                return z0, z0 + self.cfg.sigma * noise, "reference"
+                z1 = z0 + self.cfg.sigma * noise
+                require_finite(z1, "reference_endpoint", model=self.canonical_id, stage="coupling")
+                return z0, z1, "reference"
             raise ValueError(f"Unknown first_coupling={self.cfg.first_coupling!r}")
 
         net = self.model.net(prev_fb)
         net.eval()
         zstart = x0 if prev_fb == "f" else x1
-        zend = self._sample_sde(net=net, fb=prev_fb, zstart=zstart, generator=gen, noise=True)
+        zend = self._sample_sde(net=net, fb=prev_fb, zstart=zstart, generator=gen, noise=True, stage="coupling")
 
         if prev_fb == "f":
             return zstart, zend, "forward_model"
@@ -415,16 +423,17 @@ class IMFDSBMSolver:
 
                 z_pairs = torch.stack([z0[idx], z1[idx]], dim=1)  # (B,2,D)
                 z_t, t, target = self._dsbm_train_tuple(z_pairs, fb=fb, generator=tuple_gen)
+                context = dict(model=self.canonical_id, stage="training", direction=fb, step=n_updates)
+                require_finite(z_t, "bridge_state", **context)
+                require_finite(target, "regression_target", **context)
 
                 pred = net(z_t, t)
                 loss = self.loss_fn(pred, target)
-                if not torch.isfinite(loss):
-                    raise RuntimeError(f"non-finite loss while training DSBM direction '{fb}'")
+                require_finite(loss, "loss", **context)
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
-                if self.cfg.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(net.parameters(), float(self.cfg.grad_clip))
+                check_gradients(net.parameters(), max_norm=self.cfg.grad_clip, **context)
                 opt.step()
 
                 n_updates += 1

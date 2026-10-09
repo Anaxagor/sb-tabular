@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from sbtab.numerics import check_gradients, require_finite
 
 
 @dataclass
@@ -138,13 +139,12 @@ class MLPTimeDiscretizedField:
                 yb = yb.to(device)
                 pred = model(xb)
                 loss = torch.nn.functional.mse_loss(pred, yb)
-                if not torch.isfinite(loss):
-                    raise RuntimeError(f"non-finite loss while training step model {k}")
+                context = dict(model="discrete_joint_mlp", stage="training", edge=k, step=n_updates)
+                require_finite(loss, "loss", **context)
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
-                if self.cfg.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(self.cfg.grad_clip))
+                check_gradients(model.parameters(), max_norm=self.cfg.grad_clip, **context)
                 opt.step()
                 n_updates += 1
 

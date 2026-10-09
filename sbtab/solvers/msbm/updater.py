@@ -5,6 +5,7 @@ from tqdm import tqdm
 
 from .losses import MixedSBMLoss
 from .reference import CategoricalReference
+from sbtab.numerics import check_gradients, require_finite
 
 class MixedSBMUpdater:
     def __init__(
@@ -120,7 +121,16 @@ class MixedSBMUpdater:
         x_t_num, x_t_cat, t, n, target_num, target_cat = self._make_training_tuple(
             z0_num, z0_cat, z1_num, z1_cat, direction
         )
+        context = dict(model="mixedsbm", stage="training", direction=direction, step=self.n_updates)
+        if self.has_cont:
+            require_finite(x_t_num, "bridge_state", **context)
+            require_finite(target_num, "regression_target", **context)
         pred_num, pred_logits_cat = self.model(x_t_num, x_t_cat, t)
+        if self.has_cont:
+            require_finite(pred_num, "drift", **context)
+        if self.has_cat:
+            valid_logits = pred_logits_cat.masked_select(self.ref_cat.valid_mask.expand_as(pred_logits_cat))
+            require_finite(valid_logits, "categorical_logits", **context)
 
         loss = self.loss_fn(
             pred_num=pred_num,
@@ -132,11 +142,9 @@ class MixedSBMUpdater:
             K=self.cfg.num_steps,
             direction=direction,
         )
-        if not torch.isfinite(loss):
-            raise FloatingPointError("non-finite MixedSBM loss")
+        require_finite(loss, "loss", **context)
         loss.backward()
-        if self.cfg.grad_clip:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip)
+        check_gradients(self.model.parameters(), max_norm=self.cfg.grad_clip or None, **context)
         self.optimizer.step()
         self.n_updates += 1
         return loss.detach()

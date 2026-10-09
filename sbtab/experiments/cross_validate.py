@@ -182,6 +182,8 @@ def run(dataset: str, model_id: str, selected_config_path, splits_path, output_r
                 "seeds": rec["seeds"], "n_updates": rec["n_updates"], "describe": rec["describe"],
                 "decoding_report": rec["decoding_report"], "preprocessor": rec.get("preprocessor"),
                 "checkpoint": rec["checkpoint"], "reload_verified": rec["reload_verified"],
+                **{key: rec.get(key) for key in ("failure_kind", "checkpoint_loaded", "sampling_probe",
+                                               "validity", "numerical_diagnostics", "serialization_failure")},
                 "synthetic": rec["synthetic"], "synthetic_format": rec["synthetic_format"], "timing": rec["timing"],
                 "fresh_state": "new preprocessing, model, optimiser, caches and graph; hyperparameters only from tuning",
                 "provenance": prov,

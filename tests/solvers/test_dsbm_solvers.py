@@ -326,7 +326,7 @@ def test_overflowing_neural_loss_does_not_produce_a_fitted_model(kind):
     # float32. Previously fit succeeded and sample returned only NaNs.
     data = pd.DataFrame(np.full((8, 2), 1e25, dtype=np.float32), columns=["a", "b"])
     solver = make_solver(kind, fb_sequence=("b",))
-    with pytest.raises(RuntimeError, match="non-finite loss"):
+    with pytest.raises(FloatingPointError, match="non-finite loss"):
         solver.fit(data)
     assert not solver._fitted
     with pytest.raises(RuntimeError, match="fit"):

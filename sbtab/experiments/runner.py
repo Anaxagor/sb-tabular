@@ -12,13 +12,13 @@ from __future__ import annotations
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 from sbtab.data.dataset_schema import DatasetSchema
 from sbtab.data.preprocessing import CommonPreprocessor, row_id_hash
+from sbtab.evaluation.validity import check_validity, numerical_diagnostics
 from sbtab.experiments.experiment_common import (
     SeedLedger, TIMING_DEFINITIONS, Timer, append_jsonl, hardware_info, peak_memory_mb, seed_everything, write_json,
 )
@@ -36,6 +36,8 @@ def write_synthetic(path: Path, synth: pd.DataFrame, schema: DatasetSchema) -> N
     out = synth.copy()
     for c in schema.categorical:
         # Preserve malformed outputs for validity diagnostics; never repair them by truncation.
+        if c not in out or not pd.api.types.is_numeric_dtype(out[c].dtype):
+            continue
         values = out[c].to_numpy(dtype=np.float64)
         if (np.isfinite(values).all() and np.equal(values, np.floor(values)).all()
                 and ((values >= -(2.0 ** 63)) & (values < 2.0 ** 63)).all()):
@@ -48,6 +50,31 @@ def write_synthetic(path: Path, synth: pd.DataFrame, schema: DatasetSchema) -> N
 def read_synthetic(path: Path, schema: DatasetSchema) -> pd.DataFrame:
     df = pd.read_parquet(path).set_index("synthetic_id")
     return df[schema.column_order]
+
+
+def generated_validity(synth: pd.DataFrame, pre: CommonPreprocessor, n_expected: int) -> dict:
+    """Validate common-space output using only the fitted training vocabulary."""
+    support = {**pre.support, **{c: list(range(len(v))) for c, v in pre.vocab.items()}}
+    validity = check_validity(synth, pre.schema, support=support)
+    if len(synth) != n_expected:
+        validity["status"] = "invalid_generated_data"
+        validity["reasons"].append("wrong_row_count")
+    validity["n_expected"] = int(n_expected)
+    return validity
+
+
+class InvalidGeneratedData(ValueError):
+    def __init__(self, validity: dict):
+        self.details = {"validity": validity}
+        super().__init__("invalid generated data: " + ", ".join(validity["reasons"]))
+
+
+def failure_record(error: Exception, stage: str) -> dict:
+    record = {"type": type(error).__name__, "message": str(error), "stage": stage,
+              "trace": traceback.format_exc()}
+    if isinstance(getattr(error, "details", None), dict):
+        record["details"] = error.details
+    return record
 
 
 def fit_generate(model_id: str, train_raw: pd.DataFrame, schema: DatasetSchema, config: dict, seeds: SeedLedger,
@@ -67,12 +94,15 @@ def fit_generate(model_id: str, train_raw: pd.DataFrame, schema: DatasetSchema, 
         "n_requested": int(n_samples), "n_generated": None, "train_row_hash": row_id_hash(train_raw.index),
         "requested_config": dict(config), "effective_config": None, "n_updates": None, "describe": None,
         "decoding_report": None, "checkpoint": None, "reload_verified": None,
+        "checkpoint_loaded": None, "sampling_probe": None, "failure_kind": None,
+        "validity": None, "numerical_diagnostics": None,
         "synthetic": None, "synthetic_format": SYNTHETIC_FORMAT,
     }
     fit_seed = seeds.seed("fit", *scope[1:]) if scope else seeds.seed("fit")
     sample_seed = seeds.seed("sample", *scope[1:]) if scope else seeds.seed("sample")
     rec["seeds"] = {"fit": fit_seed, "sample": sample_seed, "scope": list(scope)}
     adapter = None
+    stage = "preprocessing"
     try:
         with timer.measure("preprocessing_seconds"):
             pre = CommonPreprocessor(schema).fit(train_raw)
@@ -84,12 +114,12 @@ def fit_generate(model_id: str, train_raw: pd.DataFrame, schema: DatasetSchema, 
         append_jsonl(log, {"event": "preprocessed", "fit_row_hash": pre.fit_row_hash})
 
         seed_everything(fit_seed)
+        stage = "training"
         adapter = get_adapter_class(model_id)()
         try:
             adapter.fit(train, schema, config, seed=fit_seed)
         except Exception as e:
-            rec.update(status="training_failed", failure={"type": type(e).__name__, "message": str(e),
-                                                          "trace": traceback.format_exc()})
+            rec.update(status="training_failed", failure_kind="training_failed", failure=failure_record(e, stage))
             raise _Handled()
         finally:
             for key, seconds in adapter.last_fit_timing.items():
@@ -100,42 +130,81 @@ def fit_generate(model_id: str, train_raw: pd.DataFrame, schema: DatasetSchema, 
         append_jsonl(log, {"event": "fitted", "n_updates": adapter.n_updates,
                            "generator_fit_seconds": timer.seconds["generator_fit_seconds"]})
 
+        stage = "checkpoint_save"
         with timer.measure("checkpoint_io_seconds"):
             ckpt = adapter.save_checkpoint(out_dir / "checkpoint")
         rec["checkpoint"] = str(ckpt.name)
 
+        stage = "generation"
         try:
             synth = adapter.sample(n_samples, seed=sample_seed)
         except Exception as e:
-            rec.update(status="sampling_failed", failure={"type": type(e).__name__, "message": str(e),
-                                                          "trace": traceback.format_exc()})
+            rec.update(status="sampling_failed", failure_kind="sampling_failed", failure=failure_record(e, stage))
             raise _Handled()
         finally:
             for key, seconds in adapter.last_sample_timing.items():
                 timer.add(key, seconds)
         rec.update(n_generated=int(len(synth)), decoding_report=adapter.decoding_report_)
-        write_synthetic(out_dir / "synthetic.parquet", synth, schema)
-        rec["synthetic"] = "synthetic.parquet"
+        rec["validity"] = generated_validity(synth, pre, n_samples)
+        invalid = rec["validity"]["status"] != "ok"
+        if invalid:
+            rec.update(status="invalid_generated_data", failure_kind="invalid_generated_data")
+        rec["numerical_diagnostics"] = numerical_diagnostics(synth, schema, train)
+        try:
+            write_synthetic(out_dir / "synthetic.parquet", synth, schema)
+            rec["synthetic"] = "synthetic.parquet"
+        except Exception as e:
+            if not invalid:
+                raise
+            # A malformed mixed-type column may not be representable in Parquet.
+            # Retain its validity evidence and keep serialization as a secondary cause.
+            rec["serialization_failure"] = failure_record(e, "synthetic_save")
         append_jsonl(log, {"event": "generated", "n": int(len(synth))})
+        if invalid:
+            raise InvalidGeneratedData(rec["validity"])
 
         if verify_reload:
+            stage = "checkpoint_load"
+            rec["checkpoint_loaded"] = False
+            rec["reload_verified"] = {"ok": False}
             with timer.measure("checkpoint_io_seconds"):
                 again = type(adapter).load_checkpoint(out_dir / "checkpoint")
+                rec["checkpoint_loaded"] = True
+                stage = "sampling_probe"
                 k = min(64, n_samples)
-                a = adapter.sample(k, seed=sample_seed + 1).to_numpy(dtype=np.float64)
-                b = again.sample(k, seed=sample_seed + 1).to_numpy(dtype=np.float64)
-            diff = float(np.nanmax(np.abs(a - b))) if a.size else 0.0
-            rec["reload_verified"] = {"ok": bool(np.allclose(a, b, atol=1e-6, rtol=0, equal_nan=True)), "rows": int(k),
+                rec["sampling_probe"] = {"ok": False, "rows": int(k), "seed": sample_seed + 1}
+                probes = []
+                for label, model in (("original", adapter), ("reloaded", again)):
+                    rec["sampling_probe"]["active_model"] = label
+                    probe = model.sample(k, seed=sample_seed + 1)
+                    validity = generated_validity(probe, pre, k)
+                    rec["sampling_probe"][label] = validity
+                    if validity["status"] != "ok":
+                        raise InvalidGeneratedData(validity)
+                    probes.append(probe.to_numpy(dtype=np.float64))
+                rec["sampling_probe"].pop("active_model")
+                rec["sampling_probe"]["ok"] = True
+                a, b = probes
+            # Both probes have already passed finite-value and category checks.
+            with np.errstate(over="ignore"):
+                differences = np.abs(a - b)
+                matches = bool(np.allclose(a, b, atol=1e-6, rtol=0, equal_nan=False))
+            finite_diff = bool(np.isfinite(differences).all())
+            diff = float(differences.max()) if differences.size and finite_diff else (0.0 if not differences.size else None)
+            rec["reload_verified"] = {"ok": matches and finite_diff, "rows": int(k),
                                       "max_abs_diff": diff, "tolerance": 1e-6, "rtol": 0,
                                       "device": str(adapter.config.get("device", "cpu"))}
             if not rec["reload_verified"]["ok"]:
-                raise RuntimeError(f"checkpoint reload does not reproduce samples (max diff {diff:g})")
+                stage = "checkpoint_comparison"
+                raise RuntimeError(f"checkpoint reload does not reproduce samples (max diff {diff})")
     except _Handled:
         pass
     except Exception as e:                      # unexpected: keep the record, never lose the elapsed time
         if rec["status"] == "ok":
             rec.update(status="training_failed" if rec["checkpoint"] is None else "sampling_failed",
-                       failure={"type": type(e).__name__, "message": str(e), "trace": traceback.format_exc()})
+                       failure_kind={"checkpoint_load": "checkpoint_load_failed", "sampling_probe": "sampling_probe_failed",
+                                     "checkpoint_comparison": "checkpoint_mismatch"}.get(stage, stage + "_failed"))
+        rec["failure"] = failure_record(e, stage)
     finally:
         s = timer.seconds
         s["training_total_seconds"] = sum(s.get(k, 0.0) for k in

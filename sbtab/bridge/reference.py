@@ -8,6 +8,7 @@ from typing import List, Optional, Sequence
 import torch
 
 from .timegrid import TimeGrid
+from sbtab.numerics import require_finite
 
 
 @dataclass
@@ -317,8 +318,11 @@ class CategoricalReference:
         return n
 
     def _normalise(self, w: torch.Tensor, d: int, what: str) -> torch.Tensor:
+        context = dict(stage=what, column=d)
+        require_finite(w, "categorical_weights", **context)
         Z = w.sum(dim=-1, keepdim=True)
-        bad = ~(Z.squeeze(-1) > 0) | ~torch.isfinite(Z.squeeze(-1))
+        require_finite(Z, "categorical_normalizer", **context)
+        bad = ~(Z.squeeze(-1) > 0)
         if bad.any():
             raise IncompatibleBridgeError(
                 f"{what}: the reference gives zero probability to {int(bad.sum())} endpoint "
@@ -338,7 +342,10 @@ class CategoricalReference:
 
     def masked_logits(self, logits: torch.Tensor) -> torch.Tensor:
         """Set padded category logits to -inf so they carry exactly zero mass."""
-        return logits.masked_fill(~self.valid_mask.unsqueeze(0), float("-inf"))
+        masked = logits.masked_fill(~self.valid_mask.unsqueeze(0), float("-inf"))
+        require_finite(masked.masked_fill(torch.isneginf(masked), 0.0), "categorical_logits",
+                       stage="categorical_transition")
+        return masked
 
     # ------------------------------------------------------------------ bridges
     def bridge_at_time(self, x_start: torch.Tensor, x_target: torch.Tensor, n) -> torch.Tensor:

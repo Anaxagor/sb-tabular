@@ -10,6 +10,7 @@ import math
 
 import numpy as np
 from .utils import *
+from sbtab.numerics import require_finite
 
 """
 Based in part on: https://github.com/lucidrains/denoising-diffusion-pytorch/blob/5989f4c77eafcdc6be0fb4739f0f277a6dd7f7d8/denoising_diffusion_pytorch/denoising_diffusion_pytorch.py#L281
@@ -874,17 +875,21 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         )
         out_dict = {'y': y.long().to(device)}
         for i in reversed(range(0, self.num_timesteps)):
+            context = dict(model="tabddpm_mlp_joint_xy", stage="sampling", sampler="ddim", timestep=i)
             t = torch.full((b,), i, device=device, dtype=torch.long)
             model_out = self._denoise_fn(
                 torch.cat([z_norm, log_z], dim=1).float(),
                 t,
                 **out_dict
             )
+            require_finite(model_out, "denoiser_output", **context)
             model_out_num = model_out[:, :self.num_numerical_features]
             model_out_cat = model_out[:, self.num_numerical_features:]
             z_norm = self.gaussian_ddim_step(model_out_num, z_norm, t, clip_denoised=False)
+            require_finite(z_norm, "gaussian_state", **context)
             if has_cat:
                 log_z = self.multinomial_ddim_step(model_out_cat, log_z, t, out_dict)
+                require_finite(log_z, "categorical_state", **context)
 
         z_ohe = torch.exp(log_z).round()
         z_cat = log_z
@@ -913,17 +918,21 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         )
         out_dict = {'y': y.long().to(device)}
         for i in reversed(range(0, self.num_timesteps)):
+            context = dict(model="tabddpm_mlp_joint_xy", stage="sampling", sampler="ddpm", timestep=i)
             t = torch.full((b,), i, device=device, dtype=torch.long)
             model_out = self._denoise_fn(
                 torch.cat([z_norm, log_z], dim=1).float(),
                 t,
                 **out_dict
             )
+            require_finite(model_out, "denoiser_output", **context)
             model_out_num = model_out[:, :self.num_numerical_features]
             model_out_cat = model_out[:, self.num_numerical_features:]
             z_norm = self.gaussian_p_sample(model_out_num, z_norm, t, clip_denoised=False)['sample']
+            require_finite(z_norm, "gaussian_state", **context)
             if has_cat:
                 log_z = self.p_sample(model_out_cat, log_z, t, out_dict)
+                require_finite(log_z, "categorical_state", **context)
 
         z_ohe = torch.exp(log_z).round()
         z_cat = log_z

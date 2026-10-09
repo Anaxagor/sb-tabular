@@ -30,6 +30,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sbtab.data.schema import TabularSchema
 from sbtab.baselines.base import FreshIdFactory, resolve_column_roles, to_python_scalar, validate_n
 from sbtab.baselines.encoding import fit_vocabulary, nearest_support_decode, numeric_matrix, restore_dtype
+from sbtab.numerics import check_gradients, require_finite
 
 
 TABBYFLOW_OFFICIAL_REPOSITORY = "https://github.com/rulnasution/tabular-flow-matching"
@@ -501,9 +502,10 @@ class TabbyFlowSynthesizer:
                 x_batch = x_batch.to(self.device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
                 loss = loss_fn(self.net, x_batch)
-                if not torch.isfinite(loss):
-                    raise FloatingPointError("Non-finite TabbyFlow training loss")
+                context = dict(model=self.variant_id, stage="training", step=steps)
+                require_finite(loss, "loss", **context)
                 loss.backward()
+                check_gradients(self.net.parameters(), **context)
                 optimizer.step()
                 epoch_sum += float(loss.detach().cpu()) * len(x_batch)
                 epoch_rows += len(x_batch)

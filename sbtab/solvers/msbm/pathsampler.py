@@ -6,6 +6,7 @@ import torch
 from sbtab.bridge.timegrid import TimeGrid
 from sbtab.bridge.sde import EulerMaruyama
 from .reference import CategoricalReference
+from sbtab.numerics import require_finite
 
 @dataclass
 class MixedPathSampler:
@@ -40,6 +41,7 @@ class MixedPathSampler:
             batch_size: Optional[int] = None,
             generator: Optional[torch.Generator] = None,
             noise: Optional[bool] = None,
+            stage: str = "sampling",
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         """
         Simulates state updates for mixed datatypes across the discretized timeline grid.
@@ -89,6 +91,9 @@ class MixedPathSampler:
                 b_cont = x_cont_init[i: i + bs].clone()
                 b_cat = x_cat_init[i: i + bs].clone()
                 b_size = b_cont.shape[0] if self.has_cont else b_cat.shape[0]
+                context = dict(model="mixedsbm", stage=stage, direction=direction, chunk=i // bs)
+                if self.has_cont:
+                    require_finite(b_cont, "initial_state", **context)
 
                 if return_path:
                     b_path_cont = [b_cont.clone().cpu()]
@@ -103,13 +108,20 @@ class MixedPathSampler:
                         tau = 1.0 - float(K - k) / float(K)
 
                     tk = torch.full((b_size, 1), tau, device=device, dtype=torch.float32)
+                    step_context = dict(context, step=k, time=tau)
 
                     v_num, logits_cat = model(b_cont, b_cat, tk)
 
                     if self.has_cont:
+                        require_finite(v_num, "drift", **step_context)
                         b_cont = integrator.step(b_cont, drift=v_num, gamma=dt, generator=b_gen)
+                        require_finite(b_cont, "state", **step_context)
 
                     if self.has_cat:
+                        valid_logits = logits_cat.masked_select(self.reference.valid_mask.expand_as(logits_cat))
+                        # -inf can represent an exact zero-probability endpoint.
+                        require_finite(valid_logits.masked_fill(torch.isneginf(valid_logits), 0.0),
+                                       "categorical_logits", **step_context)
                         if direction == "f":
                             probs = self.reference.model_induced_next_step(logits_cat, b_cat, k, K)
                         else:
