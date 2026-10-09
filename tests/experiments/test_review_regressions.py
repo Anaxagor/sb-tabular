@@ -46,19 +46,18 @@ def test_prepare_splits_refuses_changed_values_with_same_membership(tmp_path, mo
         ps.run("toy", load_protocol(smoke=True), root)
 
 
-def manual_cv(tmp_path, monkeypatch):
+def tuned_cv(tmp_path, monkeypatch):
     root, path, _, schema = make_dataset(tmp_path, monkeypatch)
-    space = yaml.safe_load(Path("configs/search_spaces/smoke/mixedsbm.yaml").read_text())
-    config = {**space["fixed"], "lr": space["params"]["lr"]["low"]}
+    tune.run("toy", "mixedsbm", path, "configs/search_spaces/smoke/mixedsbm.yaml",
+             resume=False, smoke=True, run_id="review")
     selected = path.parent / "mixedsbm" / "review" / "tuning" / "selected_config.json"
-    write_json(selected, {"model": "mixedsbm", "config": config, "source": "manual"})
     result = cv.run("toy", "mixedsbm", selected, path, root, smoke=True, folds=[0])
     assert result["n_ok"] == 1
     return root, path, schema, selected, Path(result["cv_run_manifest"])
 
 
 def test_cv_reuse_refuses_changed_implementation(tmp_path, monkeypatch):
-    root, path, _, selected, manifest = manual_cv(tmp_path, monkeypatch)
+    root, path, _, selected, manifest = tuned_cv(tmp_path, monkeypatch)
     before = manifest.read_bytes()
     changed = {**cv.source_provenance(), "source_hash": "changed"}
     monkeypatch.setattr(cv, "source_provenance", lambda: changed)
@@ -68,7 +67,7 @@ def test_cv_reuse_refuses_changed_implementation(tmp_path, monkeypatch):
 
 
 def test_cv_reuse_refuses_missing_output(tmp_path, monkeypatch):
-    root, path, _, selected, manifest = manual_cv(tmp_path, monkeypatch)
+    root, path, _, selected, manifest = tuned_cv(tmp_path, monkeypatch)
     (manifest.parent / "fold-0" / "synthetic.parquet").unlink()
     with pytest.raises(StageError, match="artifact|synthetic"):
         cv.run("toy", "mixedsbm", selected, path, root, smoke=True, folds=[0])
@@ -184,12 +183,12 @@ def test_resume_refuses_missing_sampler_state(tmp_path, monkeypatch):
 
 
 def test_utility_initialization_failure_keeps_fidelity_metrics(tmp_path, monkeypatch):
-    _, _, _, _, manifest = manual_cv(tmp_path, monkeypatch)
+    _, _, _, _, manifest = tuned_cv(tmp_path, monkeypatch)
     from sbtab import evaluation
     def fail(*a, **kw):
         raise RuntimeError("utility initialization failed")
     monkeypatch.setattr(evaluation, "resolve_utility_params", fail)
-    result = metrics.run(manifest, "configs/metrics/metrics_v1.yaml", folds=[0])
+    result = metrics.run(manifest, "configs/metrics/metrics_v2.yaml", folds=[0])
     saved = read_json(Path(result["evaluation_dir"]) / "fold-0" / "metrics.json")
     assert saved["marginal"]["status"] == "ok"
     assert saved["utility"]["status"] == "utility_fit_failed"
@@ -267,7 +266,7 @@ def test_conditional_partial_scores_retain_coverage_status_in_flat_records():
 @pytest.mark.parametrize("key,value", [("kl_total_bin", 30), ("kl_direction", "synthetic_to_real")])
 def test_metric_config_does_not_silently_ignore_settings(key, value):
     from sbtab.evaluation import MetricConfig
-    cfg = yaml.safe_load(Path("configs/metrics/metrics_v1.yaml").read_text())
+    cfg = yaml.safe_load(Path("configs/metrics/metrics_v2.yaml").read_text())
     cfg[key] = value
     with pytest.raises(ValueError):
         MetricConfig.from_document(cfg)

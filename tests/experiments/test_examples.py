@@ -247,7 +247,7 @@ def test_example_runs_quick(path, monkeypatch, tmp_path, capsys):
     # every reported number comes from the canonical metric package, with its status
     for key in ("validity", "objective", "marginal", "association", "conditional", "mmd"):
         assert result[key]["status"] in STATUSES, key
-        assert result[key]["metric_version"] == "sbtab.metrics/1"
+        assert result[key]["metric_version"] == "sbtab.metrics/2"
     assert result["validity"]["status"] == "ok", result["validity"]["reasons"]
     assert result["objective"]["objective"] is not None
     assert result["mmd"]["kernels"]["full"]["mmd2_unbiased_mean"] is not None

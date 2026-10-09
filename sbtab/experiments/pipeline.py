@@ -53,7 +53,7 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
     entries, spaces, excluded, generated_spaces = {}, {}, [], {}
     for model in chosen:
         entry = get_entry(model)
-        reason = exclusion_reason(model)
+        reason = exclusion_reason(model) if models is None else None
         if reason is None and entry.status == "unavailable":
             reason = f"unavailable: {entry.notes}"
         elif reason is None and entry.status == "heuristic" and not include_heuristic and models is None:
@@ -72,7 +72,12 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
             from sbtab.solvers.registry import get_adapter_class
             keys = get_adapter_class(model).DEFAULTS
             key = "device" if "device" in keys else "enable_gpu" if "enable_gpu" in keys else None
-            if key is None or key in space["params"]:
+            if key is None:
+                if device != "cpu":
+                    raise StageError("undefined", f"{model}: this adapter is CPU-only and cannot use --device {device}")
+                entries[model] = entry
+                continue                     # CPU-only adapters keep their original search space.
+            if key in space["params"]:
                 raise StageError("undefined", f"{model}: cannot fix execution device in this search space")
             space["fixed"][key] = device if key == "device" else device == "cuda"
             # Use YAML's float spelling (1.0e-05), since YAML 1.1 can read JSON's

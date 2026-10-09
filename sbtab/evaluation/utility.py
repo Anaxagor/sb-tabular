@@ -6,18 +6,17 @@ real-trained reference that uses the SAME task handling, parameters and test row
     universe (zero_division=0);  regression: CatBoostRegressor, R^2 / MAE / RMSE / MAPE;
   * the target is never a predictor; every nominal predictor goes through
     ``cat_features`` (as a canonical string), ordered/count predictors stay numeric;
-  * hyper-parameters are not tuned: ``resolve_utility_params`` resolves CatBoost's
-    automatic defaults ONCE on the first real training fold and the saved values are
-    reused verbatim for every real/synthetic fit of that dataset;
+  * hyper-parameters are not tuned: a fixed, documented CPU defaults-based preset
+    is reused verbatim for every real/synthetic fit and fold. Automatic learning
+    rate and row-count-dependent subsampling are explicitly fixed;
   * no eval set, CPU, fixed seed and thread count, ``verbose=False`` and
     ``allow_writing_files=False`` (logging/file controls are not parameters).
 
-Signs: every gap is positive when synthetic training is WORSE.
+Gaps are absolute differences; relative gaps are undefined for a zero reference.
 """
 from __future__ import annotations
 
 import hashlib
-import inspect
 import math
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -28,16 +27,13 @@ import pandas as pd
 from ._common import json_safe, numeric_array, support_codes, to_native
 from .spec import METRIC_VERSION, OK, UNDEFINED, UTILITY_FIT_FAILED, MetricConfig
 
-GAP_DENOMINATOR_FLOOR = 1e-8
+NEAR_ZERO_REFERENCE = 1e-8   # diagnostic only; never replaces the denominator
 HIGHER_IS_BETTER = {"macro_f1": True, "r2": True, "mae": False, "rmse": False, "mape": False}
 TASK_METRICS = {"classification": ("macro_f1",), "regression": ("r2", "mae", "rmse", "mape")}
 
-# get_all_params() entries that are NOT training hyper-parameters:
-#   data descriptors of the fold they were read from, and evaluation / early-stopping
-#   controls (no eval set is ever passed).
-_DROPPED_PARAMS = {"class_names", "classes_count", "eval_metric", "eval_fraction", "use_best_model",
-                   "best_model_min_trees"}
 _RUNTIME_KWARGS = {"verbose": False, "allow_writing_files": False}
+UTILITY_PARAMETER_POLICY = "fixed_cpu_defaults_v1"
+UTILITY_GAP_FORMULA = "100 * abs(real - synthetic) / abs(real)"
 
 
 def _model_class(task: str):
@@ -125,27 +121,36 @@ def resolve_utility_params(task: str, X_first_fold: pd.DataFrame, y_first_fold, 
                            config: MetricConfig = MetricConfig(), overrides: Optional[Dict[str, Any]] = None
                            ) -> Dict[str, Any]:
     """
-    Fit ONE default model on the first real training fold and return its effective
-    training parameters as plain constructor kwargs (JSON-safe). Re-fitting with the
-    returned dict reproduces the default fit exactly.
+    Return a fixed CatBoost CPU defaults-based preset without fitting or reading X.
+    Only the task's training-label cardinality selects Logloss versus MultiClass.
+    The legacy argument names are retained for API compatibility; no first-fold
+    probe is performed and no held-out observations influence parameter values.
+
+    Defaults: https://catboost.ai/docs/en/references/training-parameters/common
+    Learning rate 0.03 is the documented nonautomatic default. MVS subsampling is
+    fixed at its default for n >= 100 (0.8), including smaller smoke datasets.
+    This explicit preset is intentionally independent of per-table automatic
+    default resolution. Learned borders, CTRs and model weights still use the
+    respective real or synthetic training table, as ordinary CatBoost training.
 
     ``overrides`` exists for bounded smoke/unit runs (e.g. ``{"iterations": 20}``);
     benchmark runs leave it empty -- hyper-parameters are not tuned.
     """
-    cls = _model_class(task)
-    base = {"random_seed": int(config.utility_seed), "thread_count": int(config.utility_thread_count),
-            "task_type": "CPU", **(overrides or {})}
-    X = _prepare_X(X_first_fold, y_first_fold, cat_features)
-    y = np.asarray(y_first_fold).reshape(-1)
-    if task == "classification":           # same label handling as every later fit
-        y = support_codes(y, _label_universe(None, y))
+    if task not in TASK_METRICS:
+        raise ValueError(f"unknown task {task!r}")
+    multiclass = task == "classification" and len(_label_universe(None, y_first_fold)) > 2
+    params = {"iterations": 1000, "depth": 6, "learning_rate": 0.03, "l2_leaf_reg": 3.0,
+              "random_seed": int(config.utility_seed), "thread_count": int(config.utility_thread_count),
+              "task_type": "CPU", "loss_function": "MultiClass" if multiclass else
+              ("Logloss" if task == "classification" else "RMSE"),
+              "boosting_type": "Plain", "grow_policy": "SymmetricTree", "border_count": 254,
+              "one_hot_max_size": 2, "random_strength": 1.0, "rsm": 1.0,
+              "use_best_model": False}
+    if multiclass:
+        params.update(bootstrap_type="Bayesian", bagging_temperature=1.0)
     else:
-        y = numeric_array(y)
-    model = cls(**base, **_RUNTIME_KWARGS)
-    model.fit(X, y, cat_features=_cat_in(X, cat_features))
-    accepted = set(inspect.signature(cls.__init__).parameters)
-    params = {k: v for k, v in model.get_all_params().items() if k in accepted and k not in _DROPPED_PARAMS}
-    params.update(base)                    # thread_count is not echoed by get_all_params()
+        params.update(bootstrap_type="MVS", subsample=0.8)
+    params.update(overrides or {})
     return json_safe(params)
 
 
@@ -184,17 +189,26 @@ def _regression_scores(y: np.ndarray, pred: np.ndarray) -> Tuple[Dict[str, Any],
 
 def utility_gap(real: Optional[float], synth: Optional[float], higher_is_better: bool) -> Dict[str, Any]:
     """
-    higher-is-better s:  abs_gap = s_real - s_synth,  delta_pct = 100 (s_real - s_synth) / max(|s_real|, 1e-8)
-    lower-is-better  e:  abs_gap = e_synth - e_real,  delta_pct = 100 (e_synth - e_real) / max(|e_real|, 1e-8)
-    Positive = synthetic training is worse. Undefined inputs give an undefined gap.
+    abs_gap = abs(real - synth); delta_pct = 100 * abs_gap / abs(real).
+    Both improvement and deterioration have positive magnitude. A zero reference
+    leaves delta_pct undefined (including 0 versus 0); the absolute gap remains
+    available. Near-zero nonzero references use their actual denominator.
+    Undefined inputs give an undefined gap.
     """
     out = {"real": real, "synth": synth, "higher_is_better": bool(higher_is_better), "abs_gap": None,
-           "delta_pct": None, "near_zero_denominator": None, "status": UNDEFINED}
+           "delta_pct": None, "near_zero_denominator": None, "zero_denominator": None,
+           "formula": UTILITY_GAP_FORMULA, "zero_reference_policy": "undefined", "status": UNDEFINED}
     if real is None or synth is None or not (math.isfinite(real) and math.isfinite(synth)):
         return out
-    gap = (real - synth) if higher_is_better else (synth - real)
-    out.update(abs_gap=float(gap), delta_pct=float(100.0 * gap / max(abs(real), GAP_DENOMINATOR_FLOOR)),
-               near_zero_denominator=bool(abs(real) < GAP_DENOMINATOR_FLOOR), status=OK)
+    gap = abs(real - synth)
+    if not math.isfinite(gap):
+        return out
+    out.update(abs_gap=float(gap), near_zero_denominator=bool(abs(real) < NEAR_ZERO_REFERENCE),
+               zero_denominator=bool(real == 0.0))
+    if real != 0.0:
+        delta = 100.0 * (gap / abs(real))
+        if math.isfinite(delta):
+            out.update(delta_pct=float(delta), status=OK)
     return out
 
 
@@ -208,6 +222,7 @@ def _evaluate(task: str, X_fit, y_fit, X_test, y_test, cat_features, params, uni
         "status": OK, "task": task, "metric_version": METRIC_VERSION, "model": _model_class(task).__name__,
         "n_fit": int(len(Xf)), "n_test": int(len(Xt)), "feature_names": names,
         "cat_features": _cat_in(Xf, cat_features), "params": json_safe(dict(params)),
+        "parameter_policy": UTILITY_PARAMETER_POLICY,
         "test_hash": _test_hash(Xt, y_test), "scores": {m: None for m in TASK_METRICS[task]},
         "score_status": {m: UTILITY_FIT_FAILED for m in TASK_METRICS[task]}, "flags": [],
         "predictions": None, "y_test": np.asarray(y_test).reshape(-1), "error": None,
@@ -235,14 +250,17 @@ def _evaluate(task: str, X_fit, y_fit, X_test, y_test, cat_features, params, uni
             k = len(universe)
             fit_codes = support_codes(np.asarray(y_fit).reshape(-1), universe)
             test_codes = support_codes(np.asarray(y_test).reshape(-1), universe)
-            # labels outside the fixed universe stay in the fit as one extra, always-wrong class (never dropped)
-            fit_codes = np.where(fit_codes < 0, k, fit_codes)
+            if np.any(fit_codes < 0) or np.any(test_codes < 0):
+                raise ValueError("classification labels outside the fixed real-training label universe")
             if np.unique(fit_codes).size < 2:
                 raise ValueError("training labels contain a single class")
             model = _timed_fit(fit_codes)
-            pred_codes = np.asarray(_timed_predict(model)).reshape(-1).astype(np.int64)
-            lookup = np.array(list(universe) + [None], dtype=object)
-            out["predictions"] = lookup[np.clip(pred_codes, 0, k)]
+            raw_codes = np.asarray(_timed_predict(model), dtype=np.float64).reshape(-1)
+            if (raw_codes.shape != test_codes.shape or not np.all(np.isfinite(raw_codes))
+                    or np.any(raw_codes != np.floor(raw_codes)) or np.any((raw_codes < 0) | (raw_codes >= k))):
+                raise ValueError("invalid classification predictions")
+            pred_codes = raw_codes.astype(np.int64)
+            out["predictions"] = np.asarray(universe, dtype=object)[pred_codes]
             out["scores"], out["score_status"], out["flags"] = _classification_scores(test_codes, pred_codes, k)
         else:
             yf = numeric_array(np.asarray(y_fit).reshape(-1))
@@ -253,6 +271,8 @@ def _evaluate(task: str, X_fit, y_fit, X_test, y_test, cat_features, params, uni
                 raise ValueError("training regression target is not finite")
             model = _timed_fit(yf)
             pred = np.asarray(_timed_predict(model), dtype=np.float64).reshape(-1)
+            if pred.shape != yt.shape or not np.all(np.isfinite(pred)):
+                raise ValueError("regression predictions must be finite and match held-out rows")
             out["predictions"] = pred
             out["scores"], out["score_status"], out["flags"] = _regression_scores(yt, pred)
         out["model_feature_names"] = [str(c) for c in model.feature_names_]

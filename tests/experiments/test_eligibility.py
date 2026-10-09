@@ -13,6 +13,7 @@ from sbtab.experiments.experiment_common import Protocol, StageError, load_proto
 
 RULE = {"min_value_count": 3, "columns": "finite_support"}
 V1 = "configs/protocols/sbtab_8515_hpo100_cv5_v1.yaml"
+V2 = "configs/protocols/sbtab_8515_hpo100_cv5_v2.yaml"
 
 
 def table(n=400, seed=0):
@@ -103,7 +104,7 @@ def test_threshold_one_and_v1_never_remove_a_row_and_v1_is_frozen():
 
     v1 = load_protocol(V1)
     assert v1.id == "sbtab_8515_hpo100_cv5_v1" and v1.eligibility == {} and v1.hash().startswith("d661d3713a5f")
-    v2 = load_protocol()
+    v2 = load_protocol(V2)
     assert v2.id == "sbtab_8515_hpo100_cv5_v2" and v2.data["supersedes"] == v1.id and v2.hash() != v1.hash()
     assert v2.eligibility == {"min_value_count": 3, "columns": "finite_support", "iterate_to_fixed_point": True}
     assert {k: v2[k] for k in ("split", "tuning", "cv", "seeds")} == {k: v1[k] for k in ("split", "tuning", "cv", "seeds")}
@@ -129,7 +130,7 @@ def test_three_rows_of_a_value_do_not_guarantee_support_coverage():
     the fold's training rows do not contain the value -> the dataset is (correctly) still blocked.
     """
     f, schema = table()
-    proto = load_protocol()
+    proto = load_protocol(V2)
     base, _ = ps.build_splits(f, schema, manifest_of(f, schema), proto)
     fold = base["folds"][2]
     rows = [base["V_row_ids"][0]] + fold["test_row_ids"][:2]
@@ -155,14 +156,14 @@ def test_prepare_splits_applies_the_rule_before_splitting_and_records_it(tmp_pat
     v1 = ps.run("toy", load_protocol(V1), tmp_path / "v1", dry_run=True)
     assert v1["split_status"] == "blocked_support" and v1["n_removed_by_eligibility"] == 0 and v1["n_rows"] == 400
 
-    out = ps.run("toy", load_protocol(), tmp_path / "v2")
+    out = ps.run("toy", load_protocol(V2), tmp_path / "v2")
     assert out["split_status"] == "ok" and out["n_source_rows"] == 400 and out["n_removed_by_eligibility"] == 3
     d = tmp_path / "v2" / "toy"
     rep, man, splits = (json.loads((d / n).read_text()) for n in ("eligibility_report.json", "dataset_manifest.json", "splits.json"))
     assert rep["removed_row_ids"] == [10, 20, 21]
     assert man["n_source_rows"] == 400 and man["n_rows"] == 397 and man["source_fingerprint"] != man["fingerprint"]
     assert "removed 3 of 400 rows before splitting" in man["row_filtering"] and man["eligibility"]["task_changed"] is False
-    assert splits["eligibility_rule"] == load_protocol().eligibility and splits["n_rows"] == 397
+    assert splits["eligibility_rule"] == load_protocol(V2).eligibility and splits["n_rows"] == 397
 
     members = set(splits["T_row_ids"]) | set(splits["V_row_ids"])
     assert members == set(f.index) - {10, 20, 21}                                   # D is the ELIGIBLE table; ids are original
@@ -179,14 +180,14 @@ def test_a_dataset_emptied_by_the_rule_is_a_structured_failure(monkeypatch):
     f["c"] = [f"u{i}" for i in range(12)]
     monkeypatch.setattr(ps, "load_dataset", lambda name, config_dir=None: (f, schema, manifest_of(f, schema)))
     with pytest.raises(StageError) as e:
-        ps.load_eligible_dataset("toy", load_protocol())
+        ps.load_eligible_dataset("toy", load_protocol(V2))
     assert "removed every row" in str(e.value)
 
 
 # --------------------------------------------------------------------------- real data (documented facts)
 @pytest.mark.integration
 def test_documented_effect_on_real_datasets():
-    proto = load_protocol()
+    proto = load_protocol(V2)
     # unblocked by removing ONE row
     frame, schema, man, rep = ps.load_eligible_dataset("stroke_prediction", proto)
     assert rep["removed_row_ids"] == [3116] and rep["removals"][0]["value"] == "Other" and not rep["task_changed"]

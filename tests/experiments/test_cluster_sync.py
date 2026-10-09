@@ -25,7 +25,7 @@ def sync_tree(tmp_path, request):
     target.mkdir()
     (source / "scripts/slurm").mkdir(parents=True)
     shutil.copyfile(project / "scripts/sync_cluster.sh", source / "scripts/sync_cluster.sh")
-    shutil.copyfile(project / "scripts/slurm/cluster.local.sh", source / "scripts/slurm/cluster.local.sh")
+    shutil.copyfile(project / "scripts/slurm/cluster.example.sh", source / "scripts/slurm/cluster.local.sh")
     # rsync's remote-shell protocol runs the real receiver on this machine.
     transport = tmp_path / "fake ssh"
     transport.write_text(

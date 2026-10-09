@@ -225,11 +225,33 @@ def test_parallel_utility_configs_do_not_lose_other_cache_keys(tmp_path):
     assert set(read_json(tmp_path / "utility_config.json")) == {"a", "b"}
 
 
+def test_missing_local_batch_scripts_fail_before_planning_or_submitting(tmp_path):
+    import shlex
+    scripts = Path(__file__).resolve().parents[2] / "scripts/slurm"
+    batch_scripts = tmp_path / "empty local batch scripts"
+    batch_scripts.mkdir()
+    config = tmp_path / "cluster settings.sh"
+    config.write_text(f"SBTAB_PYTHON={shlex.quote(os.sys.executable)}\nSBATCH_SITE_ARGS=()\n")
+    output = tmp_path / "experiment"
+    result = subprocess.run(["bash", str(scripts / "submit.sh"), "--dry-run", str(config),
+                             "--output-root", str(output), "--datasets", "diabetes", "--models", "lightsb", "--smoke"],
+                            env={**os.environ, "SBTAB_BATCH_SCRIPT_DIR": str(batch_scripts)},
+                            capture_output=True, text=True)
+    assert result.returncode == 2
+    assert f"Missing local batch script: {batch_scripts}/prepare.sbatch" in result.stderr
+    assert not output.exists()
+    assert not any(line.startswith("sbatch ") for line in result.stderr.splitlines())
+
+
 def test_batch_scripts_quote_paths_and_submit_correct_dependencies(tmp_path):
     # Simulated scheduler verifies the submission interface without requiring Slurm.
     scripts = Path(__file__).resolve().parents[2] / "scripts/slurm"
-    for path in list(scripts.glob("*.sh")) + list(scripts.glob("*.sbatch")):
+    for path in scripts.glob("*.sh"):
         subprocess.run(["bash", "-n", str(path)], check=True)
+    batch_scripts = tmp_path / "local batch scripts"
+    batch_scripts.mkdir()
+    for name in ("prepare", "experiment", "aggregate"):
+        (batch_scripts / f"{name}.sbatch").write_text("#!/usr/bin/env bash\nexit 0\n")
     fakebin = tmp_path / "fake bin"
     fakebin.mkdir()
     scheduler = fakebin / "sbatch"
@@ -239,12 +261,15 @@ def test_batch_scripts_quote_paths_and_submit_correct_dependencies(tmp_path):
     import shlex
     config.write_text(f"SBTAB_PYTHON={shlex.quote(os.sys.executable)}\nSBATCH_SITE_ARGS=(--partition=rocky --account=proj_1752)\n")
     env = {**os.environ, "PATH": str(fakebin) + os.pathsep + os.environ["PATH"],
+           "SBTAB_BATCH_SCRIPT_DIR": str(batch_scripts),
            "SBATCH_CALLS": str(tmp_path / "calls.jsonl")}
     args = ["bash", str(scripts / "submit.sh"), str(config), "--output-root", str(tmp_path / "output with spaces"),
             "--datasets", "diabetes", "--models", "lightsb", "--smoke"]
     submitted = subprocess.run(args, env=env, check=True, capture_output=True, text=True)
     calls = [json.loads(line) for line in Path(env["SBATCH_CALLS"]).read_text().splitlines()]
     assert len(calls) == 3
+    for call, name in zip(calls, ("prepare", "experiment", "aggregate")):
+        assert str(batch_scripts / f"{name}.sbatch") in call
     assert f"Cluster configuration: {config}" in submitted.stderr
     logged_calls = [shlex.split(line)[1:] for line in submitted.stderr.splitlines()
                     if line.startswith("sbatch ")]

@@ -24,10 +24,11 @@ import numpy as np
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-# v2 = v1 + the dataset-eligibility rule (rows with a finite-support value occurring < 3 times are removed
-# before splitting). v1 stays available, frozen, via --protocol configs/protocols/sbtab_8515_hpo100_cv5_v1.yaml.
-PRODUCTION_PROTOCOL = Path("configs/protocols/sbtab_8515_hpo100_cv5_v2.yaml")
-SMOKE_PROTOCOL = Path("configs/protocols/sbtab_smoke_v2.yaml")
+# v4 explicitly records sample sizes, train-only preprocessing and metrics/2.
+# It retains v3's documented eligibility filtering and deterministic support repair.
+# Historical v1-v3 YAML files remain frozen and have distinct artifact roots.
+PRODUCTION_PROTOCOL = Path("configs/protocols/sbtab_8515_hpo100_cv5_v4.yaml")
+SMOKE_PROTOCOL = Path("configs/protocols/sbtab_smoke_v4.yaml")
 
 STATUSES = (
     "ok", "not_applicable", "insufficient_data", "incomplete_conditional_coverage", "undefined",
@@ -37,9 +38,12 @@ STATUSES = (
 # Values the canonical production protocol must resolve to (checked by --dry-run and tests).
 PRODUCTION_CONSTANTS = {
     ("split", "test_size"): 0.15, ("split", "random_state"): 5,
+    ("split", "stratify"): True, ("split", "pool_order"): "sorted_row_id",
+    ("split", "regression_strata_bins"): 10,
     ("tuning", "n_trials"): 100, ("tuning", "sampler_seed"): 5, ("tuning", "n_jobs"): 1,
-    ("tuning", "pruner"): "none", ("tuning", "direction"): "minimize",
+    ("tuning", "pruner"): "none", ("tuning", "direction"): "minimize", ("tuning", "sampler"): "tpe",
     ("cv", "n_splits"): 5, ("cv", "shuffle"): True, ("cv", "random_state"): 42, ("cv", "population"): "T",
+    ("cv", "n_generated"): "len_train_fold", ("seeds", "base"): 5,
 }
 
 
@@ -164,15 +168,42 @@ def load_protocol(path=None, smoke: bool = False) -> Protocol:
     if path is None:
         path = SMOKE_PROTOCOL if smoke else PRODUCTION_PROTOCOL
     data = load_yaml(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"protocol {path} must be a mapping")
     for key in ("protocol_id", "kind", "split", "tuning", "cv", "seeds", "metrics_config"):
         if key not in data:
             raise ValueError(f"protocol {path} lacks '{key}'")
+    for key in ("split", "tuning", "cv", "seeds"):
+        if not isinstance(data[key], dict):
+            raise ValueError(f"protocol {path}: '{key}' must be a mapping")
+    version = data.get("version", "sbtab.protocol/1")
+    if version not in {"sbtab.protocol/1", "sbtab.protocol/2"}:
+        raise ValueError(f"unsupported protocol version {version!r}")
+    if data["kind"] not in {"production", "smoke"}:
+        raise ValueError("the canonical pipeline accepts only kind: production or kind: smoke")
     if smoke and data["kind"] != "smoke":
         raise ValueError("--smoke requires a protocol with kind: smoke")
     if not smoke and data["kind"] == "smoke":
         raise ValueError(f"{path} is a smoke protocol; pass --smoke to run it explicitly")
     if data["kind"] == "production":
         assert_production_constants(data)
+    elif data["kind"] == "smoke":
+        # A smoke run changes the training budget, not the data partition or
+        # evaluation population. In particular it must exercise the same KFold.
+        constants = {key: value for key, value in PRODUCTION_CONSTANTS.items()
+                     if key != ("tuning", "n_trials")}
+        _assert_constants(data, constants, "smoke")
+        n_trials = data["tuning"].get("n_trials")
+        if isinstance(n_trials, bool) or not isinstance(n_trials, int) or not 1 <= n_trials < 100:
+            raise ValueError("a smoke protocol requires an integer tuning.n_trials between 1 and 99")
+    if version == "sbtab.protocol/2" or "preprocessing" in data or "n_generated" in data["tuning"]:
+        if not isinstance(data.get("preprocessing"), dict):
+            raise ValueError("protocol/2 requires an explicit preprocessing mapping")
+        _assert_constants(data, {
+            ("tuning", "n_generated"): "len_validation",
+            ("preprocessing", "tuning_fit_population"): "T",
+            ("preprocessing", "cv_fit_population"): "train_fold",
+        }, data["kind"])
     if "eligibility" in data:
         from sbtab.data.eligibility import validate_rule
         validate_rule(data["eligibility"])          # unknown keys / bad thresholds are rejected up front
@@ -183,11 +214,15 @@ def load_protocol(path=None, smoke: bool = False) -> Protocol:
 
 
 def assert_production_constants(data: dict) -> None:
-    wrong = {f"{a}.{b}": (data[a].get(b), want) for (a, b), want in PRODUCTION_CONSTANTS.items()
-             if data[a].get(b) != want}
+    _assert_constants(data, PRODUCTION_CONSTANTS, "production")
+
+
+def _assert_constants(data: dict, constants: dict, kind: str) -> None:
+    wrong = {f"{a}.{b}": (data.get(a, {}).get(b), want) for (a, b), want in constants.items()
+             if data.get(a, {}).get(b) != want or type(data.get(a, {}).get(b)) is not type(want)}
     if wrong:
-        raise ValueError("a protocol with kind: production must keep the canonical constants; "
-                         f"found (actual, required): {wrong}. Use a new protocol id and kind for a variant.")
+        raise ValueError(f"a protocol with kind: {kind} must keep the canonical constants; "
+                         f"found (actual, required): {wrong}. This pipeline does not execute protocol variants.")
 
 
 def load_metric_config(protocol: Protocol) -> dict:

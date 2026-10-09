@@ -74,7 +74,7 @@ def smoke_config(model_id: str, **overrides: Any) -> Dict[str, Any]:
     return config
 
 
-def pipeline_commands(model_id: str, dataset: str, root: str = "artifacts/sbtab_8515_hpo100_cv5_v2") -> str:
+def pipeline_commands(model_id: str, dataset: str, root: str = "artifacts/sbtab_8515_hpo100_cv5_v4") -> str:
     """The canonical staged pipeline for a real run of ``model_id`` on ``dataset`` (copy-pasteable)."""
     data, run = f"{root}/{dataset}", f"{root}/{dataset}/{model_id}/<run-id>"
     pad = " \\\n      "

@@ -1,6 +1,6 @@
 """Forest-Flow / Forest-VP imported from forest_diffusion (50635ca).
 
-See docs/GENERATIVE_ALGORITHM_AUDIT.md for corrections to the branch implementation.
+Joint Forest-Flow and variance-preserving diffusion with train-fitted representations.
 Numeric inputs are used on their supplied scale; the benchmark adapter standardizes
 them using training rows only. No continuous-output clipping is applied.
 """

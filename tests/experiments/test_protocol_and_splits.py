@@ -32,12 +32,14 @@ def clf_frame(n=400, seed=0):
 # --------------------------------------------------------------------------- protocol
 def test_production_dry_run_resolves_to_the_canonical_constants():
     p = load_protocol()
-    # v2 = v1's split / tuning / CV constants + the dataset-eligibility rule (see test_eligibility.py)
-    assert p.id == "sbtab_8515_hpo100_cv5_v2" and p.kind == "production"
+    assert p.id == "sbtab_8515_hpo100_cv5_v4" and p.kind == "production"
     assert p["split"]["test_size"] == 0.15 and p["split"]["random_state"] == 5 and p["split"]["stratify"] is True
     assert p["tuning"]["n_trials"] == 100 and p["tuning"]["sampler_seed"] == 5 and p["tuning"]["n_jobs"] == 1
     assert p["tuning"]["pruner"] == "none" and p["tuning"]["direction"] == "minimize"
     assert (p["cv"]["n_splits"], p["cv"]["shuffle"], p["cv"]["random_state"], p["cv"]["population"]) == (5, True, 42, "T")
+    assert p["tuning"]["n_generated"] == "len_validation"
+    assert p["preprocessing"] == {"tuning_fit_population": "T", "cv_fit_population": "train_fold"}
+    assert p["metrics_config"] == "configs/metrics/metrics_v2.yaml"
 
 
 def test_smoke_is_a_separate_protocol_and_cannot_pose_as_production():
@@ -141,7 +143,8 @@ def test_singleton_in_T_necessarily_fails_in_the_fold_that_tests_it_and_two_occu
     one.loc[fold0["test_row_ids"][0], "k"] = 99.0                                # a discrete value occurring once in T
     s1, r1 = ps.build_splits(one, schema, manifest_of(one), load_protocol())
     assert s1["split_status"] == "blocked_support"
-    assert [(v["where"], v["column"], v["value"]) for v in r1["violations"]] == [("fold_0", "k", "99.0")]
+    assert [(v["where"], v["column"], v["value"]) for v in r1["violations"]] == [
+        ("fold_0", "k", "99.0"), ("T_vs_V", "k", "99.0")]
     assert r1["violations"][0]["affected_row_ids"] == [fold0["test_row_ids"][0]]
 
     two = frame.copy()                                                           # two occurrences in DIFFERENT test folds:

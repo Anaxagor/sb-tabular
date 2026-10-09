@@ -50,7 +50,7 @@ def metric_meta(name: str) -> Tuple[str, str]:
     if ".gaps." in n:
         score = n.split(".gaps.", 1)[1].split(".", 1)[0]
         if leaf == "delta_pct":
-            return "lower_is_better", "percent (positive = synthetic training is worse)"
+            return "lower_is_better", "percent absolute difference from real reference"
         if leaf == "abs_gap":
             return "lower_is_better", metric_meta(f"utility.scores.{score}")[1]
         if leaf in ("real", "synth"):
@@ -62,7 +62,7 @@ def metric_meta(name: str) -> Tuple[str, str]:
     if "mass" in leaf or leaf.endswith("_rate") or "coverage" in leaf:
         return "none", "fraction"
     if leaf.endswith(("_pct", "_percent")) or "gap_pct" in leaf or "relative_gap" in leaf:
-        return "lower_is_better", "percent (positive = synthetic training is worse)"
+        return "lower_is_better", "percent absolute difference from real reference"
     if any(k in leaf for k in ("f1", "r2")):
         return "higher_is_better", "score"
     if "mape" in leaf:
@@ -117,14 +117,17 @@ def target_raw(pre: CommonPreprocessor, schema: DatasetSchema, column: pd.Series
 # --------------------------------------------------------------------------- utility caches (per dataset, not per generator)
 def utility_params(dataset_dir: Path, key: str, task: str, X0: pd.DataFrame, y0, cat_features: List[str], cfg) -> dict:
     from sbtab.evaluation import resolve_utility_params
+    from sbtab.evaluation.utility import UTILITY_PARAMETER_POLICY
     path = dataset_dir / "utility_config.json"
     with file_lock(dataset_dir / ".utility_config.lock"):
         store = read_json(path) if path.exists() else {}
         if key not in store:
             store[key] = {"params": resolve_utility_params(task, X0, y0, cat_features, cfg), "task": task,
-                          "convention": "task-appropriate CatBoost defaults resolved ONCE on the first real CV training fold "
-                                        "(fold 0) and frozen for real and synthetic fits in every fold and every generator; "
-                                        "no validation set, no early stopping, CPU, seed 0, fixed thread count",
+                          "parameter_policy": UTILITY_PARAMETER_POLICY,
+                          "convention": "fixed task-appropriate CatBoost CPU defaults-based preset; "
+                                        "no probe fit, automatic learning rate or row-count-dependent subsampling; "
+                                        "identical parameters for real and synthetic fits in every fold and generator; "
+                                        "no validation set or early stopping, configured seed and thread count",
                           "libraries": {"catboost": library_versions().get("catboost")}}
             write_json(path, store)
         return store[key]["params"]
@@ -228,12 +231,9 @@ def evaluate_fold(k: int, frame, schema, splits, run_dir: Path, out_dir: Path, m
         key = canonical_hash({"dataset": splits["dataset_fingerprint"], "membership": splits["membership_hash"],
                               "schema": splits["schema_hash"], "evaluator": metric_cfg_dict,
                               "catboost": library_versions().get("catboost")})
-        f0 = splits["folds"][0]
-        pre0 = pre if k == 0 else CommonPreprocessor(schema).fit(frame.loc[f0["train_row_ids"]])
-        T0 = T_k if k == 0 else pre0.transform(frame.loc[f0["train_row_ids"]])
         try:
             with timer.measure("utility_defaults_seconds"):
-                params = utility_params(dataset_dir, key, task, T0[feats], target_raw(pre0, schema, T0[target]), cats, mcfg)
+                params = utility_params(dataset_dir, key, task, T_k[feats], target_raw(pre, schema, T_k[target]), cats, mcfg)
             y_tr, y_te = target_raw(pre, schema, T_k[target]), target_raw(pre, schema, E_k[target])
             t0 = time.perf_counter()
             ref = real_reference(dataset_dir, key, k, lambda: ev.utility_reference(
@@ -336,7 +336,7 @@ def run(cv_run_manifest, metrics_config_path, folds: Optional[List[int]] = None,
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Per-fold metrics, utility predictions, diagnostics and aggregates; no generator retraining.")
     ap.add_argument("--cv-run", required=True, help="cv/cv_run_manifest.json written by cross_validate")
-    ap.add_argument("--metrics-config", default="configs/metrics/metrics_v1.yaml")
+    ap.add_argument("--metrics-config", default="configs/metrics/metrics_v2.yaml")
     ap.add_argument("--folds", type=int, nargs="*", default=None)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--smoke", action="store_true", help="accepted for symmetry; metrics are identical in smoke runs")

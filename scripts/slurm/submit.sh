@@ -26,6 +26,17 @@ printf 'Cluster configuration: %s\n' "$SBTAB_CLUSTER_CONFIG" >&2
 : "${SBTAB_DEVICE:=cuda}"
 : "${SBTAB_TASK_IDS:=}"
 : "${SBTAB_RETRY_FAILED_FOLDS:=0}"
+: "${SBTAB_BATCH_SCRIPT_DIR:=$SBTAB_REPO_ROOT/scripts/slurm}"
+# Batch scripts are site-local and deliberately excluded from Git. Fail before
+# creating a plan or submitting a partial dependency chain if any are missing.
+for SBTAB_BATCH_NAME in prepare experiment aggregate; do
+    if [[ ! -f "$SBTAB_BATCH_SCRIPT_DIR/$SBTAB_BATCH_NAME.sbatch" ]]; then
+        printf 'Missing local batch script: %s/%s.sbatch; provide site-specific scripts or set SBTAB_BATCH_SCRIPT_DIR.\n' \
+            "$SBTAB_BATCH_SCRIPT_DIR" "$SBTAB_BATCH_NAME" >&2
+        exit 2
+    fi
+done
+SBTAB_BATCH_SCRIPT_DIR=$(cd -- "$SBTAB_BATCH_SCRIPT_DIR" && pwd -P)
 if [[ ! $SBTAB_MAX_CONCURRENT =~ ^[1-9][0-9]*$ ]]; then
     echo "SBTAB_MAX_CONCURRENT must be a positive integer" >&2
     exit 2
@@ -77,19 +88,19 @@ SBTAB_COMMON_ARGS=(--parsable --export=ALL --chdir="$SBTAB_REPO_ROOT" "${SBATCH_
 SBTAB_PREPARE_JOB=$(submit_job "${SBTAB_COMMON_ARGS[@]}" "${SBTAB_PREPARE_ARGS[@]}" \
     --output="$SBTAB_LOG_DIR/prepare-%j.out" \
     --error="$SBTAB_LOG_DIR/prepare-%j.err" \
-    "$SBTAB_REPO_ROOT/scripts/slurm/prepare.sbatch" "$SBTAB_REPO_ROOT" "$SBTAB_CLUSTER_CONFIG" "$SBTAB_PLAN")
+    "$SBTAB_BATCH_SCRIPT_DIR/prepare.sbatch" "$SBTAB_REPO_ROOT" "$SBTAB_CLUSTER_CONFIG" "$SBTAB_PLAN")
 if [[ $SBTAB_DRY_RUN == 0 ]]; then printf 'prepare %s\n' "$SBTAB_PREPARE_JOB" >> "$SBTAB_CONTROL_DIR/submissions.log"; fi
 SBTAB_ARRAY_JOB=$(submit_job "${SBTAB_COMMON_ARGS[@]}" "${SBTAB_EXPERIMENT_ARGS[@]}" \
     --dependency="afterok:$SBTAB_PREPARE_JOB" --kill-on-invalid-dep=yes --array="$SBTAB_ARRAY" \
     --output="$SBTAB_LOG_DIR/experiment-%A_%a.out" \
     --error="$SBTAB_LOG_DIR/experiment-%A_%a.err" \
-    "$SBTAB_REPO_ROOT/scripts/slurm/experiment.sbatch" "$SBTAB_REPO_ROOT" "$SBTAB_CLUSTER_CONFIG" "$SBTAB_PLAN" \
+    "$SBTAB_BATCH_SCRIPT_DIR/experiment.sbatch" "$SBTAB_REPO_ROOT" "$SBTAB_CLUSTER_CONFIG" "$SBTAB_PLAN" \
     "$SBTAB_STAGE" "$SBTAB_RETRY_FAILED_FOLDS")
 if [[ $SBTAB_DRY_RUN == 0 ]]; then printf 'array %s\n' "$SBTAB_ARRAY_JOB" >> "$SBTAB_CONTROL_DIR/submissions.log"; fi
 SBTAB_AGGREGATE_JOB=$(submit_job "${SBTAB_COMMON_ARGS[@]}" "${SBTAB_AGGREGATE_ARGS[@]}" \
     --dependency="afterany:$SBTAB_ARRAY_JOB" \
     --output="$SBTAB_LOG_DIR/aggregate-%j.out" \
     --error="$SBTAB_LOG_DIR/aggregate-%j.err" \
-    "$SBTAB_REPO_ROOT/scripts/slurm/aggregate.sbatch" "$SBTAB_REPO_ROOT" "$SBTAB_CLUSTER_CONFIG" "$SBTAB_PLAN")
+    "$SBTAB_BATCH_SCRIPT_DIR/aggregate.sbatch" "$SBTAB_REPO_ROOT" "$SBTAB_CLUSTER_CONFIG" "$SBTAB_PLAN")
 if [[ $SBTAB_DRY_RUN == 0 ]]; then printf 'aggregate %s\n' "$SBTAB_AGGREGATE_JOB" >> "$SBTAB_CONTROL_DIR/submissions.log"; fi
 printf 'prepare=%s array=%s aggregate=%s\n' "$SBTAB_PREPARE_JOB" "$SBTAB_ARRAY_JOB" "$SBTAB_AGGREGATE_JOB"

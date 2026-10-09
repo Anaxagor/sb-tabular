@@ -2,28 +2,29 @@
 Stage 0 — immutable split manifests and the category-support report. No model fitting.
 
     python -m sbtab.experiments.prepare_splits --dataset adult \
-        --protocol configs/protocols/sbtab_8515_hpo100_cv5_v2.yaml \
-        --output-root artifacts/sbtab_8515_hpo100_cv5_v2
+        --protocol configs/protocols/sbtab_8515_hpo100_cv5_v4.yaml \
+        --output-root artifacts/sbtab_8515_hpo100_cv5_v4
 
 Names: D complete eligible dataset (the source table after the protocol's dataset-eligibility rule — none
-under v1; under v2 rows whose value in a finite-support column occurs < 3 times are removed, see
+under v1; under v2-v4 rows whose value in a finite-support column occurs < 3 times are removed, see
 ``eligibility_report.json``), T the 85 % tuning-training pool, V the 15 %
 tuning-validation set, (T_k, E_k) the train/test pair of CV fold k inside T.
 
 Target stratification does not guarantee support coverage of every feature, so
-support is validated explicitly. If the fixed split fails, the dataset is stopped
-with ``split_status = blocked_support`` and a structured report. No alternative
-seed is searched, no rare row is pinned, no category is merged, K is not changed,
-no row is discarded BECAUSE OF THE SPLIT and no global encoder is fitted.
+support is validated explicitly. The v4 default uses deterministic same-stratum
+T/V swaps (introduced in v3) before constructing ordinary KFold. Every swap is
+recorded and replayed. If coverage still fails, the dataset is stopped with
+``split_status = blocked_support`` and a structured report. No alternative seed
+is searched, no rare row is pinned, no category is merged, K is not changed,
+no CV test row is moved to its training fold and no global encoder is fitted.
 
 The v2 eligibility rule is a different thing: it removes rows by value counts of the
 whole source table, before and independently of any split. It reduces blocking but
 cannot guarantee coverage (3 rows of a value can still fall 1 into V and 2 into the
 same CV test fold), so this validation runs after it and can still stop a dataset.
 
-The opt-in v3 protocol repairs coverage by seeded, same-stratum T/V swaps before
-constructing the same ordinary KFold. No additional rows are removed. Its bounded
-search, audit trail and unresolved failures are explicit; v1/v2 remain unchanged.
+Support repair removes no additional rows. Its bounded search and unresolved
+failures remain explicit; the historical v1-v3 protocol files stay unchanged.
 """
 from __future__ import annotations
 
@@ -135,6 +136,8 @@ def build_splits(frame: pd.DataFrame, schema: DatasetSchema, manifest: dict, pro
                          {"stratification": strata_meta}) from e
     T = np.sort(t_ids)          # pool_order: sorted_row_id — KFold positions refer to this order
     V = np.sort(v_ids)
+    if len(T) < cv["n_splits"]:
+        raise StageError("insufficient_data", f"T has {len(T)} rows, fewer than the fixed {cv['n_splits']} CV folds")
     repair = None
     if "support_repair" in sp:
         from sbtab.data.support_split import repair_support_split
@@ -188,7 +191,8 @@ def build_splits(frame: pd.DataFrame, schema: DatasetSchema, manifest: dict, pro
         "dataset_fingerprint": manifest["fingerprint"], "schema_hash": schema.hash(),
         "n_rows": int(len(frame)), "n_T": int(len(T)), "n_V": int(len(V)),
         "split": {"test_size": sp["test_size"], "random_state": sp["random_state"], "splitter": "sklearn.train_test_split",
-                  "stratification": strata_meta, "pool_order": sp["pool_order"]},
+                  "stratification": strata_meta, "regression_strata_bins": sp["regression_strata_bins"],
+                  "pool_order": sp["pool_order"]},
         "cv": {"splitter": "sklearn.KFold", "n_splits": cv["n_splits"], "shuffle": cv["shuffle"],
                "random_state": cv["random_state"], "population": "T"},
         "T_row_ids": [int(i) for i in T], "V_row_ids": [int(i) for i in V],
@@ -269,16 +273,29 @@ def load_split_artifacts(splits_path) -> Tuple[pd.DataFrame, DatasetSchema, dict
     schema = DatasetSchema.from_dict(read_json(d / "schema.json"))
     if schema.hash() != splits["schema_hash"]:
         raise StageError("undefined", "schema.json does not match the schema hash recorded in splits.json")
+    marker_path = d.parent / "protocol.json"
+    if not marker_path.exists():
+        raise StageError("undefined", "split artifacts require the immutable output root's protocol.json")
+    marker = read_json(marker_path)
+    protocol_data = marker.get("protocol", {})
+    if (canonical_hash(protocol_data) != marker.get("protocol_hash")
+            or marker.get("protocol_hash") != splits.get("protocol_hash")
+            or protocol_data.get("protocol_id") != marker.get("protocol_id")
+            or marker.get("protocol_id") != splits.get("protocol_id")
+            or protocol_data.get("kind") != marker.get("kind")
+            or marker.get("kind") != splits.get("protocol_kind")):
+        raise StageError("undefined", "protocol.json does not match the protocol recorded in splits.json")
     frame = pd.read_parquet(d / "data.parquet").set_index("row_id")
     if list(frame.columns) != schema.column_order:
         raise StageError("undefined", "data.parquet columns do not match schema.json")
     for c in schema.categorical:
         frame[c] = frame[c].astype(object).where(~frame[c].isna(), None)
-    validate_split_artifacts(frame, splits, schema)
+    validate_split_artifacts(frame, splits, schema, Protocol(str(marker_path), protocol_data))
     return frame, schema, splits
 
 
-def validate_split_artifacts(frame: pd.DataFrame, splits: dict, schema: Optional[DatasetSchema] = None) -> None:
+def validate_split_artifacts(frame: pd.DataFrame, splits: dict, schema: Optional[DatasetSchema] = None,
+                             protocol: Optional[Protocol] = None) -> None:
     """Verify persisted values and actual memberships, rather than trusting stored hashes."""
     def require(ok, message):
         if not ok:
@@ -290,6 +307,9 @@ def validate_split_artifacts(frame: pd.DataFrame, splits: dict, schema: Optional
         require(len(values) == len(set(values)), f"duplicate row IDs in {name}")
         return set(values)
 
+    require(splits.get("version") == SPLITS_VERSION, "unsupported split artifact version")
+    require(schema is not None, "schema required to verify stratification and category support")
+    require(splits.get("split_status") in {"ok", "blocked_support"}, "unsupported split status")
     rows = ids(frame.index.tolist(), "data.parquet")
     require(frame.index.tolist() == sorted(rows), "saved dataset row IDs must retain source order")
     require(frame_fingerprint(frame) == splits["dataset_fingerprint"], "dataset fingerprint mismatch")
@@ -298,24 +318,47 @@ def validate_split_artifacts(frame: pd.DataFrame, splits: dict, schema: Optional
     require(not T & V and T | V == rows, "T and V must partition the saved dataset")
     require(len(T) == splits["n_T"] and len(V) == splits["n_V"], "T/V row counts mismatch")
     require(splits["T_row_ids"] == sorted(T), "T must be in sorted row-ID order")
+    require(splits["V_row_ids"] == sorted(V), "V must be in sorted row-ID order")
     for name in ("T", "V"):
         require(row_id_hash(splits[f"{name}_row_ids"]) == splits[f"{name}_hash"], f"{name} membership hash mismatch")
     cv = splits["cv"]
+    sp = splits["split"]
+    require(cv.get("population") == "T" and cv.get("splitter") == "sklearn.KFold", "unsupported CV definition")
+    require(sp.get("pool_order") == "sorted_row_id", "unsupported pool order")
+    # v1/v2 artifacts did not persist the requested regression bin count outside
+    # the target-stratification metadata. Reconstruct it without changing them.
+    bins = sp.get("regression_strata_bins", sp["stratification"].get("requested_bins", 10))
+    if protocol is not None:
+        for key in ("test_size", "random_state", "pool_order"):
+            require(sp.get(key) == protocol["split"].get(key), f"split.{key} differs from the frozen protocol")
+        require(bins == protocol["split"]["regression_strata_bins"], "stratification bins differ from the frozen protocol")
+        for key in ("population", "n_splits", "shuffle", "random_state"):
+            require(cv.get(key) == protocol["cv"].get(key), f"cv.{key} differs from the frozen protocol")
+        require(splits.get("eligibility_rule") == protocol.eligibility, "eligibility differs from the frozen protocol")
+        require(sp.get("support_repair", {}).get("rule") == protocol["split"].get("support_repair"),
+                "support repair differs from the frozen protocol")
+
+    proto = Protocol("<split artifact>", {"split": {**sp, "stratify": True, "regression_strata_bins": bins}})
+    strata, meta = stratification_vector(frame, schema, proto)
+    require(meta == sp["stratification"], "stratification metadata mismatch")
+    initial_T, initial_V = train_test_split(frame.index.to_numpy(dtype=np.int64), test_size=sp["test_size"],
+                                           random_state=sp["random_state"], stratify=strata)
+    validation_columns = []
     if "support_repair" in splits["split"]:
         from sbtab.data.support_split import repair_support_split
-        require(schema is not None, "schema required to verify support-repaired splits")
-        sp = splits["split"]
-        proto = Protocol("<split artifact>", {"split": {**sp, "stratify": True}})
-        strata, meta = stratification_vector(frame, schema, proto)
-        require(meta == sp["stratification"], "stratification metadata mismatch")
-        initial_T, initial_V = train_test_split(frame.index.to_numpy(dtype=np.int64), test_size=sp["test_size"],
-                                               random_state=sp["random_state"], stratify=strata)
+        require(sp.get("splitter") == "sklearn.train_test_split + stratum_swap/1", "unsupported repaired splitter")
         expected_T, expected_V, audit = repair_support_split(frame, schema, initial_T, initial_V, strata,
             sp["random_state"], cv, sp["support_repair"]["rule"])
         require(expected_T.tolist() == splits["T_row_ids"] and expected_V.tolist() == splits["V_row_ids"],
                 "T/V membership does not match declared support repair")
         require(audit == sp["support_repair"]["audit"], "support repair audit mismatch")
         require((audit["final_deficit"] == 0) == (splits["split_status"] == "ok"), "support status mismatch")
+        validation_columns = audit["validation_columns"]
+    else:
+        require(sp.get("splitter") == "sklearn.train_test_split", "unsupported splitter")
+        require(np.sort(initial_T).tolist() == splits["T_row_ids"]
+                and np.sort(initial_V).tolist() == splits["V_row_ids"],
+                "T/V membership does not match the declared stratified sklearn.train_test_split")
     require(len(splits["folds"]) == cv["n_splits"], "fold count mismatch")
     kf = KFold(n_splits=cv["n_splits"], shuffle=cv["shuffle"], random_state=cv["random_state"])
     pool = np.asarray(splits["T_row_ids"])
@@ -330,6 +373,13 @@ def validate_split_artifacts(frame: pd.DataFrame, splits: dict, schema: Optional
     membership = canonical_hash({"T": splits["T_hash"], "V": splits["V_hash"],
                                  "folds": [(f["train_hash"], f["test_hash"]) for f in splits["folds"]]})
     require(membership == splits["membership_hash"], "overall membership hash mismatch")
+    violations = support_violations(frame, schema, splits["T_row_ids"], splits["V_row_ids"], "V_vs_T")
+    for fold in splits["folds"]:
+        violations += support_violations(frame, schema, fold["train_row_ids"], fold["test_row_ids"], f"fold_{fold['fold']}")
+    if validation_columns:
+        violations += [v for v in support_violations(frame, schema, splits["V_row_ids"], splits["T_row_ids"], "T_vs_V")
+                       if v["column"] in validation_columns]
+    require(splits["split_status"] == ("blocked_support" if violations else "ok"), "support status mismatch")
 
 
 def require_ok(splits: dict) -> None:
@@ -355,6 +405,8 @@ def main(argv=None) -> int:
     for name in names:
         try:
             s = run(name, protocol, args.output_root, args.dataset_configs, dry_run=args.dry_run)
+            if s["split_status"] != "ok":
+                rc = 1
         except StageError as e:
             s = {"dataset": name, "protocol_id": protocol.id, "split_status": e.status, "error": str(e)}
             rc = 1

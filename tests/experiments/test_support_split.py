@@ -13,7 +13,9 @@ from sbtab.experiments import pipeline, prepare_splits as ps
 from sbtab.experiments.experiment_common import Protocol, StageError, load_protocol, read_json, write_json
 
 
+V2 = "configs/protocols/sbtab_8515_hpo100_cv5_v2.yaml"
 V3 = "configs/protocols/sbtab_8515_hpo100_cv5_v3.yaml"
+V4 = "configs/protocols/sbtab_8515_hpo100_cv5_v4.yaml"
 SMOKE_V3 = "configs/protocols/sbtab_smoke_v3.yaml"
 
 
@@ -38,7 +40,7 @@ def assert_partition(frame, schema, old, new):
 
 @pytest.mark.parametrize("name", ["breast_cancer", "house_sales", "student_perf"])
 def test_real_blocked_datasets_are_repaired_without_extra_filtering(name):
-    v2, v3 = load_protocol(), load_protocol(V3)
+    v2, v3 = load_protocol(V2), load_protocol(V3)
     frame, schema, manifest, eligibility = ps.load_eligible_dataset(name, v3)
     assert v3.eligibility == v2.eligibility
     old, _ = ps.build_splits(frame, schema, manifest, v2)
@@ -59,16 +61,18 @@ def test_real_blocked_datasets_are_repaired_without_extra_filtering(name):
     ps.validate_split_artifacts(frame, new, schema)
 
 
-def test_healthy_split_is_unchanged_and_old_protocol_is_still_default():
-    assert load_protocol().id == "sbtab_8515_hpo100_cv5_v2"
+def test_healthy_split_is_unchanged_and_v4_retains_v3_split_definition():
+    assert load_protocol().id == "sbtab_8515_hpo100_cv5_v4"
     v3 = load_protocol(V3)
     f, s, m, _ = ps.load_eligible_dataset("diabetes", v3)
-    old, _ = ps.build_splits(f, s, m, load_protocol())
+    old, _ = ps.build_splits(f, s, m, load_protocol(V2))
     new, _ = ps.build_splits(f, s, m, v3)
     assert new["membership_hash"] == old["membership_hash"]
     assert new["split"]["support_repair"]["audit"]["status"] == "unchanged"
     assert v3["tuning"]["n_trials"] == 100 and v3["cv"] == load_protocol()["cv"]
     assert load_protocol(SMOKE_V3, smoke=True)["split"] == v3["split"]
+    assert load_protocol()["split"] == v3["split"]
+    assert load_protocol(smoke=True)["split"] == v3["split"]
 
 
 def test_singleton_is_blocked_instead_of_copied_dropped_or_encoded_globally():
@@ -104,13 +108,13 @@ def test_bounded_search_and_invalid_rules():
 
 def test_pipeline_preparation_persists_and_verifies_repaired_memberships(tmp_path):
     result = pipeline.create_plan(tmp_path, datasets=["breast_cancer"], models=["csbm"],
-                                  protocol_path=V3)
+                                  protocol_path=V4)
     assert pipeline.prepare(result["plan"])["counts"] == {"ok": 1}
     path = tmp_path / "breast_cancer/splits.json"
     frame, schema, splits = ps.load_split_artifacts(path)
     assert len(frame) == 283 and splits["split_status"] == "ok"
     with pytest.raises(StageError, match="different --output-root"):
-        ps.run("breast_cancer", load_protocol(), tmp_path)
+        ps.run("breast_cancer", load_protocol(V2), tmp_path)
     corrupted = read_json(path)
     corrupted["split"]["support_repair"]["audit"]["swaps"][0]["to_training"] = -1
     write_json(path, corrupted)

@@ -3,7 +3,8 @@
 A research framework for **synthetic tabular data generation with Schrödinger Bridges (SB)**.
 
 The repository implements several SB solver families under one data pipeline and compares them
-against non-SB generative baselines (CTGAN, TabDDPM, a simplified VE score-SDE, TabPFGen) under one
+against non-SB generative baselines (CTGAN, TabDDPM, a simplified VE score-SDE, TabPFGen and
+ForestDiffusion) under one
 versioned experimental protocol: separate, reproducible stages for splitting, tuning, cross-validation
 and metric calculation, with every artifact saved locally.
 
@@ -38,14 +39,11 @@ On top of that grid, three standalone solvers cover other points of the design s
   per-categorical-column logits simultaneously, combining the Gaussian and categorical
   reference processes. The only solver that handles mixed tables natively end-to-end.
 
-After merging `feature/tuning` (`0b9f15f`), MixedSBM uses one network and optimizer
-across forward/backward stages, the historical per-step `alpha` reference, and a
-configurable step or epoch budget. Its bridge helpers are isolated under
-`sbtab/solvers/msbm/`; CSBM keeps its semigroup reference. Production search-space
-version 2 restores the tuning ranges while retaining the canonical protocol's
-mandatory dynamics noise. New MSBM checkpoints use `sbtab.mixedsbm/3`; the former
-two-network `/2` checkpoints and `cat_mixing_rate` configurations require the
-pre-merge implementation. Existing tuning studies must start a new run.
+MixedSBM shares one network and optimizer across forward and backward training stages. Its
+categorical reference uses exact transition powers and log-space bridge probabilities; continuous
+and categorical paths have their own reference processes. CSBM uses a continuous-time categorical
+Markov semigroup. MixedSBM checkpoints use `sbtab.mixedsbm/4`; earlier transition-law checkpoints
+require retraining.
 
 ### Data pipeline
 
@@ -73,11 +71,11 @@ Every model (SB solver or baseline) sits behind the same pipeline:
 ```text
 sb-tabular/
 ├── configs/
-│   ├── protocols/                     # sbtab_8515_hpo100_cv5_v2 (production, default), sbtab_smoke_v2; v1 files frozen
+│   ├── protocols/                     # sbtab_8515_hpo100_cv5_v4 (default), sbtab_smoke_v4
 │   ├── datasets/                      # explicit per-dataset schema metadata (28 datasets)
 │   ├── search_spaces/                 # one per registry id; smoke/ holds the bounded variants
-│   └── metrics/                       # metrics_v1.yaml (metric version sbtab.metrics/1)
-├── docs/IMPLEMENTATION_REPORT.md      # defects, contracts, protocol, feasibility, limitations
+│   └── metrics/                       # metrics_v2.yaml (metric version sbtab.metrics/2)
+├── docs/CLUSTER_EXPERIMENT.md         # deployment and run instructions
 ├── examples/                          # thin runnable demos built on the adapters
 ├── tests/                             # bridge / solvers / baselines / evaluation / experiments
 └── sbtab/
@@ -88,18 +86,18 @@ sb-tabular/
     │   ├── registry.py                # solver_registry: stable ids, status, regimes
     │   ├── structure.py               # DAG learning shared by the structural solvers
     │   ├── continuous_time/ discrete_time/   # IPF-DSB and IMF-DSBM variants
-    │   └── light_sb/ csbm/ msbm/
-    ├── baselines/                     # ctgan, tabddpm, stasy (= simplified VE score-SDE), tabpfn (= TabPFGen)
+    │   └── light_sb/ csbm/ msbm/ ForestDiffusion/
+    ├── baselines/                     # ctgan, tabddpm, stasy, tabpfn, forest_diffusion, tabbyflow
     ├── adapters/                      # model adapters + reversible representations
     ├── evaluation/                    # THE metric implementation (tuning and evaluation share it)
     └── experiments/
         ├── experiment_common.py       # protocol loading, hashes/provenance, seed ledger, atomic I/O, timing
         ├── prepare_splits.py  tune.py  cross_validate.py  calculate_metrics.py  aggregate_results.py
-        └── legacy/                    # frozen pre-protocol scripts and historical result files
+        └── pipeline.py                # immutable plans, workers, locking and aggregation
 ```
 
 `sbtab/data/{schema,splits,datamodule}.py` and `sbtab/transforms/` are the earlier pipeline; they are kept
-for the legacy scripts and are not used by the experiment stages.
+as reusable compatibility APIs; the experiment stages use the explicit schema and common preprocessor.
 
 ## Registry
 
@@ -136,8 +134,7 @@ when omitted, it inherits `lr`. Defaults remain two hidden layers, zero dropout,
 in each direction, so existing `sbtab.csbm/2` checkpoints retain their architecture. The production search
 spaces tune depth, dropout, and the two optimizers independently; all settings survive checkpoint reload.
 
-ForestDiffusion was imported from `forest_diffusion` (`50635ca`) and corrected during the
-[generative algorithm audit](docs/GENERATIVE_ALGORITHM_AUDIT.md). It uses joint unconditional generation,
+ForestDiffusion uses joint unconditional generation,
 train-fitted z-scores and full one-hot encoding, with no continuous clipping. Its iterator avoids materializing
 all time levels, but XGBoost's QuantileDMatrix retains quantized training data in memory. The default search
 space uses Forest-Flow. The separate [Forest-VP production profile](configs/search_spaces/forest_vp/forestdiffusion.yaml)
@@ -160,9 +157,6 @@ ForestDiffusion profile, so specify `--models forestdiffusion`. Run the resultin
 output roots for them. Plans and resumed studies validate the search-space hash and reject a profile switch.
 Direct `tune` calls can use `--search-space configs/search_spaces/forest_vp/forestdiffusion.yaml`.
 
-The audit also corrected MSBM's categorical reference; checkpoints now use `sbtab.mixedsbm/4`.
-Older MSBM checkpoints must be retrained because their transition law differs.
-
 All canonical SB entries sample **with** dynamics noise: a drift trained for the stochastic bridge is not a
 probability-flow ODE, so `noise` is not a tunable option (a noiseless run reports `*_noiseless_heuristic`).
 
@@ -173,31 +167,27 @@ probability-flow ODE, so `noise` is not a tunable option (a noiseless run report
 `sbtab.data.loading.load_bundle` loads them under numpy 1.26 / pandas 2.2 as well, and `prepare_splits`
 re-materialises every dataset it uses as Parquet + JSON schema with a value-based fingerprint.
 
-**Category support.** Every value of a categorical / discrete column present in a held-out part must also be
-present in the corresponding training part (V ⊆ T, and E_k ⊆ T_k for every fold). Without any row filtering
-(protocol `v1`, frozen) only 18 of 28 datasets pass. The default protocol `v2` first removes rows carrying a value
-seen fewer than 3 times (typically single-row artefacts such as `gender='Other'`): **25 of 28 pass**. Row loss is
-≤ 1.2 % except for two small tables: `palmer_penguins` 5.5 % and `lymphography` 6.8 %. Two things to know:
+**Category support.** The default protocol first removes rows containing categorical or discrete
+values observed fewer than three times, iterating to a fixed point before splitting. This includes
+rare target classes and can change the population or classification task. Original row IDs, removed
+values and target changes are recorded in `eligibility_report.json`; filtering is never hidden.
 
-- The rule also removes rare **target classes** — `lymphography` loses its 2-row class `normal`
-  (`task_changed: true` in `eligibility_report.json`).
-- A count threshold *reduces* but cannot *guarantee* coverage: `breast_cancer`, `house_sales` and `student_perf`
-  stay blocked (in `breast_cancer` a value with exactly 3 rows has two of them in the same test fold). Measured
-  passes by threshold: 1 → 18, 2 → 23, **3 → 25**, 4 → 26, 5 → 28, 15 → 26, 20 → 24 (large thresholds empty whole
-  columns). Change `eligibility.min_value_count` in a **new** protocol file to use another value.
-
-A dataset that still fails is stopped before tuning with a structured `support_report.json` — no alternative seed,
-merged category or split-dependent row removal is used. See `docs/IMPLEMENTATION_REPORT.md` §4.
+The stratified 85/15 split is followed, when needed, by deterministic exchanges of whole rows between
+T and V within the same target stratum. This retains all eligible rows, split sizes and stratum counts.
+Five-fold KFold is then applied to the resulting sorted T pool with seed 42. Every finite-support value
+in a held-out set must occur in its training set. The repair uses support and strata only, never model
+scores, and records each exchange. Its bounded search can fail: unresolved datasets remain
+`blocked_support` and are excluded before training. No encoder learns categories from held-out rows.
 
 ## Experimental protocol
 
-Protocol `sbtab_8515_hpo100_cv5_v2` (`configs/protocols/`); every constant is part of the protocol hash and none
+Protocol `sbtab_8515_hpo100_cv5_v4` (`configs/protocols/`); every constant is part of the protocol hash and none
 can be overridden on the command line.
 
 | stage | behaviour |
 |---|---|
-| eligibility (v2) | **before any split**, rows whose value in a categorical / discrete column (incl. the classification target) occurs in fewer than **3** rows of the table are removed, iterated to a fixed point; recorded in `eligibility_report.json`; original row ids are kept |
-| split | stratified `train_test_split(test_size=0.15, random_state=5)` → T (85 %) / V (15 %); regression targets use persisted quantile strata |
+| eligibility | **before any split**, rows whose value in a categorical / discrete column (incl. the classification target) occurs in fewer than **3** rows of the table are removed, iterated to a fixed point; recorded in `eligibility_report.json`; original row ids are kept |
+| split | stratified `train_test_split(test_size=0.15, random_state=5)` → T (85 %) / V (15 %); regression targets use persisted quantile strata; deterministic same-stratum support repair if needed |
 | tuning | 100 **allocated** Optuna trials (failures count, are kept, are never replaced), TPE seed 5, `n_jobs=1`, no pruning; fit on T, generate exactly len(V) rows, minimise the regime objective |
 | CV | `KFold(5, shuffle=True, random_state=42)` on **T only**; fresh preprocessing + model per fold; hyperparameters only, never tuned weights; exactly len(T_k) rows |
 | metrics | generated rows vs held-out E_k; everything a metric learns comes from T_k |
@@ -207,21 +197,21 @@ on all of T, which contains every CV test fold.
 
 ```bash
 python -m sbtab.experiments.prepare_splits --dataset insurance \
-    --output-root artifacts/sbtab_8515_hpo100_cv5_v2
+    --output-root artifacts/sbtab_8515_hpo100_cv5_v4
 python -m sbtab.experiments.tune --dataset insurance --model mixedsbm \
-    --splits artifacts/sbtab_8515_hpo100_cv5_v2/insurance/splits.json \
+    --splits artifacts/sbtab_8515_hpo100_cv5_v4/insurance/splits.json \
     --search-space configs/search_spaces/mixedsbm.yaml --resume
 python -m sbtab.experiments.cross_validate --dataset insurance --model mixedsbm \
-    --selected-config artifacts/sbtab_8515_hpo100_cv5_v2/insurance/mixedsbm/<run-id>/tuning/selected_config.json \
-    --splits artifacts/sbtab_8515_hpo100_cv5_v2/insurance/splits.json \
-    --output-root artifacts/sbtab_8515_hpo100_cv5_v2
+    --selected-config artifacts/sbtab_8515_hpo100_cv5_v4/insurance/mixedsbm/<run-id>/tuning/selected_config.json \
+    --splits artifacts/sbtab_8515_hpo100_cv5_v4/insurance/splits.json \
+    --output-root artifacts/sbtab_8515_hpo100_cv5_v4
 python -m sbtab.experiments.calculate_metrics \
-    --cv-run artifacts/sbtab_8515_hpo100_cv5_v2/insurance/mixedsbm/<run-id>/cv/cv_run_manifest.json \
-    --metrics-config configs/metrics/metrics_v1.yaml
-python -m sbtab.experiments.aggregate_results --output-root artifacts/sbtab_8515_hpo100_cv5_v2
+    --cv-run artifacts/sbtab_8515_hpo100_cv5_v4/insurance/mixedsbm/<run-id>/cv/cv_run_manifest.json \
+    --metrics-config configs/metrics/metrics_v2.yaml
+python -m sbtab.experiments.aggregate_results --output-root artifacts/sbtab_8515_hpo100_cv5_v4
 ```
 
-Every stage has `--dry-run`. `--smoke` selects the **separate** protocol `sbtab_smoke_v2` (3 trials) together with
+Every stage has `--dry-run`. `--smoke` selects the **separate** protocol `sbtab_smoke_v4` (3 trials) together with
 `configs/search_spaces/smoke/*.yaml` and its own artifact root; a smoke run is never evidence that the 100-trial
 benchmark was completed. `tune --resume` allocates only the remaining budget and refuses to resume when the data,
 split, search space, metric config, checkpoint format, protocol, dependency versions or implementation changed.
@@ -232,43 +222,45 @@ new `evaluation/<metric-version>-<hash>/` namespace.
 
 ### Complete pipeline and SLURM arrays
 
-The [cluster run guide](docs/CLUSTER_EXPERIMENT.md) connects all stages into an array for partition
-`rocky`, account `proj_1752`: one task per compatible dataset/model pair, 100 tuning trials, five
-fresh CV fits, all test metrics and TSTR, followed by aggregation. Each task requests one GPU,
-eight CPUs and two days; generator tuning, training and sampling use CUDA. The guide includes the
-HSE login-02 environment setup, offline pretrained-weight preparation, a GPU smoke-check job,
-resumable trials/folds and failure summaries. Install `requirements-cluster.txt` through
-`scripts/setup_cluster_env.sh`, then edit the included `scripts/slurm/cluster.local.sh` locally.
-Upload code, datasets and configuration with `bash scripts/sync_cluster.sh USER@HOST:/home/USER/sb-tabular`
-(add `--dry-run` before the destination to preview). The helper verifies file contents and preserves
-cluster environments, caches, `artifacts/` and `slurm_logs/`; no Git is needed on the cluster.
-See the guide for the update workflow and dependency changes.
+The [cluster run guide](docs/CLUSTER_EXPERIMENT.md) connects all stages into an array with one task
+per compatible dataset/model pair. Each task performs tuning, fresh CV fits, test metrics and TSTR;
+aggregation retains failures as well as successful results. Resources are configured locally for the
+selected models. `*.sbatch`, `scripts/slurm/cluster.local.sh`, and Slurm logs are ignored by Git.
+Copy `cluster.example.sh` to `cluster.local.sh` and supply local batch scripts before using the
+submitter. The sync helper uploads local deployment files while
+preserving cluster environments, caches, `artifacts/` and logs.
 
-DSB and DSBM experiments use only the continuous-time joint MLP models `dsb_ct_joint_mlp` and
-`dsbm_ct_joint_mlp`. Their discrete-time, boosted and structural variants are excluded from planning
-and from standalone tuning/CV, including explicit `--models` selections. Other model families keep
-their existing selection rules. Create a new plan/output root when switching from the earlier model set.
+Default plans select `dsb_ct_joint_mlp` and `dsbm_ct_joint_mlp` for the two DSB families. Other
+implemented variants can be selected explicitly with `--models` and use the same tuning/CV contract.
+Unavailable adapters and missing optional dependencies are reported; models are never substituted.
 
 ```bash
-bash scripts/slurm/submit.sh --dry-run scripts/slurm/cluster.local.sh \
-  --output-root /shared/results/sbtab-production
-# Remove --dry-run to submit the preparation job, experiment array and aggregation job.
+python -m sbtab.experiments.pipeline plan --output-root artifacts/smoke \
+  --smoke --datasets insurance --models mixedsbm --device cpu
+python -m sbtab.experiments.pipeline prepare --plan artifacts/smoke/pipeline/plan.json
+python -m sbtab.experiments.pipeline worker --plan artifacts/smoke/pipeline/plan.json --task-id 0
+python -m sbtab.experiments.pipeline aggregate --plan artifacts/smoke/pipeline/plan.json
 ```
 
-### Metrics (`sbtab.metrics/1`, one implementation in `sbtab/evaluation/`)
+### Metrics (`sbtab.metrics/2`, one implementation in `sbtab/evaluation/`)
 
 - **Tuning objective** — continuous: mean 1-D Wasserstein in the training-standardised space; discrete: mean
   Jensen–Shannon *divergence* (natural log, ≤ log 2); mixed: mean WD + one combined discrete/categorical mean JS.
 - **Marginal** — WD; `KL(real ‖ synthetic)` on 50 fixed bins (48 interior + under/overflow) whose edges come from the
   training rows; categorical/discrete KL on the training support + an unexpected-value bin; smoothing mass 1e-6.
-- **Dependence** — Pearson / Spearman / NMI matrices (Frobenius and normalised off-diagonal RMSE), η², cross-type Spearman.
+- **Dependence** — compare within-table Pearson / Spearman / pairwise NMI matrices (Frobenius and normalised
+  off-diagonal RMSE), η², cross-type Spearman.
 - **Conditional** — per conditioning level: standardised WD and JS, macro and frequency-weighted, with eligible mass,
   missing-category mass and an explicit `incomplete_conditional_coverage` status. WD and JS are never pooled.
 - **Joint** — signed unbiased product-kernel MMD² (RBF × Hamming), bandwidth from training rows, three seeded
   subsamples, matched real–real floor.
 - **Utility (TSTR)** — `CatBoostClassifier` + macro-F1 or `CatBoostRegressor` + R²/MAE/RMSE/MAPE on raw target units;
-  nominal predictors passed as `cat_features`; defaults resolved once on the first real CV fold and frozen; the real
-  reference is cached per dataset, not per generator. Positive gap = synthetic training is worse.
+  nominal predictors passed as `cat_features`. A fixed preset of documented CPU defaults is identical across
+  folds and generators, with no parameter-resolution fit on another fold. Automatic learning-rate selection
+  is disabled by explicitly setting default regularization (learning rate 0.03). MVS subsampling stays
+  at 0.8 even below 100 training rows, where CatBoost would automatically choose 1. Real references are cached
+  per dataset/fold. Percentage deviation is `100 * abs(synthetic - real) / abs(real)`; a zero real score
+  leaves the relative deviation undefined. MAPE is undefined when any test target is zero.
 - **Timing** — preprocessing, init, generator fit, checkpoint I/O, generation, inverse transform, metrics, utility.
 
 Invalid generated data (non-finite values, unknown categories) is a status, never a perfect score; inapplicable
@@ -278,14 +270,16 @@ deviation (`ddof=1`) and `n_expected / n_valid / n_failed`.
 ## Quickstart
 
 ```python
-from sklearn.model_selection import train_test_split
-
 from sbtab.data.preprocessing import CommonPreprocessor
-from sbtab.data.registry import load_dataset
+from sbtab.experiments.experiment_common import load_protocol
+from sbtab.experiments.prepare_splits import build_splits, load_eligible_dataset, require_ok
 from sbtab.solvers.registry import get_adapter_class
 
-frame, schema, _ = load_dataset("insurance")                 # explicit schema from configs/datasets/insurance.yaml
-train_raw, held_raw = train_test_split(frame, test_size=0.15, random_state=5)   # illustrative split only
+protocol = load_protocol()
+frame, schema, manifest, eligibility = load_eligible_dataset("insurance", protocol)
+splits, support = build_splits(frame, schema, manifest, protocol)
+require_ok(splits)
+train_raw = frame.loc[splits["T_row_ids"]]
 
 pre = CommonPreprocessor(schema).fit(train_raw)               # train-only scaler and vocabularies
 adapter = get_adapter_class("mixedsbm")().fit(
@@ -318,7 +312,7 @@ Each script takes `--quick` (a bounded run that says nothing about model quality
 ## Installation
 
 ```bash
-git clone https://github.com/ITMO-NSS-team/sb-tabular.git
+git clone https://github.com/Anaxagor/sb-tabular.git
 cd sb-tabular
 pip install -r requirements.txt
 python -m pytest tests            # from the repository root
@@ -327,44 +321,27 @@ python -m pytest tests            # from the repository root
 `requirements.txt` is grouped by purpose. `sdv` (CTGAN) and `tabpfgen` (TabPFGen) are optional: `import sbtab`
 works without them, their stages report the missing package, and their tests **skip — a skip is not a validation
 of the adapter**. `geotorch` is only needed for LightSB with a full covariance. Pin `catboost` for a benchmark run:
-the utility evaluator freezes its resolved defaults per dataset. Python ≥ 3.10; run from the repository root.
+the utility evaluator uses the same declared defaults across datasets and folds for each task type. Python ≥ 3.10; run from the repository root.
 For the GPU cluster experiment, use the pinned Python 3.11 environment and setup commands in the
-[cluster run guide](docs/CLUSTER_EXPERIMENT.md#2-configure-the-hse-cluster-environment).
+[cluster run guide](docs/CLUSTER_EXPERIMENT.md).
 TabPFGen uses a reproducible training-only context subset when its training input exceeds
 10,000 rows on GPU or 1,000 on CPU. Classification subsets retain all target classes; generated
 sample sizes still follow the experiment protocol. Context selections are saved in checkpoints.
-To repair rare-category coverage while keeping all eligible rows, select
-`--protocol configs/protocols/sbtab_8515_hpo100_cv5_v3.yaml`. It records same-stratum train/validation
-row swaps, retains the 85/15 sizes and ordinary five-fold KFold, and places every level of the
-blocking columns in validation and in every fold's training set. V1/v2 retain their original behavior;
-the default is still v2. Use a fresh output root for v3; see the cluster guide for the full command.
 
-## Status and known gaps
+## Reproducibility and limitations
 
-The [follow-up review](docs/REVIEW_2026-09-23.md) records the refactor corrections. With the additional
-[cluster orchestration checks](docs/CLUSTER_EXPERIMENT.md), the full suite on 2026-09-26 had **880 passed, 12 skipped**;
-24 batch-script smoke pipelines spanning all ten selected generators completed 72 tuning trials and
-120 fresh CV folds locally. Ten skipped tests require an allocated CUDA GPU; the other two concern
-optional notebook validation and the missing-dependency branch for the installed `geotorch` package.
-Evaluation outputs now use
-an `-eval2` namespace suffix so corrected failure/status/aggregation records do not overwrite earlier evaluations.
-See the [implementation report](docs/IMPLEMENTATION_REPORT.md) for the per-solver mathematical contracts,
-dataset feasibility and earlier validation.
+Protocol v4 combines documented eligibility filtering, deterministic support repair, strict split and
+selected-trial verification, and metric version 2. Earlier protocol files remain frozen for provenance;
+start a fresh output root for current runs. Saved artifacts are checked against dataset values,
+preprocessing, source/configuration hashes, dependencies, seeds and checkpoint formats. Completed
+trials and folds can be reused only when their provenance matches. Mid-fit optimizer resume is not
+supported; an interrupted allocated trial counts toward the trial budget.
 
-IPF-DSB solvers and adapters now default to `horizon=2.0`, independent of the step count. The gamma
-schedule is rescaled to span that horizon; `horizon=None` explicitly restores the raw schedule.
-Older checkpoints retain their original grids. The selected joint MLP DSB experiment still tunes
-`horizon` over `[0.5, 3.0]`; retained boosted search spaces explicitly use `horizon: null` so their
-`gamma_max` search keeps its original meaning. Boosted variants remain excluded from the experiments.
-The longer default reduces the initial OU reference's mismatch with the Gaussian prior, but finite
-time and Euler discretisation still introduce approximation error. Coarse grids must satisfy
-`alpha_ou * max(dt) < 1`; increase the step count or reduce the horizon if this check fails.
+IPF-DSB defaults to `horizon=2.0`, independently of step count. `horizon=None` retains the raw gamma
+schedule, as configured for boosted variants. Finite time and Euler discretization introduce
+approximation error; coarse grids must satisfy `alpha_ou * max(dt) < 1`.
 
-Remaining limitations include:
-
-- The production benchmark has **not** been run; only bounded smoke runs and tests were executed.
-- The pinned environment includes real CTGAN and TabPFGen libraries, tested locally on CPU. CUDA execution
-  must pass `scripts/slurm/check_gpu.sbatch` on an allocated cluster GPU before production submission.
-- Checkpoints are inference-complete but not resumable mid-fit; the resume granularity is a trial or a fold.
-- Historical results under `sbtab/experiments/legacy/` carry no run-to-commit provenance, use different metric
-  definitions (`legacy/0`) and must not be mixed with `sbtab.metrics/1` results.
+Examples demonstrate adapters with small budgets and illustrative splits; use `sbtab.experiments`
+for benchmark results. The production benchmark requires actual 100-trial runs and all five folds.
+CPU tests and smoke runs do not validate execution on a cluster GPU. Optional-dependency and CUDA
+checks report explicit skips when their prerequisites are unavailable.

@@ -87,7 +87,9 @@ _ENTRIES = [
                   "sbtab.adapters.dsbm:DSBMDiscreteStructuralGBTAdapter", _CONT,
                   "one scalar model per column, edge and direction at the state time",
                   "autoregressive chain by default (exact factorisation); optional map / learned DAG",
-                  "CatBoost RMSE", ("continuous",), _ADAPTED),
+                  "CatBoost RMSE", ("continuous",), _ADAPTED, requires=("pgmpy", "networkx"),
+                  notes="The benchmark profile searches learned DAGs and requires the graph libraries before tuning. "
+                        "The standalone autoregressive solver does not require pgmpy."),
     # ---------------------------------------------------------------- others
     RegistryEntry("lightsb", "supported", "LightSB", S + "light_sb/", "sbtab.adapters.neural:LightSBAdapter", _CONT,
                   "static potential; exact conditional sampler (optional unit-horizon SDE)", "joint",

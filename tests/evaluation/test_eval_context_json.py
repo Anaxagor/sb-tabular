@@ -28,7 +28,7 @@ COLS = [("x1", "continuous"), ("x2", "continuous"), ("d1", "discrete"), ("d2", "
 
 
 def test_public_api_names_and_constants():
-    assert METRIC_VERSION == "sbtab.metrics/1"
+    assert METRIC_VERSION == "sbtab.metrics/2"
     assert STATUSES == ("ok", "not_applicable", "insufficient_data", "incomplete_conditional_coverage", "undefined",
                         "invalid_generated_data", "training_failed", "sampling_failed", "utility_fit_failed",
                         "blocked_support")

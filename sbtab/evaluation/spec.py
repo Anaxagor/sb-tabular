@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass, fields
 from typing import Any, Dict, Tuple
 
-METRIC_VERSION: str = "sbtab.metrics/1"
+METRIC_VERSION: str = "sbtab.metrics/2"
 
 STATUSES: Tuple[str, ...] = (
     "ok",

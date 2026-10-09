@@ -36,21 +36,26 @@ def _reg_data(n, seed):
     return pd.DataFrame({"num": num, "cnt": r.poisson(2.0, n), "cat": cat}), pd.Series(y, name="price")
 
 
-# --------------------------------------------------------------------------- sign conventions (hand examples)
-def test_gap_sign_conventions():
+# --------------------------------------------------------------------------- absolute differences (hand examples)
+def test_absolute_gap_conventions():
     hi = utility_gap(0.80, 0.60, higher_is_better=True)         # F1 / R^2: synthetic worse -> positive
     assert hi["abs_gap"] == pytest.approx(0.20) and hi["delta_pct"] == pytest.approx(25.0)
-    better = utility_gap(0.50, 0.75, higher_is_better=True)     # synthetic better -> negative
-    assert better["abs_gap"] == pytest.approx(-0.25) and better["delta_pct"] == pytest.approx(-50.0)
+    better = utility_gap(0.50, 0.75, higher_is_better=True)     # improvement still has positive magnitude
+    assert better["abs_gap"] == pytest.approx(0.25) and better["delta_pct"] == pytest.approx(50.0)
     lo = utility_gap(2.0, 3.0, higher_is_better=False)          # MAE / RMSE / MAPE: e_synth - e_real
     assert lo["abs_gap"] == pytest.approx(1.0) and lo["delta_pct"] == pytest.approx(50.0)
     lo_better = utility_gap(4.0, 3.0, higher_is_better=False)
-    assert lo_better["abs_gap"] == pytest.approx(-1.0) and lo_better["delta_pct"] == pytest.approx(-25.0)
+    assert lo_better["abs_gap"] == pytest.approx(1.0) and lo_better["delta_pct"] == pytest.approx(25.0)
     neg = utility_gap(-0.5, -1.0, higher_is_better=True)        # |s_real| in the denominator keeps the sign
     assert neg["abs_gap"] == pytest.approx(0.5) and neg["delta_pct"] == pytest.approx(100.0)
     assert not hi["near_zero_denominator"] and not neg["near_zero_denominator"]
-    tiny = utility_gap(0.0, 0.1, higher_is_better=True)         # denominator floored at 1e-8 and flagged
-    assert tiny["near_zero_denominator"] is True and tiny["delta_pct"] == pytest.approx(100 * (-0.1) / 1e-8)
+    tiny = utility_gap(1e-10, 2e-10, higher_is_better=True)     # no arbitrary denominator floor
+    assert tiny["near_zero_denominator"] is True and tiny["delta_pct"] == pytest.approx(100.0)
+    for synth in (0.0, 0.1):
+        zero = utility_gap(0.0, synth, higher_is_better=True)
+        assert zero["status"] == "undefined" and zero["delta_pct"] is None
+        assert zero["zero_denominator"] is True and zero["abs_gap"] == synth
+        assert zero["zero_reference_policy"] == "undefined"
     undefined = utility_gap(None, 0.3, higher_is_better=True)
     assert undefined["status"] == "undefined" and undefined["delta_pct"] is None and undefined["abs_gap"] is None
 
@@ -109,12 +114,12 @@ def test_reference_is_reused_bit_identically_and_handling_is_identical():
     again = utility_reference("regression", Xtr, ytr, Xte, yte, CATS, TINY)
     assert np.array_equal(again["predictions"], ref["predictions"]) and again["scores"] == ref["scores"]
 
-    # gaps follow the documented signs, computed here from the raw scores
+    # absolute gaps use the true real reference denominator
     for m, higher in (("r2", True), ("mae", False), ("rmse", False), ("mape", False)):
         real, synth = out["scores_real"][m], out["scores_synth"][m]
-        gap = (real - synth) if higher else (synth - real)
+        gap = abs(real - synth)
         assert out["gaps"][m]["abs_gap"] == pytest.approx(gap, abs=1e-12)
-        assert out["gaps"][m]["delta_pct"] == pytest.approx(100 * gap / max(abs(real), 1e-8), abs=1e-9)
+        assert out["gaps"][m]["delta_pct"] == pytest.approx(100 * gap / abs(real), abs=1e-9)
         assert out["gaps"][m]["abs_gap"] > 0                     # the noisy generator IS worse on every metric
 
     with pytest.raises(ValueError, match="same test rows"):
@@ -215,7 +220,7 @@ def test_string_labels_and_float_coded_categories():
 
 # --------------------------------------------------------------------------- default resolution
 @pytest.mark.parametrize("task", ["classification", "regression"])
-def test_resolved_defaults_reproduce_the_default_model(task):
+def test_fixed_defaults_reproduce_the_declared_cpu_preset(task):
     (Xtr, ytr), (Xte, yte) = (_clf_data(300, 20), _clf_data(100, 21)) if task == "classification" \
         else (_reg_data(300, 20), _reg_data(100, 21))
     config = MetricConfig(utility_thread_count=2)
@@ -224,14 +229,16 @@ def test_resolved_defaults_reproduce_the_default_model(task):
     assert params["iterations"] == 30 and params["random_seed"] == 0 and params["thread_count"] == 2
     assert params["task_type"] == "CPU"
     for resolved in ("learning_rate", "depth", "l2_leaf_reg", "loss_function", "bootstrap_type", "border_count"):
-        assert resolved in params                                 # automatic defaults are now explicit numbers
+        assert resolved in params                                 # fixed before any data is fitted
     for dropped in ("verbose", "logging_level", "allow_writing_files", "train_dir", "class_names", "classes_count",
-                    "eval_metric", "use_best_model"):
+                    "eval_metric"):
         assert dropped not in params
     assert params["loss_function"] == ("MultiClass" if task == "classification" else "RMSE")
 
     cls = CatBoostClassifier if task == "classification" else CatBoostRegressor
-    default = cls(iterations=30, random_seed=0, thread_count=2, verbose=False, allow_writing_files=False)
+    assert params["learning_rate"] == .03 and params["l2_leaf_reg"] == 3.0 and params["depth"] == 6
+    assert params["use_best_model"] is False
+    default = cls(**params, verbose=False, allow_writing_files=False)
     default.fit(Xtr.assign(cat=Xtr["cat"].astype(str)), ytr, cat_features=CATS)
     want = np.asarray(default.predict(Xte.assign(cat=Xte["cat"].astype(str)))).reshape(-1)
     ref = utility_reference(task, Xtr, ytr, Xte, yte, CATS, params)
@@ -243,6 +250,57 @@ def test_resolved_defaults_reproduce_the_default_model(task):
     # the same dict serves every later real / synthetic fit
     out = utility_tstr(task, Xtr, ytr, Xte, yte, CATS, json.loads(json.dumps(params)), reference=ref)
     assert out["status"] == "ok" and out["scores_synth"] == ref["scores"]
+
+
+@pytest.mark.parametrize("task,classes,loss", [("classification", 2, "Logloss"),
+                                                ("classification", 3, "MultiClass"),
+                                                ("regression", 0, "RMSE")])
+def test_fixed_params_do_not_fit_or_depend_on_training_rows(monkeypatch, task, classes, loss):
+    def fail(*args, **kwargs):
+        raise AssertionError("parameter resolution must never fit a model")
+    monkeypatch.setattr(CatBoostClassifier, "fit", fail)
+    monkeypatch.setattr(CatBoostRegressor, "fit", fail)
+    labels = np.arange(classes) if classes else np.array([1.0, 100.0])
+    # No features are read; n<100 and n>=100 give exactly the same preset.
+    a = resolve_utility_params(task, None, labels, [])
+    b = resolve_utility_params(task, None, np.tile(labels, 300), [])
+    assert a == b and a["iterations"] == 1000 and a["loss_function"] == loss
+    if classes == 3:
+        assert a["bootstrap_type"] == "Bayesian" and a["bagging_temperature"] == 1.0
+        assert "subsample" not in a
+    else:
+        assert a["bootstrap_type"] == "MVS" and a["subsample"] == .8
+
+
+def test_labels_outside_the_real_universe_are_rejected():
+    Xtr, ytr = _clf_data(100, 37)
+    Xte, yte = _clf_data(100, 38)
+    ref = utility_reference("classification", Xtr, ytr, Xte, yte, CATS, TINY)
+    bad = ytr.copy()
+    bad.iloc[0] = 17
+    out = utility_tstr("classification", Xtr, bad, Xte, yte, CATS, TINY, reference=ref)
+    assert out["status"] == "utility_fit_failed" and "label universe" in out["error"]
+    assert out["class_coverage"]["n_out_of_universe"] == 1
+    assert out["scores_synth"]["macro_f1"] is None
+    bad_test = yte.copy()
+    bad_test.iloc[0] = 17
+    unseen = utility_reference("classification", Xtr, ytr, Xte, bad_test, CATS, TINY)
+    assert unseen["status"] == "utility_fit_failed" and unseen["scores"]["macro_f1"] is None
+
+
+@pytest.mark.parametrize("task,bad", [("classification", np.nan), ("classification", .5),
+                                      ("classification", 99), ("regression", np.inf)])
+def test_invalid_utility_predictions_never_receive_a_success_status(monkeypatch, task, bad):
+    import sbtab.evaluation.utility as utility
+    Xtr, ytr = (_clf_data if task == "classification" else _reg_data)(100, 39)
+    Xte, yte = (_clf_data if task == "classification" else _reg_data)(100, 40)
+    class BrokenPredictor:
+        def predict(self, X):
+            return np.full(len(X), bad)
+    monkeypatch.setattr(utility, "_fit", lambda *args: BrokenPredictor())
+    out = utility_reference(task, Xtr, ytr, Xte, yte, CATS, TINY)
+    assert out["status"] == "utility_fit_failed" and out["predictions"] is None
+    assert all(value is None for value in out["scores"].values())
 
 
 @pytest.mark.parametrize("task", ["classification", "regression"])

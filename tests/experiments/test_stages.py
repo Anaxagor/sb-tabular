@@ -30,7 +30,7 @@ def make_dataset(tmp_path, monkeypatch, task="classification", n=260):
                 "n_columns": 4, "schema_hash": schema.hash(), "regime": schema.regime, "task": task, "target": "y",
                 "dropped_columns": [], "value_maps": {}, "missing_policy": "reject", "row_filtering": "none"}
     monkeypatch.setattr(ps, "load_dataset", lambda name, config_dir=None: (f, schema, manifest))
-    root = tmp_path / "sbtab_smoke_v2"
+    root = tmp_path / load_protocol(smoke=True).id
     assert ps.run("toy", load_protocol(smoke=True), root)["split_status"] == "ok"
     return root, root / "toy" / "splits.json", f, schema
 
@@ -167,7 +167,7 @@ def test_tuning_budget_resume_failures_best_selection_and_downstream_stages(tmp_
     boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("generator fit()/load_checkpoint() called by calculate_metrics"))
     monkeypatch.setattr(ModelAdapter, "fit", boom)
     monkeypatch.setattr(ModelAdapter, "load_checkpoint", classmethod(boom))
-    res = calculate_metrics.run(run_dir / "cv" / "cv_run_manifest.json", "configs/metrics/metrics_v1.yaml")
+    res = calculate_metrics.run(run_dir / "cv" / "cv_run_manifest.json", "configs/metrics/metrics_v2.yaml")
     ev_dir = __import__("pathlib").Path(res["evaluation_dir"])
     assert {p: open(p, "rb").read() for p in before} == before              # generator artifacts untouched, fit time preserved
     for name in ("per_fold.csv", "summary.json", "summary.csv"):
@@ -189,14 +189,14 @@ def test_tuning_budget_resume_failures_best_selection_and_downstream_stages(tmp_
     assert m0["utility"]["n_synth_train_rows"] == len(splits["folds"][0]["train_row_ids"]) and m0["utility"]["task"] == "classification"
     assert (root / "toy" / "utility_config.json").exists() and len(list((root / "toy" / "utility_reference").glob("*/fold-*.json"))) == 5
     first = pd.read_csv(ev_dir / "per_fold.csv")
-    calculate_metrics.run(run_dir / "cv" / "cv_run_manifest.json", "configs/metrics/metrics_v1.yaml")     # second pass: cache hits
+    calculate_metrics.run(run_dir / "cv" / "cv_run_manifest.json", "configs/metrics/metrics_v2.yaml")     # second pass: cache hits
     second = pd.read_csv(ev_dir / "per_fold.csv")
     real = lambda d: d[d["metric"].str.startswith("utility.real") & ~d["metric"].str.contains("seconds")].set_index(["fold", "metric"])["value"]
     pd.testing.assert_series_equal(real(first), real(second))                # bit-identical real reference
 
     # a changed metric configuration writes to a NEW namespace instead of overwriting
-    cfg2 = tmp_path / "metrics_v1b.yaml"
-    d2 = yaml.safe_load(open("configs/metrics/metrics_v1.yaml"))
+    cfg2 = tmp_path / "metrics_v2b.yaml"
+    d2 = yaml.safe_load(open("configs/metrics/metrics_v2.yaml"))
     d2["conditional_min_rows"] = 5
     cfg2.write_text(yaml.safe_dump(d2))
     res2 = calculate_metrics.run(run_dir / "cv" / "cv_run_manifest.json", cfg2, folds=[0])

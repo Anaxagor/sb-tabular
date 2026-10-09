@@ -1,5 +1,5 @@
 """
-Canonical metric package of the benchmark protocol (``sbtab.metrics/1``).
+Canonical metric package of the benchmark protocol (``sbtab.metrics/2``).
 
 Everything that is learned (histogram edges, training supports, conditioning
 definitions, MMD scales / bandwidth / row selection) is learned by

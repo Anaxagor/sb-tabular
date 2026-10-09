@@ -2,7 +2,7 @@
 Stage 1 — dataset-level hyperparameter tuning.
 
     python -m sbtab.experiments.tune --dataset adult --model mixedsbm \
-        --splits artifacts/sbtab_8515_hpo100_cv5_v2/adult/splits.json \
+        --splits artifacts/sbtab_8515_hpo100_cv5_v4/adult/splits.json \
         --search-space configs/search_spaces/mixedsbm.yaml --resume
 
 Every trial builds fresh preprocessing and a fresh model, fits T only, generates
@@ -33,7 +33,7 @@ from optuna.trial import TrialState
 from sbtab.adapters.base import ADAPTER_FORMAT
 from sbtab.data.preprocessing import CommonPreprocessor
 from sbtab.experiments.experiment_common import (
-    SeedLedger, StageError, canonical_hash, hardware_info, implementation_hash, library_versions, load_metric_config,
+    SeedLedger, StageError, canonical_hash, file_lock, hardware_info, implementation_hash, library_versions, load_metric_config,
     load_protocol, load_yaml, read_json, source_provenance, write_json,
 )
 from sbtab.experiments.prepare_splits import load_split_artifacts, require_ok
@@ -69,6 +69,12 @@ def load_search_space(path, model_id: str, protocol_kind: str) -> dict:
                 raise StageError("undefined", f"search space param {name!r}: low > high")
             if p.get("log") and p["low"] <= 0:
                 raise StageError("undefined", f"search space param {name!r}: log scale needs low > 0")
+            step = p.get("step", 1 if t == "int" else None)
+            if step is not None and (step <= 0 or (t == "int" and int(step) != step)):
+                raise StageError("undefined", f"search space param {name!r}: step must be positive"
+                                              + (" and integral" if t == "int" else ""))
+            if p.get("log") and step is not None and (t == "float" or step != 1):
+                raise StageError("undefined", f"search space param {name!r}: step is incompatible with log scale")
         else:
             raise StageError("undefined", f"search space param {name!r}: unknown type {t!r}")
     if "noise" in params or "noise" in fixed:
@@ -83,7 +89,8 @@ def suggest(trial: optuna.Trial, space: dict) -> dict:
         if p["type"] == "categorical":
             cfg[name] = trial.suggest_categorical(name, list(p["choices"]))
         elif p["type"] == "float":
-            cfg[name] = trial.suggest_float(name, float(p["low"]), float(p["high"]), log=bool(p.get("log", False)))
+            cfg[name] = trial.suggest_float(name, float(p["low"]), float(p["high"]), log=bool(p.get("log", False)),
+                                            step=float(p["step"]) if "step" in p else None)
         else:
             cfg[name] = trial.suggest_int(name, int(p["low"]), int(p["high"]), log=bool(p.get("log", False)),
                                           step=int(p.get("step", 1)))
@@ -147,6 +154,8 @@ def write_trials_csv(study: optuna.Study, tuning_dir: Path) -> None:
 
 def write_best(study: optuna.Study, tuning_dir: Path, budget: int, final: bool, model_id: str, compat: dict) -> dict:
     best, c = select_best(study), counts(study)
+    if final and (c["allocated"] != budget or c["RUNNING"] or c["WAITING"]):
+        raise StageError("undefined", "final selection requires exactly the allocated trial budget and no active trials")
     out = {"version": TUNING_VERSION, "model": model_id, "budget": budget, "counts": c, "compatibility": compat,
            "selection_rule": "minimum finite objective among COMPLETE trials; ties -> lowest trial number"}
     if best is None:
@@ -242,109 +251,118 @@ def run(dataset: str, model_id: str, splits_path, search_space_path, resume: boo
     if dry_run:
         return {**plan, "dry_run": True}
 
-    storage = f"sqlite:///{tuning_dir / 'study.sqlite3'}"
-    exists = (tuning_dir / "study.sqlite3").exists()
-    if exists and not resume:
-        raise StageError("undefined", f"{tuning_dir} already holds a study; pass --resume to continue it "
-                                      "(earlier runs are never removed or overwritten)")
-    tuning_dir.mkdir(parents=True, exist_ok=True)
-    sampler_path = tuning_dir / "sampler.pkl"
-    sampler = optuna.samplers.TPESampler(seed=int(protocol["tuning"]["sampler_seed"]))
-    sampler_state = "fresh"
-    if exists and sampler_path.exists():
-        with open(sampler_path, "rb") as fh:      # the study DB alone does not hold the sampler RNG state
-            sampler = pickle.load(fh)
-        sampler_state = "restored"
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study = optuna.create_study(study_name="study", storage=storage, direction=protocol["tuning"]["direction"],
-                                sampler=sampler, pruner=optuna.pruners.NopPruner(), load_if_exists=True)
-    if exists and counts(study)["allocated"] and not sampler_path.exists():
-        raise StageError("undefined", "cannot resume: sampler.pkl is missing; restarting the sampler would rewind its RNG")
-    stored = study.user_attrs.get("compatibility_hash")
-    if stored is None:
-        study.set_user_attr("compatibility_hash", compat_hash)
-        study.set_user_attr("compatibility", compat)
-    elif stored != compat_hash:
-        old = study.user_attrs.get("compatibility", {})
-        changed = sorted(k for k in compat if old.get(k) != compat[k])
-        raise StageError("undefined", f"refusing to resume: the study is incompatible in {changed} "
-                                      "(data, split, search space, metric, checkpoint/adapter, protocol or implementation changed)")
+    # The lock also protects stale-trial reconciliation and the allocated budget.
+    # A second standalone CLI must never mark the first worker's live trial FAIL.
+    with file_lock(tuning_dir / ".study.lock", blocking=False):
+        storage = f"sqlite:///{tuning_dir / 'study.sqlite3'}"
+        exists = (tuning_dir / "study.sqlite3").exists()
+        if exists and not resume:
+            raise StageError("undefined", f"{tuning_dir} already holds a study; pass --resume to continue it "
+                                          "(earlier runs are never removed or overwritten)")
+        tuning_dir.mkdir(parents=True, exist_ok=True)
+        sampler_path = tuning_dir / "sampler.pkl"
+        sampler = optuna.samplers.TPESampler(seed=int(protocol["tuning"]["sampler_seed"]))
+        sampler_state = "fresh"
+        if exists and sampler_path.exists():
+            with open(sampler_path, "rb") as fh:      # the study DB alone does not hold the sampler RNG state
+                sampler = pickle.load(fh)
+            sampler_state = "restored"
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        study = optuna.create_study(study_name="study", storage=storage, direction=protocol["tuning"]["direction"],
+                                    sampler=sampler, pruner=optuna.pruners.NopPruner(), load_if_exists=True)
+        if exists and counts(study)["allocated"] and not sampler_path.exists():
+            raise StageError("undefined", "cannot resume: sampler.pkl is missing; restarting the sampler would rewind its RNG")
+        stored = study.user_attrs.get("compatibility_hash")
+        if stored is None:
+            study.set_user_attr("compatibility_hash", compat_hash)
+            study.set_user_attr("compatibility", compat)
+        elif stored != compat_hash:
+            old = study.user_attrs.get("compatibility", {})
+            changed = sorted(k for k in compat if old.get(k) != compat[k])
+            raise StageError("undefined", f"refusing to resume: the study is incompatible in {changed} "
+                                          "(data, split, search space, metric, checkpoint/adapter, protocol or implementation changed)")
 
-    stale = reconcile_stale_running(study, tuning_dir)
-    save_sampler(study, sampler_path)
-    seeds = SeedLedger(int(protocol["seeds"]["base"]))
-    ledger_path = run_dir / "seed_ledger_tuning.json"
-    if ledger_path.exists():
-        seeds.records.update(read_json(ledger_path)["derived"])
-    T_raw, V_raw = frame.loc[splits["T_row_ids"]], frame.loc[splits["V_row_ids"]]
-    from sbtab.evaluation import check_validity, tuning_objective, MetricConfig, MetricContext
+        if counts(study)["allocated"] > budget:
+            raise StageError("undefined", "study exceeds the allocated trial budget; use a new run directory")
+        if counts(study)["WAITING"]:
+            raise StageError("undefined", "queued trials are unsupported: this protocol allocates sequential trials with study.ask()")
 
-    write_json(run_dir / "run_manifest.json", {
-        "stage": "tuning", **plan, "compatibility": compat, "provenance": prov, "libraries": versions,
-        "hardware": hardware_info(), "search_space": space, "sampler": {"kind": "TPESampler", "state": sampler_state,
-        "seed": protocol["tuning"]["sampler_seed"], "n_jobs": 1, "pruner": "none"},
-        "target_handling": {"target": schema.target, "task": schema.task, "generated_as": "part of the row (X, y)"},
-        "T_hash": splits["T_hash"], "V_hash": splits["V_hash"], "stale_running_reconciled": stale,
-        "statistical_note": splits.get("statistical_note", "")})
-
-    new = 0
-    while counts(study)["allocated"] < budget and (max_new_trials is None or new < max_new_trials):
-        trial = study.ask()
-        new += 1
-        d = trial_dir(tuning_dir, trial.number)
-        state, value = TrialState.FAIL, None
-        try:
-            cfg = suggest(trial, space)
-            save_sampler(study, sampler_path)
-            rec = fit_generate(model_id, T_raw, schema, cfg, seeds, ("trial", trial.number), len(V_raw), d)
-            metrics = {"status": rec["status"], "objective": None}
-            if rec["status"] == "ok":
-                pre = CommonPreprocessor.load(d / "preprocessor", schema)
-                V = pre.transform(V_raw)
-                synth = read_synthetic(d / "synthetic.parquet", schema)
-                ctx = MetricContext.fit(pre.transform(T_raw), schema, metric_config,
-                    train_row_ids=list(T_raw.index))
-                validity = check_validity(synth, schema, ctx)
-                obj = tuning_objective(V, synth, schema) if validity["status"] == "ok" else \
-                    {"objective": None, "status": validity["status"], "regime": schema.regime, "mean_wd": None, "mean_js": None}
-                metrics = {**obj, "validity": validity, "n_validation_rows": int(len(V)), "n_generated": rec["n_generated"],
-                           "metric_version": metric_cfg["metric_version"], "objective_space": "common (standardised) space"}
-                if obj["status"] == "ok" and obj["objective"] is not None and math.isfinite(obj["objective"]):
-                    state, value = TrialState.COMPLETE, float(obj["objective"])
-            write_json(d / "config.json", {"trial": trial.number, "sampled_params": trial.params,
-                                           "requested_config": rec["requested_config"],
-                                           "effective_config": rec["effective_config"], "seeds": rec["seeds"]})
-            write_json(d / "metrics.json", metrics)
-            write_json(d / "status.json", {"trial": trial.number, "state": state.name, "status": metrics["status"],
-                                           "failure": rec["failure"], "n_updates": rec["n_updates"],
-                                           "reload_verified": rec["reload_verified"], "describe": rec["describe"]})
-            for k in ("mean_wd", "mean_js"):
-                trial.set_user_attr(k, metrics.get(k))
-            trial.set_user_attr("status", metrics["status"])
-            trial.set_user_attr("n_updates", rec["n_updates"])
-            trial.set_user_attr("generator_fit_seconds", rec["timing"].get("generator_fit_seconds"))
-            trial.set_user_attr("generation_seconds", rec["timing"].get("generation_seconds"))
-            if rec["failure"]:
-                trial.set_user_attr("failure", f"{rec['failure']['type']}: {rec['failure']['message']}"[:500])
-        except Exception as e:      # e.g. an invalid configuration discovered after allocation: keep the record
-            d.mkdir(parents=True, exist_ok=True)
-            write_json(d / "status.json", {"trial": trial.number, "state": "FAIL", "status": "training_failed",
-                                           "failure": {"type": type(e).__name__, "message": str(e), "trace": traceback.format_exc()}})
-            trial.set_user_attr("status", "training_failed")
-            trial.set_user_attr("failure", f"{type(e).__name__}: {e}"[:500])
-        study.tell(trial, value, state=state)
+        stale = reconcile_stale_running(study, tuning_dir)
         save_sampler(study, sampler_path)
-        write_json(ledger_path, seeds.to_dict())
-        write_trials_csv(study, tuning_dir)
-        write_best(study, tuning_dir, budget, final=False, model_id=model_id, compat=compat)
+        seeds = SeedLedger(int(protocol["seeds"]["base"]))
+        ledger_path = run_dir / "seed_ledger_tuning.json"
+        if ledger_path.exists():
+            seeds.records.update(read_json(ledger_path)["derived"])
+        T_raw, V_raw = frame.loc[splits["T_row_ids"]], frame.loc[splits["V_row_ids"]]
+        from sbtab.evaluation import check_validity, tuning_objective, MetricConfig, MetricContext
 
-    c = counts(study)
-    final = c["allocated"] >= budget
-    best = write_best(study, tuning_dir, budget, final=final, model_id=model_id, compat=compat)
-    write_trials_csv(study, tuning_dir)
-    write_json(run_dir / "seed_ledger_tuning.json", seeds.to_dict())
-    return {**plan, "counts": c, "new_trials": new, "selection": best["selection"], "best_trial": best.get("trial"),
-            "objective": best.get("objective"), "stale_running_reconciled": stale}
+        write_json(run_dir / "run_manifest.json", {
+            "stage": "tuning", **plan, "compatibility": compat, "provenance": prov, "libraries": versions,
+            "hardware": hardware_info(), "search_space": space, "sampler": {"kind": "TPESampler", "state": sampler_state,
+            "seed": protocol["tuning"]["sampler_seed"], "n_jobs": 1, "pruner": "none"},
+            "target_handling": {"target": schema.target, "task": schema.task, "generated_as": "part of the row (X, y)"},
+            "T_hash": splits["T_hash"], "V_hash": splits["V_hash"], "stale_running_reconciled": stale,
+            "statistical_note": splits.get("statistical_note", "")})
+
+        new = 0
+        while counts(study)["allocated"] < budget and (max_new_trials is None or new < max_new_trials):
+            trial = study.ask()
+            new += 1
+            d = trial_dir(tuning_dir, trial.number)
+            state, value = TrialState.FAIL, None
+            try:
+                cfg = suggest(trial, space)
+                save_sampler(study, sampler_path)
+                rec = fit_generate(model_id, T_raw, schema, cfg, seeds, ("trial", trial.number), len(V_raw), d)
+                metrics = {"status": rec["status"], "objective": None}
+                if rec["status"] == "ok":
+                    pre = CommonPreprocessor.load(d / "preprocessor", schema)
+                    V = pre.transform(V_raw)
+                    synth = read_synthetic(d / "synthetic.parquet", schema)
+                    ctx = MetricContext.fit(pre.transform(T_raw), schema, metric_config,
+                        train_row_ids=list(T_raw.index))
+                    validity = check_validity(synth, schema, ctx)
+                    obj = tuning_objective(V, synth, schema) if validity["status"] == "ok" else \
+                        {"objective": None, "status": validity["status"], "regime": schema.regime, "mean_wd": None, "mean_js": None}
+                    metrics = {**obj, "validity": validity, "n_validation_rows": int(len(V)), "n_generated": rec["n_generated"],
+                               "metric_version": metric_cfg["metric_version"], "objective_space": "common (standardised) space"}
+                    if obj["status"] == "ok" and obj["objective"] is not None and math.isfinite(obj["objective"]):
+                        state, value = TrialState.COMPLETE, float(obj["objective"])
+                write_json(d / "config.json", {"trial": trial.number, "sampled_params": trial.params,
+                                               "requested_config": rec["requested_config"],
+                                               "effective_config": rec["effective_config"], "seeds": rec["seeds"]})
+                write_json(d / "metrics.json", metrics)
+                write_json(d / "status.json", {"trial": trial.number, "state": state.name, "status": metrics["status"],
+                                               "failure": rec["failure"], "n_updates": rec["n_updates"],
+                                               "reload_verified": rec["reload_verified"], "describe": rec["describe"]})
+                for k in ("mean_wd", "mean_js"):
+                    trial.set_user_attr(k, metrics.get(k))
+                trial.set_user_attr("status", metrics["status"])
+                trial.set_user_attr("effective_config", rec["effective_config"])
+                trial.set_user_attr("n_updates", rec["n_updates"])
+                trial.set_user_attr("generator_fit_seconds", rec["timing"].get("generator_fit_seconds"))
+                trial.set_user_attr("generation_seconds", rec["timing"].get("generation_seconds"))
+                if rec["failure"]:
+                    trial.set_user_attr("failure", f"{rec['failure']['type']}: {rec['failure']['message']}"[:500])
+            except Exception as e:      # e.g. an invalid configuration discovered after allocation: keep the record
+                d.mkdir(parents=True, exist_ok=True)
+                write_json(d / "status.json", {"trial": trial.number, "state": "FAIL", "status": "training_failed",
+                                               "failure": {"type": type(e).__name__, "message": str(e), "trace": traceback.format_exc()}})
+                trial.set_user_attr("status", "training_failed")
+                trial.set_user_attr("failure", f"{type(e).__name__}: {e}"[:500])
+            study.tell(trial, value, state=state)
+            save_sampler(study, sampler_path)
+            write_json(ledger_path, seeds.to_dict())
+            write_trials_csv(study, tuning_dir)
+            write_best(study, tuning_dir, budget, final=False, model_id=model_id, compat=compat)
+
+        c = counts(study)
+        final = c["allocated"] == budget
+        best = write_best(study, tuning_dir, budget, final=final, model_id=model_id, compat=compat)
+        write_trials_csv(study, tuning_dir)
+        write_json(run_dir / "seed_ledger_tuning.json", seeds.to_dict())
+        return {**plan, "counts": c, "new_trials": new, "selection": best["selection"], "best_trial": best.get("trial"),
+                "objective": best.get("objective"), "stale_running_reconciled": stale}
 
 
 def main(argv=None) -> int:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reference template; cluster.local.sh is also included with the project.
+# Copy this template to the git-ignored cluster.local.sh and adapt it locally.
 # Sourced by the submitter AND each batch job. When uploading configuration
 # changes, include cluster.local.sh: copying only this template has no effect.
 SBATCH_SITE_ARGS=(--partition=rocky --account=proj_1752)
