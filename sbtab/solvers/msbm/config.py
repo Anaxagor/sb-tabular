@@ -35,7 +35,7 @@ class MixedSBMConfig:
         ce_lambda: Scaling weight for the auxiliary cross-entropy inside CSBM.
         num_ref_mean: Mean value of the numerical reference process.
         num_ref_std: Standard deviation of the numerical reference process.
-        noise: Euler-Maruyama noise parameter.
+        noise: Enable Brownian noise during generation; training couplings always use noise.
         lr: Learning rate.
         batch_size: Training batch size.
         sim_batch_size: Chunk size for path simulation (`_generate_coupling`, `sample`).
@@ -48,7 +48,7 @@ class MixedSBMConfig:
         min_steps_per_direction: Floor in steps applied to the resolved per-direction budget.
             0 disables the floor.
         grad_clip: Gradient clipping parameter.
-        cat_dtype: torch.dtype of categorical reference process.
+        cat_dtype: Legacy configuration slot; categorical bridge arithmetic uses float64.
         num_dtype: torch.dtype of continuous reference process.
         device: Device to run the model on.
         seed: Random seed.

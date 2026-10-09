@@ -7,8 +7,8 @@ dependency structure, backend, native vs adapted regimes and checkpoint support.
 ``status``:
   supported     implemented, has an adapter, covered by tests
   heuristic     a declared non-canonical variant (kept under its own id)
-  unavailable   named in a paper / results file / parameter JSON, but NOT
-                implemented here. Never silently substituted by another model.
+  unavailable   not executable through the benchmark (absent implementation or
+                missing adapter). Never silently substituted by another model.
 """
 from __future__ import annotations
 
@@ -118,7 +118,14 @@ _ENTRIES = [
                   "sbtab.adapters.baselines:TabPFGenAdapter", "features via SGLD, target via TabPFN", "n/a",
                   "energy-based; label prior restored to the training distribution by the wrapper", "tabpfgen + tabpfn",
                   ("continuous", "discrete", "mixed"), (), requires=("tabpfgen", "tabpfn"),
-                  notes="No gradient updates in fit(): the conditioning rows ARE the model; all cost is at sampling time."),
+                  notes="No gradient updates in fit(): the conditioning rows ARE the model; all cost is at sampling time. "
+                        "Uses sebhaan/TabPFGen, an independent implementation, not an exact reproduction of the paper."),
+    RegistryEntry("forestdiffusion", "supported", "tree flow/diffusion baseline",
+                  "sbtab/baselines/forest_diffusion/", "sbtab.adapters.baselines:ForestDiffusionAdapter",
+                  _CONT, "one XGBoost field per time level", "joint row incl. target, unconditional",
+                  "XGBoost histogram trees", ("continuous",), _ADAPTED, requires=("xgboost",),
+                  notes="Forest-Flow default; optional Forest-VP. Core imported from forest_diffusion/50635ca and audited. "
+                        "Full one-hot and z-score wrapper; no continuous clipping."),
     # ---------------------------------------------------------------- named elsewhere, not implemented
     RegistryEntry("stasy", "unavailable", "score-SDE baseline", None, None,
                   notes="No faithful STaSy implementation exists in this repository; see ve_score_sde_simplified. "
@@ -129,13 +136,10 @@ _ENTRIES = [
                         "tuning_results/best_params/lightsbm_best_params.json holds LightSB-style parameters. "
                         "Missing work: the bridge-matching objective of Gushchin et al. with a differentiable drift."),
     RegistryEntry("tabbyflow", "unavailable", "flow baseline", None, None,
-                  notes="Orphaned configuration: tuning_results/best_params/tabbyflow_best_params.json exists but no "
-                        "TabbyFlow code or import exists in the tracked tree. Missing work: the whole wrapper."),
+                  notes="Standalone implementation exists in sbtab/baselines/tabbyflow and is tested. "
+                        "Benchmark integration still needs an adapter and checkpoint support."),
     RegistryEntry("tabsyn", "unavailable", "latent diffusion baseline", None, None,
                   notes="Not implemented anywhere in the tracked tree. Missing work: the whole wrapper (VAE + latent diffusion)."),
-    RegistryEntry("forestdiffusion", "unavailable", "tree diffusion baseline", None, None,
-                  notes="Not on this branch (only a stale __pycache__ under sbtab/solvers/ForestDiffusion). An implementation "
-                        "exists on the separate branch `forest_diffusion`; it was not audited here."),
 ]
 
 solver_registry: Dict[str, RegistryEntry] = {e.id: e for e in _ENTRIES}

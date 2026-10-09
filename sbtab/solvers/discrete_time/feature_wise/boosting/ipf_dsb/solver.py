@@ -76,10 +76,15 @@ class StructuralDiscreteBoostedSolver:
         return (x * (1.0 - self.cfg.alpha_ou * self.gammas[k])).astype(np.float32)
 
     def fit(self, df: pd.DataFrame):
+        """Run a fresh conditional IPF fit, reproducible from cfg.seed."""
         if not isinstance(df, pd.DataFrame):
             raise TypeError("structural solvers need a DataFrame (column names define the graph)")
         if self.cfg.ipf_iters < 1:
             raise ValueError("ipf_iters must be >= 1")
+        if df.empty or not np.isfinite(df.to_numpy(dtype=np.float32)).all():
+            raise ValueError("fit expects non-empty finite numeric data")
+        self._fitted = False
+        self._rng = np.random.default_rng(self.cfg.seed)
         self.feature_cols = list(df.columns)
         self.fields = {}
         self.stage_log = []

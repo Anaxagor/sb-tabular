@@ -200,3 +200,30 @@ class TabPFGenAdapter(_BaselineAdapter):
         return {"adaptation_cost": getattr(m, "adaptation_cost_", None), "pretrained_identity": getattr(m, "pretrained_identity_", None),
                 "conditioning_context": getattr(m, "conditioning_context_", None), "sgld": getattr(m, "sgld_settings_", None),
                 "checkpoint_contains_training_rows": True}
+
+
+class ForestDiffusionAdapter(_BaselineAdapter):
+    """Joint unconditional Forest-Flow or Forest-VP with XGBoost fields."""
+    registry_id = "forestdiffusion"
+    native_regimes = ("continuous",)
+    adapted_regimes = ("discrete", "mixed")
+    DEFAULTS = dict(diffusion_type="flow", n_t=50, n_estimators=100, max_depth=7,
+                    eta=0.3, duplicate_K=100, n_batch=8, reg_alpha=0.0, reg_lambda=0.0,
+                    subsample=1.0, beta_min=0.1, beta_max=8.0, eps=1e-3,
+                    n_jobs=1, n_threads=4, sample_batch_size=2048, device="cpu")
+
+    def _wrapper_class(self):
+        from sbtab.baselines.forest_diffusion import ForestDiffusionWrapper
+        return ForestDiffusionWrapper
+
+    def _make_wrapper(self):
+        from sbtab.baselines.forest_diffusion import ForestDiffusionConfig
+        return self._wrapper_class()(ForestDiffusionConfig(**self.config, seed=int(self.seed)))
+
+    def _describe_model(self):
+        return {"source": "forest_diffusion branch, 50635ca; audited implementation",
+                "sampling": "Euler flow ODE" if self.config["diffusion_type"] == "flow" else "reverse VP SDE + Tweedie denoising",
+                "representation": "train-fitted z-score + full one-hot; discrete support projection",
+                "continuous_clipping": False, "checkpoint_contains_training_rows": False,
+                "n_updates_note": "time levels * boosting rounds (each round fits all output coordinates)",
+                "training_memory": "replayed batches; QuantileDMatrix retains quantized training data"}

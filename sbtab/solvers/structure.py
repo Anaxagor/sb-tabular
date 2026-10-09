@@ -82,7 +82,9 @@ def learn_dag(df: pd.DataFrame, n_bins: int = 5) -> LearnedDAG:
     if len(varying) >= 2:
         hc = HillClimbSearch(binned)
         best = hc.estimate(scoring_method=BicScore(binned), show_progress=False)
-        edges = [(str(a), str(b)) for a, b in best.edges()]
+        # Keep the dataframe's labels: coercing only edge endpoints to strings
+        # creates extra graph nodes for integer-labeled columns.
+        edges = list(best.edges())
 
     G = nx.DiGraph()
     G.add_nodes_from(cols)

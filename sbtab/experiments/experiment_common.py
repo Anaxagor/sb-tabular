@@ -253,7 +253,7 @@ def implementation_hash(provenance: Optional[dict] = None) -> str:
 
 def library_versions() -> dict:
     out = {"python": sys.version.split()[0]}
-    for mod in ("numpy", "pandas", "scipy", "sklearn", "torch", "catboost", "optuna", "pyarrow",
+    for mod in ("numpy", "pandas", "scipy", "sklearn", "torch", "catboost", "xgboost", "optuna", "pyarrow",
                 "pgmpy", "networkx", "sdv", "ctgan", "tabpfgen", "tabpfn", "yaml", "tqdm", "geotorch"):
         try:
             # Some packages (including TabPFGen) expose no __version__. Read the

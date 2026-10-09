@@ -139,6 +139,8 @@ class IMFDSBMContinuousJointCatBoostSolver:
             raise ValueError(f"Expected shape (N,{self.dim}), got {tuple(arr.shape)}")
         if arr.shape[0] == 0:
             raise ValueError("cannot fit on an empty training set")
+        if not np.isfinite(arr).all():
+            raise ValueError("fit expects finite numeric data (found NaN/inf)")
         return arr
 
     def _sample_reference(self, n: int, generator: torch.Generator) -> np.ndarray:

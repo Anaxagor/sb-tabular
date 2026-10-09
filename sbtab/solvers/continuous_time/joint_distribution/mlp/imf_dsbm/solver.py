@@ -418,6 +418,8 @@ class IMFDSBMSolver:
 
                 pred = net(z_t, t)
                 loss = self.loss_fn(pred, target)
+                if not torch.isfinite(loss):
+                    raise RuntimeError(f"non-finite loss while training DSBM direction '{fb}'")
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
@@ -446,6 +448,8 @@ class IMFDSBMSolver:
             raise ValueError(f"Expected train shape (N,{self.dim}), got {tuple(x0.shape)}")
         if x0.shape[0] == 0:
             raise ValueError("cannot fit on an empty training set")
+        if not torch.isfinite(x0).all():
+            raise ValueError("fit expects finite numeric data (found NaN/inf)")
 
         self._fitted = False
         self.snapshots = []

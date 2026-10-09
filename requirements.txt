@@ -26,6 +26,7 @@ networkx>=3.2
 optuna>=4.2
 
 # Baselines
+xgboost>=2.1 # ForestDiffusion, replayable QuantileDMatrix training
 sdv          # CTGAN wrapper (CTGANSynthesizer)
 tabpfgen     # TabPFGen wrapper
 

@@ -12,7 +12,7 @@ from sbtab.models.neural.MixedMLP import MixedSbmMlp
 from .updater import MixedSBMUpdater
 from .config import MixedSBMConfig
 
-CHECKPOINT_FORMAT = "sbtab.mixedsbm/3"
+CHECKPOINT_FORMAT = "sbtab.mixedsbm/4"
 
 
 class MixedSBMSolver:
@@ -173,6 +173,7 @@ class MixedSBMSolver:
                 direction=prev_dir,
                 seed=seed,
                 batch_size=self._resolve_sim_batch_size(start_num, start_cat),
+                noise=True,  # IMF couplings use the Brownian reference even for deterministic generation.
             )
         finally:
             self.model.load_state_dict(orig_state)
@@ -421,7 +422,7 @@ class MixedSBMSolver:
     def load_checkpoint(cls, path, device=None):
         state = torch.load(path, map_location="cpu", weights_only=False)
         if state.get("format") != CHECKPOINT_FORMAT:
-            raise ValueError("checkpoint is not a feature/tuning MSBM checkpoint (sbtab.mixedsbm/3)")
+            raise ValueError("unsupported MSBM checkpoint: expected sbtab.mixedsbm/4 (exact categorical powers); older references require retraining")
         config = dict(state["config"])
         config["fb_sequence"] = tuple(config["fb_sequence"])
         if device is not None:

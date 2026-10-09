@@ -138,6 +138,8 @@ class MLPTimeDiscretizedField:
                 yb = yb.to(device)
                 pred = model(xb)
                 loss = torch.nn.functional.mse_loss(pred, yb)
+                if not torch.isfinite(loss):
+                    raise RuntimeError(f"non-finite loss while training step model {k}")
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()

@@ -2,12 +2,18 @@
 
 Adapted from the Apache-2.0 tabular-flow-matching reference implementation:
 https://github.com/rulnasution/tabular-flow-matching, baselines/tabvvfm.
+
+The default OT path has a standard Gaussian source and residual endpoint noise
+of 0.001. VP uses the usual small-residual Gaussian source approximation. VE
+uses N(0, 4I) as an approximation to data + N(0, 4I), not an exact Gaussian
+source; use OT or cosine when an exact Gaussian source is required.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -21,6 +27,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, TensorDataset
 
 from sbtab.data.schema import TabularSchema
+from sbtab.baselines.base import FreshIdFactory, resolve_column_roles, validate_n
+from sbtab.baselines.encoding import fit_vocabulary, nearest_support_decode, numeric_matrix, restore_dtype
 
 
 TABBYFLOW_OFFICIAL_REPOSITORY = "https://github.com/rulnasution/tabular-flow-matching"
@@ -43,6 +51,16 @@ class TabbyFlowConfig:
     sample_batch_size: int = 512
     device: str = "cuda"
     seed: int = 42
+
+    def __post_init__(self) -> None:
+        for name in ("max_train_steps", "batch_size", "n_frequencies", "ode_steps", "sample_batch_size"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or int(value) != value or int(value) < 1:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if str(self.cond_vel).lower() not in {"ot", "vp", "ve", "cos"}:
+            raise ValueError(f"Unsupported TabbyFlow conditional path: {self.cond_vel!r}")
+        if str(self.ode_solver).lower() not in {"euler", "midpoint", "rk4"}:
+            raise ValueError(f"Unknown ODE method: {self.ode_solver!r}")
 
 
 class TabbyFlowNet(nn.Module):
@@ -264,49 +282,46 @@ class TabbyFlowSynthesizer:
         self.columns_: List[str] = []
         self.numeric_cols_: List[str] = []
         self.categorical_cols_: List[str] = []
-        self.extra_cols_: List[str] = []
         self.cat_sizes_: List[int] = []
         self.cat_decode_maps_: Dict[str, Dict[str, Any]] = {}
         self.raw_dtypes_: Dict[str, Any] = {}
-        self.extra_values_: Dict[str, np.ndarray] = {}
+        self.discrete_supports_: Dict[str, np.ndarray] = {}
+        self.decoding_report_: Dict[str, Dict[str, Any]] = {}
+        self._id_col: Optional[str] = None
+        self._id_factory: Optional[FreshIdFactory] = None
         self.d_cont_: int = 0
         self.d_total_: int = 0
         self.actual_train_steps_: int = 0
         self.best_train_loss_: float = float("inf")
         self._fitted = False
 
-    @staticmethod
-    def _unique_existing(cols: List[str], frame: pd.DataFrame) -> List[str]:
-        seen = set()
-        out = []
-        for col in cols:
-            if col in frame.columns and col not in seen:
-                out.append(col)
-                seen.add(col)
-        return out
-
     def _column_groups(
         self,
         data: pd.DataFrame,
         schema: TabularSchema,
         task_type: str,
-    ) -> Tuple[List[str], List[str], List[str]]:
-        numeric = [*schema.continuous_cols, *schema.discrete_cols]
-        categorical = list(schema.categorical_cols)
-        target = schema.target_col
-        if target is not None and target in data.columns:
-            if str(task_type).lower() == "regression":
-                numeric.append(target)
-            else:
-                categorical.append(target)
-        numeric = self._unique_existing(numeric, data)
-        categorical = self._unique_existing(categorical, data)
-        categorical = [col for col in categorical if col not in set(numeric)]
-        extras = [
-            col for col in data.columns
-            if col not in set(numeric) and col not in set(categorical)
-        ]
-        return numeric, categorical, extras
+    ) -> Tuple[List[str], List[str]]:
+        task = str(task_type).lower()
+        if task in {"binclass", "multiclass"}:
+            task = "classification"
+        roles = resolve_column_roles(
+            list(data.columns),
+            continuous_cols=schema.continuous_cols,
+            discrete_cols=schema.discrete_cols,
+            categorical_cols=schema.categorical_cols,
+            target_col=schema.target_col,
+            task=task,
+            id_col=schema.id_col,
+        )
+        self._id_col = roles.id_col
+        self._id_factory = FreshIdFactory.fit(data[self._id_col]) if self._id_col is not None else None
+        self.discrete_supports_ = {
+            col: np.unique(pd.to_numeric(data[col], errors="raise").to_numpy(dtype=np.float64))
+            for col in roles.discrete
+        }
+        # An undeclared feature must not silently become an independent bootstrap
+        # marginal. resolve_column_roles rejects it; only identifiers are excluded.
+        return list(roles.numeric), list(roles.categorical)
 
     def _fit_preprocessor(
         self,
@@ -314,27 +329,33 @@ class TabbyFlowSynthesizer:
         schema: TabularSchema,
         task_type: str,
     ) -> np.ndarray:
+        self.quantile = None
+        self.encoder = None
+        self.cat_decode_maps_ = {}
         self.columns_ = list(data.columns)
         self.raw_dtypes_ = {col: data[col].dtype for col in data.columns}
         (
             self.numeric_cols_,
             self.categorical_cols_,
-            self.extra_cols_,
         ) = self._column_groups(data, schema, task_type)
 
         if self.numeric_cols_:
-            x_num_frame = data[self.numeric_cols_].apply(pd.to_numeric, errors="raise")
+            x_num = numeric_matrix(data, self.numeric_cols_)
             self.quantile = QuantileTransformer(
                 n_quantiles=max(1, min(1000, len(data))),
                 output_distribution="uniform",
                 random_state=int(self.cfg.seed),
             )
-            x_cont = self.quantile.fit_transform(x_num_frame).astype(np.float32)
+            x_cont = self.quantile.fit_transform(x_num).astype(np.float32)
         else:
             x_cont = np.empty((len(data), 0), dtype=np.float32)
 
         if self.categorical_cols_:
-            cat_frame = data[self.categorical_cols_].astype(str)
+            cat_frame = pd.DataFrame(index=data.index)
+            for col in self.categorical_cols_:
+                vocabulary = fit_vocabulary(data[col], col)
+                cat_frame[col] = pd.Categorical(data[col], categories=vocabulary).codes
+                self.cat_decode_maps_[col] = {str(i): value for i, value in enumerate(vocabulary)}
             try:
                 self.encoder = OneHotEncoder(
                     handle_unknown="ignore",
@@ -347,19 +368,10 @@ class TabbyFlowSynthesizer:
                 )
             x_cat = self.encoder.fit_transform(cat_frame).astype(np.float32)
             self.cat_sizes_ = [len(values) for values in self.encoder.categories_]
-            for col in self.categorical_cols_:
-                mapping: Dict[str, Any] = {}
-                for value in data[col].drop_duplicates().tolist():
-                    mapping.setdefault(str(value), value)
-                self.cat_decode_maps_[col] = mapping
         else:
             x_cat = np.empty((len(data), 0), dtype=np.float32)
             self.cat_sizes_ = []
 
-        self.extra_values_ = {
-            col: data[col].to_numpy(copy=True)
-            for col in self.extra_cols_
-        }
         self.d_cont_ = int(x_cont.shape[1])
         matrix = np.concatenate([x_cont, x_cat], axis=1).astype(np.float32)
         self.d_total_ = int(matrix.shape[1])
@@ -378,6 +390,17 @@ class TabbyFlowSynthesizer:
             raise TypeError("TabbyFlowSynthesizer.fit expects a pandas DataFrame")
         if len(data) < 2:
             raise ValueError("TabbyFlow requires at least two rows")
+
+        self._fitted = False
+        self.best_train_loss_ = float("inf")
+        self.actual_train_steps_ = 0
+        if str(self.cfg.cond_vel).lower() == "ve":
+            warnings.warn(
+                "TabbyFlow VE starts from N(0, 4I), an approximation to the path's "
+                "data + N(0, 4I) source. OT and cosine have an exact Gaussian source.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         seed = int(self.cfg.seed)
         np.random.seed(seed)
@@ -468,13 +491,17 @@ class TabbyFlowSynthesizer:
     def _decode(self, latent: np.ndarray, *, seed: int) -> pd.DataFrame:
         n = len(latent)
         out = pd.DataFrame(index=np.arange(n))
+        self.decoding_report_ = {}
 
         if self.numeric_cols_:
             if self.quantile is None:
                 raise RuntimeError("Missing fitted QuantileTransformer")
             numeric = self.quantile.inverse_transform(latent[:, : self.d_cont_])
             for idx, col in enumerate(self.numeric_cols_):
-                out[col] = numeric[:, idx]
+                values = numeric[:, idx]
+                if col in self.discrete_supports_:
+                    values, self.decoding_report_[col] = nearest_support_decode(values, self.discrete_supports_[col])
+                out[col] = restore_dtype(values, str(self.raw_dtypes_[col]))
 
         if self.categorical_cols_:
             if self.encoder is None:
@@ -497,18 +524,17 @@ class TabbyFlowSynthesizer:
                 except Exception:
                     pass
 
-        rng = np.random.default_rng(int(seed))
-        for col in self.extra_cols_:
-            values = self.extra_values_[col]
-            out[col] = values[rng.integers(0, len(values), size=n)]
+        if self._id_col is not None:
+            out[self._id_col] = self._id_factory.make(n)
 
         return out.reindex(columns=self.columns_)
 
     def sample(self, n: int, *, seed: int) -> pd.DataFrame:
         if not self._fitted or self.net is None or self.path is None:
             raise RuntimeError("Call fit() before sample()")
-        if int(n) <= 0:
-            raise ValueError("n must be positive")
+        n = validate_n(n)
+        if int(self.cfg.sample_batch_size) < 1:
+            raise ValueError("sample_batch_size must be positive")
 
         torch.manual_seed(int(seed))
         if torch.cuda.is_available():
@@ -522,9 +548,10 @@ class TabbyFlowSynthesizer:
         chunks = []
         remaining = int(n)
         with torch.inference_mode():
+            _, source_std, _, _ = self.path.coefficients(torch.zeros(1, device=self.device))
             while remaining > 0:
                 size = min(int(self.cfg.sample_batch_size), remaining)
-                x_0 = torch.randn(size, self.d_total_, device=self.device)
+                x_0 = source_std * torch.randn(size, self.d_total_, device=self.device)
                 x_1 = integrate_tabbyflow_fixed_step(
                     field,
                     x_0,

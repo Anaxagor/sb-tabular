@@ -41,16 +41,19 @@ class CSBMLoss:
         Returns:
             torch.Tensor: Scalar loss combining KL-divergence of transition probabilities and auxiliary CE.
         """
-        model_transition = self.reference.model_induced_next_step(pred_logits_x1, x_t, n, K)
+        log_model_transition = self.reference.log_model_induced_next_step(pred_logits_x1, x_t, n, K)
 
         target_transition = self.reference.bridge_next_given_prev(x_t, x_1_true, n, K)
 
-        kl_input = torch.log(model_transition.view(-1, self.reference.S_max) + 1e-12)
+        kl_input = log_model_transition.reshape(-1, self.reference.S_max)
         kl_target = target_transition.view(-1, self.reference.S_max)
 
-        kl_term = F.kl_div(kl_input, kl_target, reduction="batchmean")
+        # Padded / unreachable states have target 0 and log model -inf.
+        positive = kl_target > 0
+        safe_log_model = torch.where(positive, kl_input, torch.zeros_like(kl_input))
+        kl_term = (torch.xlogy(kl_target, kl_target) - kl_target * safe_log_model).sum(-1).mean()
 
-        ce_input = pred_logits_x1.view(-1, self.reference.S_max)
+        ce_input = pred_logits_x1.masked_fill(~self.reference.valid_mask, float("-inf")).reshape(-1, self.reference.S_max)
         ce_target = x_1_true.view(-1)
         simple_term = F.cross_entropy(ce_input, ce_target)
 
@@ -76,15 +79,18 @@ class CSBMLoss:
         Returns:
             torch.Tensor: Scalar loss combining backward KL-divergence and auxiliary CE.
         """
-        model_transition = self.reference.model_induced_prev_step(pred_logits_x0, x_t, n)
+        log_model_transition = self.reference.log_model_induced_prev_step(pred_logits_x0, x_t, n)
         target_transition = self.reference.bridge_prev_given_next(x_0_true, x_t, n)
 
-        kl_input = torch.log(model_transition.view(-1, self.reference.S_max) + 1e-12)
+        kl_input = log_model_transition.reshape(-1, self.reference.S_max)
         kl_target = target_transition.view(-1, self.reference.S_max)
 
-        kl_term = F.kl_div(kl_input, kl_target, reduction="batchmean")
+        # Padded / unreachable states have target 0 and log model -inf.
+        positive = kl_target > 0
+        safe_log_model = torch.where(positive, kl_input, torch.zeros_like(kl_input))
+        kl_term = (torch.xlogy(kl_target, kl_target) - kl_target * safe_log_model).sum(-1).mean()
 
-        ce_input = pred_logits_x0.view(-1, self.reference.S_max)
+        ce_input = pred_logits_x0.masked_fill(~self.reference.valid_mask, float("-inf")).reshape(-1, self.reference.S_max)
         ce_target = x_0_true.view(-1)
         simple_term = F.cross_entropy(ce_input, ce_target)
 
@@ -148,12 +154,15 @@ class MixedSBMLoss(nn.Module):
         Returns:
             loss (torch.Tensor): Total combined loss scalar on the same device as the input tensors.
         """
-        loss = torch.tensor(0.0, device=true_num.device)
-        if pred_num is not None and true_num.shape[-1] > 0:
+        if direction not in ("f", "b"):
+            raise ValueError("direction must be 'f' or 'b'")
+        active = true_num if true_num is not None else true_cat
+        loss = torch.zeros((), device=active.device, dtype=torch.float64)
+        if pred_num is not None and true_num is not None and true_num.shape[-1] > 0:
             l_num = self.num_loss_fn(pred_num, true_num)
             loss += self.lambda_num * l_num
 
-        if pred_logits_cat is not None and true_cat.shape[-1] > 0 and self.cat_loss_fn is not None:
+        if pred_logits_cat is not None and true_cat is not None and true_cat.shape[-1] > 0 and self.cat_loss_fn is not None:
             if direction == 'f':
                 l_cat = self.cat_loss_fn.forward_loss(pred_logits_cat, true_cat, x_t_cat, n, K)
             elif direction == 'b':

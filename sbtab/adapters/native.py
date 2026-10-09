@@ -80,10 +80,10 @@ class MixedSBMAdapter(ModelAdapter):
 
     def describe(self) -> dict:
         s = self.solver
-        return {"implementation": "feature/tuning", "networks": "shared_forward_backward",
+        return {"implementation": "feature/tuning_with_exact_categorical_bridges", "networks": "shared_forward_backward",
                 "orientation": {"x0": "data", "x1": "prior", "generation": "backward"},
                 "reference": {"numerical": {"kind": "brownian", "sigma": s.cfg.sigma, "horizon": 1.0,
-                                            "noise": s.cfg.noise, "prior_mean": s.cfg.num_ref_mean,
+                                            "training_noise": True, "sampling_noise": s.cfg.noise, "prior_mean": s.cfg.num_ref_mean,
                                             "prior_std": s.cfg.num_ref_std},
                               "categorical": None if s.ref_cat is None else s.ref_cat.describe()},
                 "grid": {"schedule": "uniform", "num_steps": s.cfg.num_steps, "horizon": 1.0},

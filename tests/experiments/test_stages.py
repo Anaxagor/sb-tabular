@@ -250,7 +250,8 @@ def test_registry_is_complete_and_honest():
             assert os.path.isdir(e.implementation), e.implementation
             adapter = get_adapter_class(e.id)
             assert adapter.registry_id == e.id and set(adapter.supported_regimes) == set(e.regimes), e.id
-    assert {"tabsyn", "forestdiffusion", "tabbyflow", "lightsb_m", "stasy"} <= {e.id for e in solver_registry.values() if e.status == "unavailable"}
+    assert {"tabsyn", "tabbyflow", "lightsb_m", "stasy"} <= {e.id for e in solver_registry.values() if e.status == "unavailable"}
+    assert solver_registry["forestdiffusion"].status == "supported"
     assert "NOT" in solver_registry["ve_score_sde_simplified"].notes and "STaSy" in solver_registry["ve_score_sde_simplified"].notes
 
 

@@ -9,6 +9,7 @@ tqdm==4.66.6
 PyYAML==6.0.2
 pyarrow==19.0.1
 catboost==1.2.7
+xgboost==2.1.4
 pgmpy==1.0.0
 networkx==3.2.1
 optuna==4.2.1

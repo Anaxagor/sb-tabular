@@ -1,477 +1,205 @@
-"""MSBM reference from feature/tuning (0b9f15f).
+"""Exact discrete-time categorical reference for the shared-network MSBM.
 
-Kept separate from the time-semigroup reference used by the refactored CSBM.
-Alpha is a PER-STEP parameter; the ordered k >= 30 approximation is historical.
+``alpha`` retains its feature/tuning PER-STEP meaning. Ordered columns retain
+that implementation's row-normalised Gaussian kernel (not the symmetric kernel
+of canonical CSBM). Every transition is now a true power of the same matrix.
+Log-space conditioning preserves bridges with extremely rare endpoint pairs.
 """
 from __future__ import annotations
+
+import math
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional
+
 import torch
+import torch.nn.functional as F
+
+from sbtab.bridge.reference import IncompatibleBridgeError
+
 
 @dataclass
 class CategoricalReference:
-    """
-    Manages transition matrices and Markov bridge probabilities for categorical features.
-
-    Supports both ordered (Gaussian-like transitions) and unordered (uniform transitions)
-    categorical variables across a discretized time grid. Precomputes multi-step
-    transition probabilities to optimize bridge sampling and loss evaluations.
-
-    Attributes:
-        cardinalities (list[int]): Number of classes/categories for each feature.
-        is_ordered (torch.Tensor): Boolean tensor mask of shape [D], where True
-            indicates that the corresponding categorical feature is ordered.
-        total_number_of_q_powers (int): Number of discretization steps in the time grid (K).
-        alpha (float): Noise/diffusion rate parameter governing transition speeds.
-        device (torch.device): Compute device for tensor operations.
-        dtype (torch.dtype): Floating point precision for probability computations.
-    """
     cardinalities: list[int]
     is_ordered: torch.Tensor
     total_number_of_q_powers: int
     alpha: float = 0.05
     device: torch.device = torch.device("cpu")
-    dtype: torch.dtype = torch.float32
+    dtype: torch.dtype = torch.float32  # retained API slot; bridge arithmetic uses float64
 
     def __post_init__(self) -> None:
-        """Initializes categorical dimensions, validation masks, and caches transition powers."""
+        self.device = torch.device(self.device)
+        self.cardinalities = [int(c) for c in self.cardinalities]
+        if not self.cardinalities or any(c < 1 for c in self.cardinalities):
+            raise ValueError("cardinalities must be nonempty and positive")
+        self.D, self.S_max = len(self.cardinalities), max(self.cardinalities)
         self.S = torch.tensor(self.cardinalities, device=self.device)
-        self.is_ordered = self.is_ordered.clone().detach().to(device=self.device, dtype=torch.bool)
-        self.S_max = int(self.S.max().item())
-        self.D = len(self.cardinalities)
-        self._powers = torch.zeros((self.D, self.total_number_of_q_powers + 1, self.S_max, self.S_max), device=self.device)
-
-        arange = torch.arange(self.S_max, device=self.device).view(1, 1, self.S_max)
-        self.valid_mask = arange < self.S.view(1, self.D, 1)
-
-        for d in range(self.D):
-            S_d = int(self.S[d].item())
-            is_ord = bool(self.is_ordered[d].item())
-            for k in range(self.total_number_of_q_powers + 1):
-                if is_ord:
-                    matrix = self._build_gaussian_k_matrix(S_d, k)
-                else:
-                    matrix = self._build_uniform_k_matrix(S_d, k)
-                self._powers[d, k, :S_d, :S_d] = matrix
-
-    def _build_uniform_k_matrix(self, S_d: int, k: int = 1) -> torch.Tensor:
-        """
-        Computes the k-step transition matrix for an unordered categorical feature.
-
-        Args:
-            S_d (int): Cardinality of the specific feature.
-            k (int): Number of steps (matrix power). Defaults to 1.
-
-        Returns:
-            torch.Tensor: Transition probability matrix of shape [S_d, S_d].
-        """
-        if k == 0 or S_d == 1: return torch.eye(S_d, device=self.device)
-
-        b = self.alpha * S_d / (S_d - 1 + 1e-6)
-        alpha_bar_k = (1 - b) ** k
-
-        p_stay = alpha_bar_k + (1 - alpha_bar_k) / S_d
-        p_jump = (1 - alpha_bar_k) / S_d
-
-        transition_matrix = torch.full((S_d, S_d), p_jump, device=self.device)
-        transition_matrix.fill_diagonal_(p_stay)
-
-        return transition_matrix
-
-    def _build_gaussian_k_matrix(self, S_d: int, k: int = 1) -> torch.Tensor:
-        """
-        Computes the k-step transition matrix for an ordered categorical feature.
-
-        Uses local random walk transitions embedded via softmax distance metrics.
-
-        Args:
-            S_d (int): Cardinality of the specific feature.
-            k (int): Number of steps (matrix power). Defaults to 1.
-
-        Returns:
-            torch.Tensor: Transition probability matrix of shape [S_d, S_d].
-        """
-        if k == 0 or S_d == 1: return torch.eye(S_d, device=self.device)
-
-        idx = torch.arange(S_d, device=self.device)
-        i = idx.view(S_d, 1)
-        j = idx.view(1, S_d)
-
-        delta = S_d - 1
-
-        dist_sq = (i - j) ** 2
-
-        if k < 30:
-            variance_1 = (self.alpha ** 2) * (delta ** 2) + 1e-12
-            logits_1 = -4 * dist_sq / variance_1
-            Q = torch.softmax(logits_1, dim=-1)
-
-            return torch.matrix_power(Q, k)
-        else:
-            variance_k = (self.alpha ** 2 * k) * (delta ** 2) + 1e-12
-            logits_k = -4 * dist_sq / variance_k
-
-            return torch.softmax(logits_k, dim=-1)
-
-    def bridge_at_time(
-        self,
-        x_start: torch.Tensor,
-        x_target: torch.Tensor,
-        t: torch.Tensor,
-        total_steps: int
-    ) -> torch.Tensor:
-        """
-        Computes the bridge probability distribution P(x_t | x_0=x_start, x_K=x_target).
-
-        Args:
-            x_start (torch.Tensor): Starting state class indices (Shape: [B, D]).
-            x_target (torch.Tensor): Target endpoint class indices (Shape: [B, D]).
-            t (torch.Tensor): Discrete time steps for the current batch (Shape: [B] or scalar).
-            total_steps (int): Total number of discrete steps in the setup grid (K).
-
-        Returns:
-            torch.Tensor: Conditional probability distributions of shape [B, D, S_max].
-        """
-        x_start = torch.as_tensor(x_start, device=self.device, dtype=torch.long)
-        x_target = torch.as_tensor(x_target, device=self.device, dtype=torch.long)
-
-        batch_size = x_start.shape[0]
-        batch_indices = torch.arange(batch_size, device=self.device).view(batch_size, 1)
-        dim_indices = torch.arange(self.D, device=self.device).view(1, self.D)
-
-        if t.dim() == 0 or t.numel() == 1:
-            t = t.expand(batch_size)
-        t = t.view(-1).long()
-        t_rest = (total_steps - t).clamp(0, total_steps)
-
-        Q_t = self._powers[:, t].permute(1, 0, 2, 3)
-        Q_rest = self._powers[:, t_rest].permute(1, 0, 2, 3)
-        Q_all = self._powers[:, total_steps]
-
-        row_start = Q_t[batch_indices, dim_indices, x_start, :]
-        col_end = Q_rest[batch_indices, dim_indices, :, x_target]
-
-        norm = Q_all[dim_indices, x_start, x_target]
-        probs = (row_start * col_end) / (norm.unsqueeze(-1) + 1e-12)
-
-        return probs
-
-    def bridge_next_given_prev(
-        self,
-        x_t: torch.Tensor,
-        x_target: torch.Tensor,
-        n: Union[torch.Tensor, int],
-        K: int
-    ) -> torch.Tensor:
-        """
-        Calculates the conditional transition distribution P(x_{t+1} | x_t, x_K=x_target).
-
-        Used during forward IMF training updates.
-
-        Args:
-            x_t (torch.Tensor): Categorical feature class indices at step n (Shape: [B, D]).
-            x_target (torch.Tensor): Endpoint target indices (z_1) (Shape: [B, D]).
-            n (Union[torch.Tensor, int]): Discrete time steps for the batch.
-            K (int): Total number of time grid steps.
-
-        Returns:
-            torch.Tensor: Next-step transition distribution vectors of shape [B, D, S_max].
-        """
-        x_t = torch.as_tensor(x_t, device=self.device, dtype=torch.long)
-        x_target = torch.as_tensor(x_target, device=self.device, dtype=torch.long)
-
-        batch_size = x_t.shape[0]
-
-        if not isinstance(n, torch.Tensor):
-            n = torch.full((batch_size,), n, device=self.device, dtype=torch.long)
-        elif n.dim() == 0:
-            n = n.expand(batch_size).long()
-        n = n.view(-1).long()
-
-        t_rest = (K - n - 1).clamp(0, K)
-        t_total = (K - n).clamp(0, K)
-
-        b_idx = torch.arange(batch_size, device=self.device).view(batch_size, 1)  # [B, 1]
-        d_idx = torch.arange(self.D, device=self.device).view(1, self.D)  # [1, D]
-
-        Q_1 = self._powers[:, 1]  # [D, S_max, S_max]
-        Q_rest = self._powers[:, t_rest].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-        Q_total = self._powers[:, t_total].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-
-        w_step = Q_1[d_idx, x_t, :]  # [B, D, S_max]
-        w_to_end = Q_rest[b_idx, d_idx, :, x_target]  # [B, D, S_max]
-
-        norm = Q_total[b_idx, d_idx, x_t, x_target]  # [B, D]
-
-        return (w_step * w_to_end) / (norm.unsqueeze(-1) + 1e-12)  # [B, D, S_max]
-
-    def bridge_prev_given_next(
-        self,
-        x_start: torch.Tensor,
-        x_t: torch.Tensor,
-        n: Union[torch.Tensor, int]
-    ) -> torch.Tensor:
-        """
-        Calculates the posterior transition distribution P(x_{t-1} | x_0=x_start, x_t).
-
-        Used during backward IMF training updates.
-
-        Args:
-            x_start (torch.Tensor): Starting source indices (z_0) (Shape: [B, D]).
-            x_t (torch.Tensor): Categorical feature class indices at step n (Shape: [B, D]).
-            n (Union[torch.Tensor, int]): Discrete time steps for the batch.
-
-        Returns:
-            torch.Tensor: Backward step transition distribution vectors of shape [B, D, S_max].
-        """
-        x_start = torch.as_tensor(x_start, device=self.device, dtype=torch.long)
-        x_t = torch.as_tensor(x_t, device=self.device, dtype=torch.long)
-
-        batch_size = x_t.shape[0]
-
-        if not isinstance(n, torch.Tensor):
-            n = torch.full((batch_size,), n, device=self.device, dtype=torch.long)
-        elif n.dim() == 0:
-            n = n.expand(batch_size).long()
-        n = n.view(-1).long()
-
-        t_prev = (n - 1).clamp(0, self.total_number_of_q_powers)
-        t_curr = n.clamp(0, self.total_number_of_q_powers)
-
-        b_idx = torch.arange(batch_size, device=self.device).view(batch_size, 1)  # [B, 1]
-        d_idx = torch.arange(self.D, device=self.device).view(1, self.D)  # [1, D]
-
-        Q_1 = self._powers[:, 1]  # [D, S_max, S_max]
-        Q_from_start = self._powers[:, t_prev].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-        Q_total = self._powers[:, t_curr].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-
-        w_from_start = Q_from_start[b_idx, d_idx, x_start, :]  # [B, D, S_max]
-
-        w_step_back = Q_1[d_idx, :, x_t]  # [B, D, S_max]
-
-        norm = Q_total[b_idx, d_idx, x_start, x_t]  # [B, D]
-
-        return (w_from_start * w_step_back) / (norm.unsqueeze(-1) + 1e-12)
-
-    def model_induced_next_step(
-        self,
-        model_logits: torch.Tensor,
-        x_t: torch.Tensor,
-        n: Union[torch.Tensor, int],
-        K: int
-    ) -> torch.Tensor:
-        """
-        Predicts forward step probabilities P(x_{t+1} | x_t) marginalized over endpoint estimates.
-
-        Integrates the network's endpoint logits output to perform forward path reconstruction.
-
-        Args:
-            model_logits (torch.Tensor): Unnormalized predicted logits for the target state x_K (Shape: [B, D, S_max]).
-            x_t (torch.Tensor): Class indices at the current step (Shape: [B, D]).
-            n (Union[torch.Tensor, int]): Current discrete time step index.
-            K (int): Total number of time grid discretization intervals.
-
-        Returns:
-            torch.Tensor: Aggregated transition probabilities of shape [B, D, S_max].
-        """
-        x_t = torch.as_tensor(x_t, device=self.device, dtype=torch.long)
-        batch_size = x_t.shape[0]
-
-        if not isinstance(n, torch.Tensor):
-            n = torch.full((batch_size,), n, device=self.device, dtype=torch.long)
-        elif n.dim() == 0:
-            n = n.expand(batch_size).long()
-        n = n.view(-1).long()
-
-        t_rest = (K - n - 1).clamp(0, K)
-        t_total = (K - n).clamp(0, K)
-
-        b_idx = torch.arange(batch_size, device=self.device).view(batch_size, 1)
-        d_idx = torch.arange(self.D, device=self.device).view(1, self.D)
-
-        masked_logits = model_logits.masked_fill(~self.valid_mask, -1e9)
-        p_model = torch.softmax(masked_logits, dim=-1)  # [B, D, S_max]
-
-        Q_1 = self._powers[:, 1]  # [D, S_max, S_max]
-        Q_rest = self._powers[:, t_rest].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-        Q_total = self._powers[:, t_total].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-
-        norm_den = Q_total[b_idx, d_idx, x_t, :]  # [B, D, S_max]
-
-        term_to_sum = p_model / (norm_den + 1e-12)  # [B, D, S_max]
-
-        # b (batch), d (dim), i (next_state), j (target_state).
-        # term_to_sum(b, d, j) * Q_rest(b, d, i, j) -> (b, d, i)
-        summed_targets = torch.einsum('bdj, bdij -> bdi', term_to_sum, Q_rest)  # [B, D, S_max]
-
-        w_step = Q_1[d_idx, x_t, :]  # [B, D, S_max]
-
-        probs = w_step * summed_targets  # [B, D, S_max]
-        probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-12)
-
-        return probs
-
-    def model_induced_prev_step(
-        self,
-        model_logits: torch.Tensor,
-        x_t: torch.Tensor,
-        n: Union[torch.Tensor, int]
-    ) -> torch.Tensor:
-        """
-        Predicts backward step probabilities P(x_{t-1} | x_t) marginalized over source estimates.
-
-        Integrates the network's source logits output to perform reverse trajectory sampling.
-
-        Args:
-            model_logits (torch.Tensor): Unnormalized predicted logits for the source state x_0 (Shape: [B, D, S_max]).
-            x_t (torch.Tensor): Class indices at the current step (Shape: [B, D]).
-            n (Union[torch.Tensor, int]): Current discrete time step index.
-
-        Returns:
-            torch.Tensor: Aggregated reverse transition probabilities of shape [B, D, S_max].
-        """
-        x_t = torch.as_tensor(x_t, device=self.device, dtype=torch.long)
-
-        batch_size = x_t.shape[0]
-
-        if not isinstance(n, torch.Tensor):
-            n = torch.tensor(n, device=self.device)
-        if n.dim() == 0:
-            n = n.expand(batch_size)
-        n = n.view(-1).long()
-
-        t_prev = (n - 1).clamp(0, self.total_number_of_q_powers)
-        t_curr = n.clamp(0, self.total_number_of_q_powers)
-
-        b_idx = torch.arange(batch_size, device=self.device).view(batch_size, 1)
-        d_idx = torch.arange(self.D, device=self.device).view(1, self.D)
-
-        masked_logits = model_logits.masked_fill(~self.valid_mask, -1e9)
-        p_model = torch.softmax(masked_logits, dim=-1)  # [B, D, S_max]
-
-        Q_1 = self._powers[:, 1]  # [D, S_max, S_max]
-        Q_to_prev = self._powers[:, t_prev].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-        Q_to_curr = self._powers[:, t_curr].permute(1, 0, 2, 3)  # [B, D, S_max, S_max]
-
-        norm_den = Q_to_curr[b_idx, d_idx, :, x_t]  # [B, D, S_max]
-
-        term_to_sum = p_model / (norm_den + 1e-12)  # [B, D, S_max]
-
-        # b (batch), d (dim), i (start_state), j (prev_state x_{t-1}).
-        # term_to_sum(b, d, i) * Q_to_prev(b, d, i, j) -> (b, d, j)
-        summed_starts = torch.einsum('bdi, bdij -> bdj', term_to_sum, Q_to_prev)  # [B, D, S_max]
-
-        w_step_back = Q_1[d_idx, :, x_t]  # [B, D, S_max]
-
-        probs = w_step_back * summed_starts  # [B, D, S_max]
-        probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-12)
-
-        return probs
+        self.is_ordered = torch.as_tensor(self.is_ordered, dtype=torch.bool, device=self.device).reshape(-1)
+        if len(self.is_ordered) != self.D:
+            raise ValueError("is_ordered must have one entry per column")
+        if self.total_number_of_q_powers < 1 or int(self.total_number_of_q_powers) != self.total_number_of_q_powers:
+            raise ValueError("total_number_of_q_powers must be a positive integer")
+        self.valid_mask = torch.arange(self.S_max, device=self.device)[None, None, :] < self.S[None, :, None]
+        self.update_alpha(self.alpha)
+
+    @staticmethod
+    def _log_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        # Chunk the first axis: a full S x S x S temporary is unnecessary.
+        return torch.cat([
+            torch.logsumexp(a[i:i + 16, :, None] + b[None, :, :], dim=1)
+            for i in range(0, len(a), 16)
+        ])
 
     def update_alpha(self, new_alpha: float) -> None:
-        """
-        Updates the reference model's alpha rate parameter and updates transition matrix caches.
-
-        Args:
-            new_alpha (float): New alpha parameter value.
-        """
-        self.alpha = new_alpha
-
-        self._powers.zero_()
-
-        for d in range(self.D):
-            S_d = int(self.S[d].item())
-            is_ord = bool(self.is_ordered[d].item())
-            for k in range(self.total_number_of_q_powers + 1):
-                if is_ord:
-                    matrix = self._build_gaussian_k_matrix(S_d, k)
+        if not math.isfinite(new_alpha) or not 0 < new_alpha <= 1:
+            raise ValueError("alpha must lie in (0, 1]")
+        self.alpha = float(new_alpha)
+        self._log_powers = []
+        for d, S in enumerate(self.cardinalities):
+            eye = torch.eye(S, device=self.device, dtype=torch.float64)
+            powers = [eye.log()]
+            if bool(self.is_ordered[d]) and S > 1:
+                idx = torch.arange(S, device=self.device, dtype=torch.float64)
+                logits = -4 * (idx[:, None] - idx[None, :]).square() / (self.alpha * (S - 1)) ** 2
+                log_q = torch.log_softmax(logits, dim=-1)
+                # Use ordinary matrix multiplication when all entries are safely
+                # representable; otherwise keep even subnormal paths in log space.
+                if float(log_q.min()) > -600:
+                    q, current = log_q.exp(), eye
+                    for _ in range(self.total_number_of_q_powers):
+                        current = current @ q
+                        powers.append(current.log())
                 else:
-                    matrix = self._build_uniform_k_matrix(S_d, k)
+                    powers.append(log_q)
+                    for _ in range(1, self.total_number_of_q_powers):
+                        powers.append(self._log_matmul(powers[-1], log_q))
+            else:
+                for k in range(1, self.total_number_of_q_powers + 1):
+                    if S == 1:
+                        qk = eye
+                    else:
+                        b = self.alpha * S / (S - 1)
+                        if b < 1:
+                            # Keep relative accuracy for very small jump rates.
+                            log_retention = k * math.log1p(-b)
+                            retention = math.exp(log_retention)
+                            jump = -math.expm1(log_retention) / S
+                        else:
+                            retention = (1 - b) ** k
+                            jump = (1 - retention) / S
+                        qk = (retention * eye + jump).clamp_min(0)
+                    powers.append(qk.log())
+            self._log_powers.append(torch.stack(powers))
 
-                self._powers[d, k, :S_d, :S_d] = matrix
+    @property
+    def _powers(self) -> torch.Tensor:
+        """Dense probability view for diagnostics; inference uses log powers."""
+        return torch.stack([F.pad(q.exp(), (0, self.S_max - q.shape[-1], 0, self.S_max - q.shape[-1]))
+                            for q in self._log_powers])
 
-    def sample_from_probs(self, probs: torch.Tensor, generator: Optional[torch.Generator] = None) -> torch.Tensor:
-        """
-        Draws discrete feature class realizations from a given probability distribution.
+    def _index(self, n, B: int, lo: int, hi: int) -> torch.Tensor:
+        n = torch.as_tensor(n, device=self.device)
+        if n.is_floating_point() and not torch.equal(n, n.trunc()):
+            raise ValueError("state indices must be integers")
+        n = n.long().reshape(-1)
+        if n.numel() == 1:
+            n = n.expand(B)
+        if n.numel() != B or bool(((n < lo) | (n > hi)).any()):
+            raise ValueError(f"state indices must have one entry per row in [{lo}, {hi}]")
+        return n
 
-        Args:
-            probs (torch.Tensor): Transition probabilities tensor (Shape: [B, D, S_max]).
+    def _steps(self, K: int) -> int:
+        if K != self.total_number_of_q_powers:
+            raise ValueError("total_steps must match the reference grid")
+        return K
 
-        Raises:
-            ValueError: If probabilities contain NaN/Inf or if a dimension sum maps to an invalid distribution.
+    @staticmethod
+    def _normalise(log_w: torch.Tensor) -> torch.Tensor:
+        z = torch.logsumexp(log_w, dim=-1, keepdim=True)
+        if not torch.isfinite(z).all():
+            raise IncompatibleBridgeError("The categorical reference cannot realise the requested endpoint pair")
+        return log_w - z
 
-        Returns:
-            torch.Tensor: Randomly drawn categorical index realizations of shape [B, D] (dtype=long).
-        """
-        if torch.isnan(probs).any() or torch.isinf(probs).any():
-            raise ValueError(
-                "Categorical reference received NaNs or Infs in probabilities. "
-                "The neural network diverged due to bad hyperparameters."
-            )
+    def _stack(self, columns: list[torch.Tensor], *, log: bool = False) -> torch.Tensor:
+        return torch.stack([F.pad(p if log else p.exp(), (0, self.S_max - p.shape[-1]),
+                                  value=float("-inf") if log else 0.0) for p in columns], dim=1)
 
-        batch_size, dims, s_max = probs.shape
+    def bridge_at_time(self, x_start, x_target, t, total_steps):
+        K = self._steps(total_steps)
+        n = self._index(t, len(x_start), 0, K)
+        columns = []
+        for d, q in enumerate(self._log_powers):
+            log_w = q[n, x_start[:, d], :] + q[K - n, :, x_target[:, d]]
+            columns.append(self._normalise(log_w))
+        return self._stack(columns)
 
-        arange = torch.arange(s_max, device=self.device).view(1, 1, s_max)
-        mask = arange < self.S.view(1, dims, 1)
+    def bridge_next_given_prev(self, x_t, x_target, n, K):
+        K = self._steps(K)
+        n = self._index(n, len(x_t), 0, K - 1)
+        return self._stack([self._normalise(q[1, x_t[:, d], :] + q[K - n - 1, :, x_target[:, d]])
+                            for d, q in enumerate(self._log_powers)])
 
-        masked_probs = (probs + 1e-12) * mask
+    def bridge_prev_given_next(self, x_start, x_t, n):
+        n = self._index(n, len(x_t), 1, self.total_number_of_q_powers)
+        return self._stack([self._normalise(q[n - 1, x_start[:, d], :] + q[1].T[x_t[:, d]])
+                            for d, q in enumerate(self._log_powers)])
 
-        flat_probs = masked_probs.reshape(-1, s_max)
+    def _model_step(self, model_logits, x_t, n, *, forward: bool, log: bool):
+        K = self.total_number_of_q_powers
+        n = self._index(n, len(x_t), 0 if forward else 1, K - 1 if forward else K)
+        columns = []
+        for d, q in enumerate(self._log_powers):
+            S = self.cardinalities[d]
+            log_p = torch.log_softmax(model_logits[:, d, :S].double(), dim=-1)
+            reach = q[K - n, x_t[:, d], :] if forward else q[n, :, x_t[:, d]]
+            # Periodic/reducible kernels can have genuinely unreachable endpoints.
+            reachable = torch.isfinite(reach)
+            log_ratio = log_p - torch.where(reachable, reach, torch.zeros_like(reach))
+            log_ratio = log_ratio.masked_fill(~reachable, float("-inf"))
+            if forward:
+                terms = log_ratio[:, None, :] + q[K - n - 1]
+                step = q[1, x_t[:, d], :]
+            else:
+                terms = log_ratio[:, None, :] + q[n - 1].transpose(-1, -2)
+                step = q[1].T[x_t[:, d]]
+            # An impossible intermediate state has all -inf summands. Avoid the
+            # undefined logsumexp gradient there before assigning zero mass.
+            possible = torch.isfinite(terms).any(dim=-1)
+            safe_terms = torch.where(possible[..., None], terms, torch.zeros_like(terms))
+            future = torch.logsumexp(safe_terms, dim=-1).masked_fill(~possible, float("-inf"))
+            columns.append(self._normalise(step + future))
+        return self._stack(columns, log=log)
 
-        if (flat_probs.sum(dim=-1) <= 0).any():
-            raise ValueError("Some rows in flat_probs have zero or negative sum after masking.")
+    def model_induced_next_step(self, model_logits, x_t, n, K):
+        self._steps(K)
+        return self._model_step(model_logits, x_t, n, forward=True, log=False)
 
-        samples = torch.multinomial(flat_probs, num_samples=1, generator=generator)
-        return samples.view(batch_size, dims)
+    def model_induced_prev_step(self, model_logits, x_t, n):
+        return self._model_step(model_logits, x_t, n, forward=False, log=False)
 
-    def sample_x_t(
-        self,
-        x_start: torch.Tensor,
-        x_target: torch.Tensor,
-        t: torch.Tensor,
-        total_steps: int,
-        generator: Optional[torch.Generator] = None,
-    ) -> torch.Tensor:
-        """
-        Samples an explicit intermediate state representation from a conditional path bridge.
+    def log_model_induced_next_step(self, model_logits, x_t, n, K):
+        self._steps(K)
+        return self._model_step(model_logits, x_t, n, forward=True, log=True)
 
-        Args:
-            x_start (torch.Tensor): Source class assignments indices (Shape: [B, D]).
-            x_target (torch.Tensor): Endpoint target class assignments indices (Shape: [B, D]).
-            t (torch.Tensor): Time step index slice array.
-            total_steps (int): Comprehensive time-grid discretization size (K).
+    def log_model_induced_prev_step(self, model_logits, x_t, n):
+        return self._model_step(model_logits, x_t, n, forward=False, log=True)
 
-        Returns:
-            torch.Tensor: Categorical features tensor sampled at step t (Shape: [B, D]).
-        """
-        probs = self.bridge_at_time(x_start, x_target, t, total_steps)
-        return self.sample_from_probs(probs, generator=generator)
+    def sample_from_probs(self, probs, generator: Optional[torch.Generator] = None):
+        if not torch.isfinite(probs).all() or (probs < 0).any():
+            raise ValueError("categorical probabilities must be finite and nonnegative")
+        if (probs.masked_select(~self.valid_mask.expand_as(probs)) != 0).any():
+            raise ValueError("probability mass on padded categories")
+        if not torch.allclose(probs.sum(dim=-1), torch.ones_like(probs[..., 0]), atol=1e-7, rtol=1e-7):
+            raise ValueError("categorical probabilities must sum to one")
+        return torch.multinomial(probs.reshape(-1, self.S_max), 1, generator=generator).reshape(probs.shape[:2])
 
-    def sample_step(
-        self,
-        x_t: torch.Tensor,
-        x_target: torch.Tensor,
-        n: torch.Tensor,
-        total_steps: int
-    ) -> torch.Tensor:
-        """
-        Draws a single-step discrete feature transition using endpoint-conditioned lookaheads.
+    def sample_x_t(self, x_start, x_target, t, total_steps, generator=None):
+        return self.sample_from_probs(self.bridge_at_time(x_start, x_target, t, total_steps), generator)
 
-        Args:
-            x_t (torch.Tensor): Current state class assignments indices (Shape: [B, D]).
-            x_target (torch.Tensor): Endpoint goal class indices (Shape: [B, D]).
-            n (torch.Tensor): Grid location timeline step tracker.
-            total_steps (int): Total number of time grid steps.
-
-        Returns:
-            torch.Tensor: Sampled adjacent next-step class assignments indices (Shape: [B, D]).
-        """
-        probs = self.bridge_next_given_prev(x_t, x_target, n, total_steps)
-        return self.sample_from_probs(probs)
-
+    def sample_step(self, x_t, x_target, n, total_steps):
+        return self.sample_from_probs(self.bridge_next_given_prev(x_t, x_target, n, total_steps))
 
     def describe(self) -> dict:
-        return {"family": "feature_tuning_step_kernel", "alpha": float(self.alpha),
-                "num_steps": int(self.total_number_of_q_powers),
-                "cardinalities": list(self.cardinalities),
-                "is_ordered": [bool(x) for x in self.is_ordered.tolist()]}
+        return {"family": "feature_tuning_step_kernel", "transition_powers": "exact_log_domain",
+                "ordered_kernel": "row_normalised_gaussian", "alpha": self.alpha,
+                "num_steps": self.total_number_of_q_powers, "cardinalities": list(self.cardinalities),
+                "is_ordered": self.is_ordered.tolist()}

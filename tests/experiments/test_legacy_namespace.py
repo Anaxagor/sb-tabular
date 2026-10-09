@@ -466,10 +466,12 @@ def test_sliced_wasserstein_is_the_de5acc9_function(lm) -> None:
     blob = _git_show("de5acc9:sbtab/evaluation/metrics/statistical.py")
     if blob is None:
         pytest.skip("git object de5acc9 unavailable (it lives on origin/feat/evaluation-metrics only)")
-    src = blob.decode("utf-8")
+    # Formatting cleanup must not invalidate historical algorithm equivalence.
+    # Retain every token/comment; ignore only trailing horizontal whitespace.
+    src = "\n".join(line.rstrip() for line in blob.decode("utf-8").splitlines())
     fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "sliced_wasserstein")
     historical = "".join(src.splitlines(keepends=True)[fn.lineno - 1:fn.end_lineno])
-    new_src = LEGACY_METRICS.read_text(encoding="utf-8")
+    new_src = "\n".join(line.rstrip() for line in LEGACY_METRICS.read_text(encoding="utf-8").splitlines())
     fn2 = next(n for n in ast.parse(new_src).body
                if isinstance(n, ast.FunctionDef) and n.name == "sliced_wasserstein")
     assert ast.dump(fn) == ast.dump(fn2)

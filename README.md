@@ -121,13 +121,23 @@ for the legacy scripts and are not used by the experiment stages.
 | `ve_score_sde_simplified` | baseline | VE SDE | joint | torch | continuous → discrete, mixed |
 | `ctgan` | baseline | – | joint | `sdv` | all |
 | `tabpfgen` | baseline | – | SGLD + TabPFN | `tabpfgen`, `tabpfn` | all |
+| `forestdiffusion` | Forest-Flow / Forest-VP | field per time level | joint row (X, y) | XGBoost | continuous → discrete, mixed |
 
 `csbm_annealed` is a registered **heuristic** (the reference is annealed between outer iterations); canonical
 `csbm` keeps its reference fixed. Registered as **unavailable** — named in papers, result files or parameter
-JSONs but not implemented here, and never silently substituted: `stasy` (the repository's "STaSy" is a simplified
+JSONs but without an executable benchmark adapter, and never silently substituted: `stasy` (the repository's "STaSy" is a simplified
 VE score-SDE: no self-paced per-sample weights, fine-tuning stage, VP/sub-VP SDEs, probability-flow ODE sampler or
-ncsnpp-tabular network), `lightsb_m` (the code is LightSB), `tabbyflow` (an orphaned parameter JSON), `tabsyn`,
-`forestdiffusion` (exists only on the separate branch `forest_diffusion`).
+ncsnpp-tabular network), `lightsb_m` (the code is LightSB), `tabbyflow` (tested standalone implementation;
+benchmark adapter/checkpoints pending), and `tabsyn`.
+
+ForestDiffusion was imported from `forest_diffusion` (`50635ca`) and corrected during the
+[generative algorithm audit](docs/GENERATIVE_ALGORITHM_AUDIT.md). It uses joint unconditional generation,
+train-fitted z-scores and full one-hot encoding, with no continuous clipping. Its iterator avoids materializing
+all time levels, but XGBoost's QuantileDMatrix retains quantized training data in memory. The default search
+space uses Forest-Flow; set `diffusion_type: vp` for Forest-VP. XGBoost >= 2.1 is required.
+
+The audit also corrected MSBM's categorical reference; checkpoints now use `sbtab.mixedsbm/4`.
+Older MSBM checkpoints must be retrained because their transition law differs.
 
 All canonical SB entries sample **with** dynamics noise: a drift trained for the stochastic bridge is not a
 probability-flow ODE, so `noise` is not a tunable option (a noiseless run reports `*_noiseless_heuristic`).

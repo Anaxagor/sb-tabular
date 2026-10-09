@@ -80,8 +80,10 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         assert parametrization in ('x0', 'direct')
 
         if multinomial_loss_type == 'vb_all':
-            print('Computing the loss using the bound on _all_ timesteps.'
-                  ' This is expensive both in terms of memory and computation.')
+            raise NotImplementedError(
+                "The inherited vb_all training path is unsupported for mixed tabular rows. "
+                "Use vb_stochastic for training and mixed_elbo for evaluation."
+            )
 
         self.num_numerical_features = num_numerical_features
         self.num_classes = num_classes # it as a vector [K1, K2, ..., Km]
@@ -251,8 +253,13 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         )
         kl = mean_flat(kl) / np.log(2.0)
 
-        decoder_nll = -discretized_gaussian_log_likelihood(
-            x_start, means=out["mean"], log_scales=0.5 * out["log_variance"]
+        # The Gaussian block contains standardized, unbounded tabular values.
+        # The upstream image decoder assigns saturated tail bins at -1 and +1;
+        # applying it here makes the t=0 objective depend on an arbitrary origin.
+        # Use the continuous density of the same Gaussian reverse transition.
+        decoder_nll = 0.5 * (
+            math.log(2.0 * math.pi) + out["log_variance"]
+            + (x_start - out["mean"]).square() * torch.exp(-out["log_variance"])
         )
         assert decoder_nll.shape == x_start.shape
         decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
@@ -286,7 +293,8 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
 
         terms = {}
         if self.gaussian_loss_type == 'mse':
-            terms["loss"] = mean_flat((noise - model_out) ** 2)
+            target = x_start if self.gaussian_parametrization == 'x0' else noise
+            terms["loss"] = mean_flat((target - model_out) ** 2)
         elif self.gaussian_loss_type == 'kl':
             terms["loss"] = self._vb_terms_bpd(
                 model_output=model_out,
@@ -429,35 +437,21 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
 
     @torch.no_grad()
     def p_sample_loop(self, shape, out_dict):
-        device = self.log_alpha.device
-
-        b = shape[0]
-        # start with random normal image.
-        img = torch.randn(shape, device=device)
-
-        for i in reversed(range(1, self.num_timesteps)):
-            img = self.p_sample(img, torch.full((b,), i, device=device, dtype=torch.long), out_dict)
-        return img
+        raise NotImplementedError(
+            "p_sample_loop is an inherited image API, not a mixed tabular sampler. "
+            "Use sample or sample_all."
+        )
 
     @torch.no_grad()
     def _sample(self, image_size, out_dict, batch_size = 16):
-        return self.p_sample_loop((batch_size, 3, image_size, image_size), out_dict)
+        raise NotImplementedError("Image-shaped sampling is unsupported; use sample or sample_all.")
 
     @torch.no_grad()
     def interpolate(self, x1, x2, t = None, lam = 0.5):
-        b, *_, device = *x1.shape, x1.device
-        t = default(t, self.num_timesteps - 1)
-
-        assert x1.shape == x2.shape
-
-        t_batched = torch.stack([torch.tensor(t, device=device)] * b)
-        xt1, xt2 = map(lambda x: self.q_sample(x, t=t_batched), (x1, x2))
-
-        img = (1 - lam) * xt1 + lam * xt2
-        for i in reversed(range(0, t)):
-            img = self.p_sample(img, torch.full((b,), i, device=device, dtype=torch.long))
-
-        return img
+        raise NotImplementedError(
+            "The inherited image interpolation has no defined mixed Gaussian/categorical semantics. "
+            "Use sample or sample_all for generation."
+        )
 
     def log_sample_categorical(self, logits):
         full_sample = []
@@ -479,23 +473,10 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
         return log_sample
 
     def nll(self, log_x_start, out_dict):
-        b = log_x_start.size(0)
-        device = log_x_start.device
-        loss = 0
-        for t in range(0, self.num_timesteps):
-            t_array = (torch.ones(b, device=device) * t).long()
-
-            kl = self.compute_Lt(
-                log_x_start=log_x_start,
-                log_x_t=self.q_sample(log_x_start=log_x_start, t=t_array),
-                t=t_array,
-                out_dict=out_dict)
-
-            loss += kl
-
-        loss += self.kl_prior(log_x_start)
-
-        return loss
+        raise NotImplementedError(
+            "The legacy categorical-only nll API omits the numerical denoiser inputs. "
+            "Use mixed_elbo on complete rows for a Monte Carlo variational bound."
+        )
 
     def kl_prior(self, log_x_start):
         b = log_x_start.size(0)
@@ -563,31 +544,15 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             return vb_loss
 
         elif self.multinomial_loss_type == 'vb_all':
-            # Expensive, dont do it ;).
-            # DEPRECATED
-            return -self.nll(log_x_start)
+            raise NotImplementedError("vb_all is unsupported; use vb_stochastic and mixed_elbo.")
         else:
             raise ValueError()
 
     def log_prob(self, x, out_dict):
-        b, device = x.size(0), x.device
-        if self.training:
-            return self._multinomial_loss(x, out_dict)
-
-        else:
-            log_x_start = index_to_log_onehot(x, self.num_classes)
-
-            t, pt = self.sample_time(b, device, 'importance')
-
-            kl = self.compute_Lt(
-                log_x_start, self.q_sample(log_x_start=log_x_start, t=t), t, out_dict)
-
-            kl_prior = self.kl_prior(log_x_start)
-
-            # Upweigh loss term of the kl
-            loss = kl / pt + kl_prior
-
-            return -loss
+        raise NotImplementedError(
+            "Exact log_prob is not implemented. Use mixed_elbo on complete rows "
+            "for a Monte Carlo variational bound, or mixed_loss for training."
+        )
     
     def mixed_loss(self, x, out_dict):
         b = x.shape[0]
@@ -632,11 +597,17 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
     
     @torch.no_grad()
     def mixed_elbo(self, x0, out_dict):
+        """Monte Carlo negative-ELBO components (Gaussian bits/dim, categorical nats).
+
+        This diagnostic is a variational bound, not an exact log-probability.
+        An absent Gaussian or categorical block contributes zero per row.
+        """
         b = x0.size(0)
         device = x0.device
 
         x_num = x0[:, :self.num_numerical_features]
         x_cat = x0[:, self.num_numerical_features:]
+        has_num = x_num.shape[1] > 0
         has_cat = x_cat.shape[1] > 0
         if has_cat:
             log_x_cat = index_to_log_onehot(x_cat.long(), self.num_classes).to(device)
@@ -667,7 +638,7 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             model_out_num = model_out[:, :self.num_numerical_features]
             model_out_cat = model_out[:, self.num_numerical_features:]
 
-            kl = torch.tensor([0.0])
+            kl = torch.zeros(b, device=device)
             if has_cat:
                 kl = self.compute_Lt(
                     model_out=model_out_cat,
@@ -677,6 +648,11 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
                     out_dict=out_dict
                 )
 
+            multinomial_loss.append(kl)
+            if not has_num:
+                for values in (gaussian_loss, xstart_mse, out_mean, true_mean, mse):
+                    values.append(torch.zeros(b, device=device))
+                continue
             out = self._vb_terms_bpd(
                 model_out_num,
                 x_start=x_num,
@@ -685,7 +661,6 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
                 clip_denoised=False
             )
 
-            multinomial_loss.append(kl)
             gaussian_loss.append(out["output"])
             xstart_mse.append(mean_flat((out["pred_xstart"] - x_num) ** 2))
             # mu_mse.append(mean_flat(out["mean_mse"]))
@@ -705,9 +680,9 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
 
 
 
-        prior_gauss = self._prior_gaussian(x_num)
+        prior_gauss = self._prior_gaussian(x_num) if has_num else torch.zeros(b, device=device)
 
-        prior_multin = torch.tensor([0.0])
+        prior_multin = torch.zeros(b, device=device)
         if has_cat:
             prior_multin = self.kl_prior(log_x_cat)
 
@@ -783,7 +758,8 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             x = self.gaussian_ddim_step(
                 out_num,
                 x,
-                t_array
+                t_array,
+                eta=eta,
             )
         return x
 
@@ -970,7 +946,7 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             # ``batch_size`` chunk (4096 rows for n=1) and threw the surplus away.
             b = int(min(batch_size, num_samples - num_generated))
             sample, out_dict = sample_fn(b, y_dist)
-            mask_nan = torch.any(sample.isnan(), dim=1)
+            mask_nan = torch.any(~torch.isfinite(sample), dim=1)
             sample = sample[~mask_nan]
             out_dict['y'] = out_dict['y'][~mask_nan]
 

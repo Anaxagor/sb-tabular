@@ -308,6 +308,31 @@ def test_fewer_rows_than_batch_size_still_trains(kind):
     assert np.isfinite(solver.sample(4, seed=0)).all()
 
 
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_nonfinite_data_is_rejected_before_fitting(kind, bad):
+    data = make_data(n=4)
+    data.iloc[0, 0] = bad
+    solver = make_solver(kind, fb_sequence=("b",))
+    with pytest.raises(ValueError, match="finite"):
+        solver.fit(data)
+    assert not solver._fitted
+    assert not solver.stage_log
+
+
+@pytest.mark.parametrize("kind", ["A", "C"])
+def test_overflowing_neural_loss_does_not_produce_a_fitted_model(kind):
+    # The inputs are finite, but their squared regression errors overflow
+    # float32. Previously fit succeeded and sample returned only NaNs.
+    data = pd.DataFrame(np.full((8, 2), 1e25, dtype=np.float32), columns=["a", "b"])
+    solver = make_solver(kind, fb_sequence=("b",))
+    with pytest.raises(RuntimeError, match="non-finite loss"):
+        solver.fit(data)
+    assert not solver._fitted
+    with pytest.raises(RuntimeError, match="fit"):
+        solver.sample(2, seed=1)
+
+
 def test_partial_batches_are_kept():
     """n = batch + 1: the 1-row remainder is a batch of its own, not dropped."""
     data = make_data(n=BATCH + 1)

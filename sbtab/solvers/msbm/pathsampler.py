@@ -39,6 +39,7 @@ class MixedPathSampler:
             seed: Optional[int] = None,
             batch_size: Optional[int] = None,
             generator: Optional[torch.Generator] = None,
+            noise: Optional[bool] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Dict[str, torch.Tensor]]]:
         """
         Simulates state updates for mixed datatypes across the discretized timeline grid.
@@ -60,6 +61,11 @@ class MixedPathSampler:
                 - Generated categorical space terminal class assignments index tensor (Shape: [B, cat_dim]).
                 - Dictionary containing structural logs ("cont", "cat") tracking historical steps if return_path is enabled, else None.
         """
+        if direction not in ("f", "b"):
+            raise ValueError("direction must be 'f' or 'b'")
+        integrator = self.integrator
+        if integrator is not None and noise is not None:
+            integrator = EulerMaruyama(noise=noise, sigma=integrator.sigma)
         was_training = model.training
         model.eval()
 
@@ -101,7 +107,7 @@ class MixedPathSampler:
                     v_num, logits_cat = model(b_cont, b_cat, tk)
 
                     if self.has_cont:
-                        b_cont = self.integrator.step(b_cont, drift=v_num, gamma=dt, generator=b_gen)
+                        b_cont = integrator.step(b_cont, drift=v_num, gamma=dt, generator=b_gen)
 
                     if self.has_cat:
                         if direction == "f":

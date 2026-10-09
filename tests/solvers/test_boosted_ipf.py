@@ -195,6 +195,16 @@ def test_known_two_variable_relation_is_recovered_by_structure_learning():
     assert const.parents == {"x": [], "c": []}
 
 
+def test_structure_learning_preserves_integer_column_labels():
+    data = frame(n=300).rename(columns={"a": 0, "b": 1})
+    dag = structure_mod.learn_dag(data)
+    assert set(dag.order) == {0, 1}
+    assert set(dag.parents) == {0, 1}
+    assert len(dag.edges) == 1
+    assert set(dag.edges[0]) == {0, 1}
+    dag.validate()
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("make", [
     lambda: JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, horizon=None, ipf_iters=1, catboost=CatBoostDiscreteJointConfig(**CB))),
@@ -219,3 +229,52 @@ def test_ignored_options_are_rejected():
     with pytest.raises(ValueError):
         CatBoostDiscreteJoint(2, np.array([0.1]), CatBoostDiscreteJointConfig(**CB)).fit_step(
             0, np.zeros((4, 2)), np.zeros((4, 2)), x0=np.zeros((4, 1)))                 # x0 used to be accepted and deleted
+
+
+@pytest.fixture(params=["ct_joint", "dt_joint", "ct_structural", "dt_structural"])
+def refit_solver(request):
+    common = dict(num_steps=3, horizon=None, ipf_iters=1, seed=7)
+    if request.param == "ct_joint":
+        return JointContinuousBoostedSolver(2, JointContinuousBoostedConfig(
+            **common, catboost=CatBoostContinuousJointConfig(**CB)))
+    if request.param == "dt_joint":
+        return JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(
+            **common, catboost=CatBoostDiscreteJointConfig(**CB)))
+    if request.param == "ct_structural":
+        return StructuralContinuousBoostedSolver(StructuralContinuousBoostedConfig(
+            **common, catboost=CatBoostContinuousScalarConfig(**CB)))
+    return StructuralDiscreteBoostedSolver(StructuralDiscreteBoostedConfig(
+        **common, catboost=CatBoostDiscreteScalarConfig(**CB)))
+
+
+def test_boosted_ipf_refit_restarts_rng_even_after_unseeded_sampling(refit_solver):
+    data = frame()
+    solver = refit_solver.fit(data)
+    expected = np.asarray(solver.sample(12, seed=19))
+    first_updates = solver.n_updates
+    solver.sample(9)  # Advances the same generator used by the old fit().
+    solver.fit(data)
+    np.testing.assert_array_equal(np.asarray(solver.sample(12, seed=19)), expected)
+    assert solver.n_updates == first_updates
+
+
+def test_failed_boosted_ipf_refit_is_not_reported_as_fitted(refit_solver, monkeypatch):
+    solver = refit_solver.fit(frame())
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("training interrupted")
+
+    monkeypatch.setattr(solver, "_reference_mean", fail)
+    with pytest.raises(RuntimeError, match="training interrupted"):
+        solver.fit(frame(seed=1))
+    with pytest.raises(RuntimeError, match="fit"):
+        solver.sample(2, seed=1)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_boosted_ipf_rejects_nonfinite_training_data(refit_solver, bad):
+    data = frame()
+    data.iloc[0, 0] = bad
+    with pytest.raises(ValueError, match="finite"):
+        refit_solver.fit(data)
+    assert not refit_solver._fitted

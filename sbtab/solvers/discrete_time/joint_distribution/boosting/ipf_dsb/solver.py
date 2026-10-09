@@ -74,6 +74,9 @@ class JointDiscreteBoostedSolver:
         return self._reference_mean(k, x) if use_reference else self.field_f.predict_step(k, x)
 
     def fit(self, train_df):
+        """Run a fresh IPF fit, reproducible from cfg.seed."""
+        if self.cfg.ipf_iters < 1:
+            raise ValueError("ipf_iters must be >= 1")
         if isinstance(train_df, pd.DataFrame):
             self.columns_ = list(train_df.columns)
             X_train = train_df.to_numpy(dtype=np.float32)
@@ -82,7 +85,11 @@ class JointDiscreteBoostedSolver:
             self.columns_ = None
         if X_train.ndim != 2 or X_train.shape[1] != self.dim:
             raise ValueError(f"expected training data of shape (N, {self.dim})")
+        if len(X_train) == 0 or not np.isfinite(X_train).all():
+            raise ValueError("fit expects non-empty finite numeric data")
         K = self.cfg.num_steps
+        self._fitted = False
+        self._rng = np.random.default_rng(self.cfg.seed)
         self.stage_log = []
 
         for it in range(self.cfg.ipf_iters):
