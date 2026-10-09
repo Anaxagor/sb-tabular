@@ -24,6 +24,13 @@ class CatBoostDiscreteScalarConfig:
     allow_writing_files: bool = False
     feature_mode: str = "x_x0"
 
+    # residual=True fits y - x and predicts x + model(.). Use it for MEAN-MATCHING
+    # targets (IPF-DSB next-state means): those maps are identity plus an O(gamma)
+    # correction, and trees cannot represent an identity map, so regressing y
+    # directly leaves an error far above the correction. Keep it False for drift /
+    # velocity targets (IMF-DSBM). The IPF solvers enforce True themselves.
+    residual: bool = False
+
 
 class CatBoostDiscreteScalar:
     """
@@ -94,6 +101,10 @@ class CatBoostDiscreteScalar:
         else:
             X_feat = self._build_features(X_feat, x0=x0, t=float(self.t_grid[k]))
         y = np.asarray(y).reshape(-1).astype(np.float32)
+        if self.cfg.residual:
+            # feature column 0 is the feature's own state x
+            y = y - X_feat[:, 0]
+        boosting_type = "Plain" if self.cfg.task_type == "GPU" else "Ordered"
 
         model = CatBoostRegressor(
             iterations=self.cfg.iterations,
@@ -102,6 +113,7 @@ class CatBoostDiscreteScalar:
             l2_leaf_reg=self.cfg.l2_leaf_reg,
             loss_function=self.cfg.loss_function,
             task_type=self.cfg.task_type,
+            boosting_type=boosting_type,
             thread_count=self.cfg.thread_count,
             random_seed=self.cfg.random_seed,
             verbose=self.cfg.verbose,
@@ -118,9 +130,9 @@ class CatBoostDiscreteScalar:
         x0: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
-        Predict scalar drift/velocity at time index k.
+        Predict the scalar next-state mean at time index k.
 
-        Returns: (n,)
+        Returns: (n, 1)
         """
         model = self.models[k]
         if model is None:
@@ -130,8 +142,13 @@ class CatBoostDiscreteScalar:
             X_feat = np.asarray(X_feat, dtype=np.float32)
         else:
             X_feat = self._build_features(X_feat, x0=x0, t=float(self.t_grid[k]))
-        yhat = model.predict(X_feat)
-        return np.asarray(yhat, dtype=np.float32).reshape(-1, 1)
+        yhat = np.asarray(model.predict(X_feat), dtype=np.float32).reshape(-1)
+        if self.cfg.residual:
+            yhat = yhat + X_feat[:, 0]
+        return yhat.reshape(-1, 1)
+
+    def is_fitted(self, k: int) -> bool:
+        return self.models[k] is not None
 
 
 CatBoostScalarConfig = CatBoostDiscreteScalarConfig

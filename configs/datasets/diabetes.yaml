@@ -1,0 +1,40 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: diabetes
+source:
+  bundle: datasets_continuous_only.pkl
+  key: diabetes
+task: regression
+target: target
+missing_policy: reject
+dropped_columns: []
+columns:
+- name: age
+  role: feature
+  type: continuous
+- name: bmi
+  role: feature
+  type: continuous
+- name: bp
+  role: feature
+  type: continuous
+- name: s1
+  role: feature
+  type: continuous
+- name: s2
+  role: feature
+  type: continuous
+- name: s3
+  role: feature
+  type: continuous
+- name: s4
+  role: feature
+  type: continuous
+- name: s5
+  role: feature
+  type: continuous
+- name: s6
+  role: feature
+  type: continuous
+- name: target
+  role: target
+  type: continuous

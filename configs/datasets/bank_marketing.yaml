@@ -1,0 +1,31 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: bank_marketing
+source:
+  bundle: datasets_continuous_only.pkl
+  key: bank_marketing
+task: regression
+target: pdays
+missing_policy: reject
+dropped_columns: []
+columns:
+- name: age
+  role: feature
+  type: continuous
+- name: balance
+  role: feature
+  type: continuous
+- name: day_of_week
+  role: feature
+  type: continuous
+- name: duration
+  role: feature
+  type: continuous
+- name: campaign
+  role: feature
+  type: continuous
+- name: pdays
+  role: target
+  type: continuous
+- name: previous
+  role: feature
+  type: continuous

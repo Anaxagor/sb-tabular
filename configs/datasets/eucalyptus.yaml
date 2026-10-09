@@ -1,0 +1,70 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: eucalyptus
+source:
+  bundle: datasets_mixed.pkl
+  key: Eucalyptus
+task: classification
+target: Utility
+missing_policy: impute
+dropped_columns: []
+columns:
+- name: Abbrev
+  role: feature
+  type: categorical
+- name: Rep
+  role: feature
+  type: categorical
+- name: Locality
+  role: feature
+  type: categorical
+- name: Map_Ref
+  role: feature
+  type: categorical
+- name: Latitude
+  role: feature
+  type: categorical
+- name: Altitude
+  role: feature
+  type: discrete
+- name: Rainfall
+  role: feature
+  type: discrete
+- name: Frosts
+  role: feature
+  type: categorical
+- name: Year
+  role: feature
+  type: discrete
+- name: Sp
+  role: feature
+  type: categorical
+- name: PMCno
+  role: feature
+  type: continuous
+- name: DBH
+  role: feature
+  type: continuous
+- name: Ht
+  role: feature
+  type: continuous
+- name: Surv
+  role: feature
+  type: continuous
+- name: Vig
+  role: feature
+  type: continuous
+- name: Ins_res
+  role: feature
+  type: continuous
+- name: Stem_Fm
+  role: feature
+  type: continuous
+- name: Crown_Fm
+  role: feature
+  type: continuous
+- name: Brnch_Fm
+  role: feature
+  type: continuous
+- name: Utility
+  role: target
+  type: categorical

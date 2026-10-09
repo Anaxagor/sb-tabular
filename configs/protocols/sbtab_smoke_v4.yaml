@@ -1,0 +1,46 @@
+# Separate bounded run of the same data/evaluation contract as production v4.
+version: sbtab.protocol/2
+protocol_id: sbtab_smoke_v4
+supersedes: sbtab_smoke_v3
+kind: smoke
+eligibility:
+  min_value_count: 3
+  columns: finite_support
+  iterate_to_fixed_point: true
+split:
+  test_size: 0.15
+  random_state: 5
+  stratify: true
+  regression_strata_bins: 10
+  pool_order: sorted_row_id
+  support_repair:
+    method: stratum_swap/1
+    validation_coverage: blocking_columns
+    max_swaps: 128
+    max_candidate_evaluations: 8192
+preprocessing:
+  tuning_fit_population: T
+  cv_fit_population: train_fold
+tuning:
+  n_trials: 3
+  direction: minimize
+  sampler: tpe
+  sampler_seed: 5
+  n_jobs: 1
+  pruner: none
+  checkpoint_retention: all
+  n_generated: len_validation
+cv:
+  population: T
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  n_generated: len_train_fold
+seeds:
+  base: 5
+metrics_config: configs/metrics/metrics_v2.yaml
+statistical_note: >-
+  Smoke protocol: production v4 eligibility, deterministic support repair,
+  train-only preprocessing, sample counts and fixed KFold on T; reduced trial
+  and model training budgets. This run does not establish benchmark quality or
+  completion of the production 100-trial budget. CV after tuning is not nested CV.

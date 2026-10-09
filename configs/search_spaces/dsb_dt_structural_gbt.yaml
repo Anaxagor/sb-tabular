@@ -1,0 +1,57 @@
+# Search space for `dsb_dt_structural_gbt` (production). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: dsb_dt_structural_gbt
+kind: production
+version: 1
+fixed:
+  horizon: null  # tune the raw gamma schedule, preserving this search space
+  gamma_min: 0.001
+  schedule: geom
+  cb_thread_count: 4
+  parent_noise: 0.01
+params:
+  num_steps:
+    type: categorical
+    choices:
+    - 16
+    - 24
+    - 32
+  ipf_iters:
+    type: categorical
+    choices:
+    - 2
+    - 4
+    - 6
+  gamma_max:
+    type: float
+    low: 0.01
+    high: 0.15
+    log: true
+  alpha_ou:
+    type: categorical
+    choices:
+    - 0.5
+    - 1.0
+  cb_iterations:
+    type: categorical
+    choices:
+    - 300
+    - 600
+    - 1000
+  cb_depth:
+    type: int
+    low: 4
+    high: 8
+  cb_learning_rate:
+    type: float
+    low: 0.03
+    high: 0.2
+    log: true
+  n_bins:
+    type: categorical
+    choices:
+    - 3
+    - 5
+    - 8

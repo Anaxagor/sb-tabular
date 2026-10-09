@@ -1,0 +1,24 @@
+# Search space for `dsbm_dt_structural_gbt` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: dsbm_dt_structural_gbt
+kind: smoke
+version: 1
+fixed:
+  n_stages: 3
+  num_steps: 3
+  cb_iterations: 10
+  cb_depth: 2
+  cb_thread_count: 2
+params:
+  sigma:
+    type: float
+    low: 0.1
+    high: 1.0
+    log: true
+  structure:
+    type: categorical
+    choices:
+    - autoregressive
+    - learned

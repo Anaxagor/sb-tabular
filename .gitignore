@@ -26,3 +26,15 @@ tabddpm_uci_optuna_results/uci_1_abalone_best.json
 tabddpm_uci_optuna_results/
 adult_mixedsbm_processed.csv
 *.csv
+
+# local experiment artifacts (splits, studies, checkpoints, synthetic tables, metrics)
+artifacts/
+*.sqlite3
+.pytest_cache/
+slurm_logs/
+*.sbatch
+slurm-*.out
+slurm-*.err
+scripts/slurm/cluster.local.sh
+.venv-cluster/
+.cache/

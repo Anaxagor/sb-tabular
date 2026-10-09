@@ -14,6 +14,11 @@ class LightSBConfig:
         E_{x0 ~ p0}[log C_theta(x0)] - E_{x1 ~ p1}[log v_theta(x1)]
 
     where p0 is the Gaussian reference and p1 is the data distribution.
+    This is LightSB; the bridge-matching variant LightSB-M is not implemented.
+
+    ``potential.epsilon`` is fixed for the lifetime of a solver (it is stored in
+    the checkpoint and checked against the model buffer on reload).
+    ``potential.is_diagonal=False`` requires the optional package ``geotorch``.
     """
 
     potential: LightSBPotentialConfig = field(default_factory=LightSBPotentialConfig)

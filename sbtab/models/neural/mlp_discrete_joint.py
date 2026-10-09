@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from sbtab.numerics import check_gradients, require_finite
 
 
 @dataclass
@@ -72,10 +73,45 @@ class MLPTimeDiscretizedField:
             parts.append(np.full((x.shape[0], 1), float(t), dtype=np.float32))
         return np.concatenate(parts, axis=1)
 
-    def fit_step(self, k: int, X_feat: np.ndarray, y: np.ndarray) -> None:
+    def fit_step(
+        self,
+        k: int,
+        X_feat: np.ndarray,
+        y: np.ndarray,
+        *,
+        seed: Optional[int] = None,
+    ) -> int:
+        """
+        Fit the MLP of time step k and return the number of optimizer updates.
+
+        With ``seed`` the weight initialisation, the batch shuffling and the dropout
+        masks are reproducible, and the global torch RNG state is left untouched.
+        Without it the global RNG is used (legacy behaviour).
+        """
+        if seed is None:
+            return self._fit_step(k, X_feat, y, shuffle_generator=None)
+
+        device = torch.device(self.cfg.device)
+        devices = []
+        if device.type == "cuda":
+            devices = [device.index if device.index is not None else torch.cuda.current_device()]
+        with torch.random.fork_rng(devices=devices):
+            torch.manual_seed(int(seed))
+            shuffle_generator = torch.Generator(device="cpu")
+            shuffle_generator.manual_seed(int(seed))
+            return self._fit_step(k, X_feat, y, shuffle_generator=shuffle_generator)
+
+    def _fit_step(
+        self,
+        k: int,
+        X_feat: np.ndarray,
+        y: np.ndarray,
+        *,
+        shuffle_generator: Optional[torch.Generator],
+    ) -> int:
         device = torch.device(self.cfg.device)
         X_t = torch.from_numpy(np.asarray(X_feat, dtype=np.float32))
-        y_t = torch.from_numpy(np.asarray(y, dtype=np.float32))
+        y_t = torch.from_numpy(np.asarray(y, dtype=np.float32)).reshape(X_t.shape[0], -1)
 
         model = _PlainMLP(
             in_dim=X_t.shape[1],
@@ -92,8 +128,10 @@ class MLPTimeDiscretizedField:
             batch_size=self.cfg.batch_size,
             shuffle=True,
             drop_last=False,
+            generator=shuffle_generator,
         )
 
+        n_updates = 0
         model.train()
         for _ in range(self.cfg.n_epochs):
             for xb, yb in loader:
@@ -101,15 +139,18 @@ class MLPTimeDiscretizedField:
                 yb = yb.to(device)
                 pred = model(xb)
                 loss = torch.nn.functional.mse_loss(pred, yb)
+                context = dict(model="discrete_joint_mlp", stage="training", edge=k, step=n_updates)
+                require_finite(loss, "loss", **context)
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
-                if self.cfg.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(self.cfg.grad_clip))
+                check_gradients(model.parameters(), max_norm=self.cfg.grad_clip, **context)
                 opt.step()
+                n_updates += 1
 
         model.eval()
         self.models[k] = model
+        return n_updates
 
     @torch.no_grad()
     def predict_step(
@@ -130,3 +171,37 @@ class MLPTimeDiscretizedField:
         X_t = torch.from_numpy(X_feat).to(device)
         pred = model(X_t).cpu().numpy().astype(np.float32)
         return pred
+
+    # ------------------------------------------------------------------ state
+    def state(self) -> dict:
+        """Plain-container state (tensors, lists, numbers) for checkpoints."""
+        models = []
+        for m in self.models:
+            if m is None:
+                models.append(None)
+                continue
+            sd = {key: v.detach().cpu().clone() for key, v in m.state_dict().items()}
+            models.append({"in_dim": int(m.net[0].in_features), "state": sd})
+        return {
+            "dim": self.dim,
+            "t_grid": [float(t) for t in self.t_grid],
+            "models": models,
+        }
+
+    @classmethod
+    def from_state(cls, state: dict, cfg: StepMLPJointConfig) -> "MLPTimeDiscretizedField":
+        out = cls(dim=int(state["dim"]), t_grid=np.asarray(state["t_grid"], dtype=np.float32), cfg=cfg)
+        device = torch.device(cfg.device)
+        for k, item in enumerate(state["models"]):
+            if item is None:
+                continue
+            model = _PlainMLP(
+                in_dim=int(item["in_dim"]),
+                out_dim=out.dim,
+                hidden_dim=cfg.hidden_dim,
+                n_layers=cfg.n_layers,
+                dropout=cfg.dropout,
+            )
+            model.load_state_dict(item["state"], strict=True)
+            out.models[k] = model.to(device).eval()
+        return out
