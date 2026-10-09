@@ -87,10 +87,11 @@ class IPFDSBConfig:
     Configuration of the MLP IPF-DSB solvers.
 
     Reference process: dX = -alpha_ou X dt + sigma dW on [0, T] with
-    T = sum(gamma) (or ``horizon`` if given). NOTE: the default geometric schedule
-    has a SHORT horizon (T ~= 0.046 for 20 steps): the reference then does not
-    carry the data to the prior and many IPF iterations are needed. For data that
-    is not already close to N(0, I) set ``horizon`` to ~2-3 (OU mixing time).
+    T = ``horizon`` (default 2.0), independently of the number of steps. The
+    geometric increments are rescaled to span this horizon, giving the default
+    OU reference time to approach its N(0, I) stationary law. Finite time and
+    Euler discretisation still leave approximation error. Set ``horizon=None``
+    to reproduce the raw gamma schedule (T ~= 0.046 for the legacy 20 steps).
 
     Training cost. One epoch simulates one fresh cache with the frozen opposite
     process and makes one pass over it (partial batches are kept). A cache holds
@@ -106,7 +107,7 @@ class IPFDSBConfig:
     gamma_min: float = 1e-4
     gamma_max: float = 1e-2
     schedule: Literal["linear", "geom", "uniform"] = "geom"
-    horizon: Optional[float] = None  # rescale the steps so that sum(gamma) == horizon
+    horizon: Optional[float] = 2.0  # rescale steps; None keeps the raw gamma schedule
 
     # reference process dX = -alpha_ou X dt + sigma dW (alpha_ou = 0: Brownian)
     alpha_ou: float = 1.0
@@ -620,6 +621,8 @@ class IPFDSBSolver:
         if state.get("solver_id") != cls.canonical_id:
             raise ValueError(f"checkpoint belongs to {state.get('solver_id')!r}, not {cls.canonical_id!r}")
         cfg_dict = dict(state["config"])
+        # Before explicit horizons, checkpoints used the raw gamma schedule.
+        cfg_dict.setdefault("horizon", None)
         if device is not None:
             cfg_dict["device"] = device
         solver = cls(int(state["dim"]), cls.config_class(**cfg_dict))

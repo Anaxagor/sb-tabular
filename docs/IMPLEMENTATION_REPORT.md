@@ -435,10 +435,16 @@ in the test-suite (≈ 1 s each). Every non-quick "moderate" configuration is st
 
 **Residual limitations**
 
-1. **IPF-DSB default horizon is too short.** With the legacy grid (γ ∈ [1e-4, 1e-2]) T ≈ 0.046 for K = 20: found twice
+1. **IPF-DSB short default horizon — resolved 2026-09-26.** With the legacy grid (γ ∈ [1e-4, 1e-2]) T ≈ 0.046 for K = 20: found twice
    independently — boosted: corr 0.38 → 0.70 (real 0.90) for 1 → 3 IPF iterations vs **0.85 in one iteration at T ≈ 0.8**;
    MLP: W1 0.30 vs 0.33 for the untouched prior, 0.088 at T = 2. Per the spec the solvers were *not* forced to unit
-   time; `horizon` / `gamma_max` are exposed and searched. Solver-level defaults still carry the short grid.
+   time; `horizon` / `gamma_max` are exposed and searched. All six IPF solver variants and their adapters now
+   default to `horizon=2.0`; the gamma profile is rescaled independently of K. Explicit `horizon=None`
+   retains raw increments, and old checkpoints restore their original grids. Existing boosted search
+   spaces pin `horizon: null` to preserve the meaning of their `gamma_max` search; these variants remain
+   excluded from the experiment pipeline. Regression checks cover OU contraction/noise scale, explicit
+   overrides, stability rejection, adapter configuration, and fitted old/new checkpoint reloads in
+   `tests/solvers/test_ipf_default_horizon.py`. This corrects the default, not finite-time or Euler error.
 2. TabDDPM with tiny budgets is unusable on mixed data (sane from ≈ 5k steps). The VE score-SDE stays weak at small budgets.
 3. Per-step MLP IPF produces ~0.1–0.3 % far outliers in short fits.
 4. Support typing (heavy-tailed counts typed `discrete`) blocks datasets; see §4.

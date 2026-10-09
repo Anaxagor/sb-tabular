@@ -28,7 +28,7 @@ BATCH = 16
 
 def make_solver(kind: str, **kw):
     solver_cls, cfg_cls = KINDS[kind]
-    base = dict(num_steps=K, gamma_min=1e-2, gamma_max=0.2, sigma=SIGMA, hidden_units=16, n_layers=2,
+    base = dict(num_steps=K, horizon=None, gamma_min=1e-2, gamma_max=0.2, sigma=SIGMA, hidden_units=16, n_layers=2,
                 time_features=16, batch_size=BATCH, cache_batches=3, ipf_iters=1, lr=1e-3, seed=0)
     base.update(kw)
     return solver_cls(2, cfg_cls(**base))

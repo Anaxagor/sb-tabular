@@ -7,6 +7,7 @@ metric code lives outside ``sbtab.experiments``.
 from __future__ import annotations
 
 import hashlib
+from importlib import metadata
 import json
 import math
 import os
@@ -79,7 +80,7 @@ def atomic_write_text(path, text: str) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".tmp{os.getpid()}")
-    with open(tmp, "w") as fh:
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
         fh.flush()
         os.fsync(fh.fileno())
@@ -92,7 +93,7 @@ def write_json(path, obj: Any) -> Path:
 
 
 def read_json(path) -> Any:
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -106,7 +107,7 @@ def file_lock(path, blocking: bool = True):
     import fcntl
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as handle:
+    with path.open("a+", encoding="utf-8") as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
         except BlockingIOError as e:
@@ -120,7 +121,7 @@ def file_lock(path, blocking: bool = True):
 def append_jsonl(path, record: dict) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as fh:
+    with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(json_safe(record), allow_nan=False) + "\n")
 
 
@@ -151,7 +152,7 @@ class Protocol:
 
 
 def load_yaml(path) -> dict:
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
@@ -175,6 +176,9 @@ def load_protocol(path=None, smoke: bool = False) -> Protocol:
     if "eligibility" in data:
         from sbtab.data.eligibility import validate_rule
         validate_rule(data["eligibility"])          # unknown keys / bad thresholds are rejected up front
+    if "support_repair" in data["split"]:
+        from sbtab.data.support_split import validate_repair_rule
+        validate_repair_rule(data["split"]["support_repair"])
     return Protocol(path=str(path), data=data)
 
 
@@ -192,16 +196,37 @@ def load_metric_config(protocol: Protocol) -> dict:
 
 
 # --------------------------------------------------------------------------- provenance
+SOURCE_HASH_VERSION = "sbtab.source-files/1"
+
+
+def source_content_hash() -> str:
+    """Hash runtime Python/config files, independently of Git and checkout location.
+
+    Dataset bundles have their own value fingerprints in the split artifacts.
+    Bytecode, notebooks, images, logs and documentation are not runtime sources.
+    Re-read files each time so edits during a queued/running experiment are detected.
+    """
+    sources = {}
+    for directory in (REPO_ROOT / "sbtab", REPO_ROOT / "configs"):
+        if not directory.is_dir():
+            raise RuntimeError(f"source directory is missing: {directory}")
+        for path in sorted(directory.rglob("*")):
+            if path.is_file() and path.suffix in {".py", ".yaml", ".yml", ".json", ".toml"}:
+                sources[path.relative_to(REPO_ROOT).as_posix()] = file_hash(path)
+    return canonical_hash({"version": SOURCE_HASH_VERSION, "files": sources})
+
+
 def _git(*args: str) -> Optional[str]:
     try:
-        out = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
+        out = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True,
+                             text=True, encoding="utf-8", timeout=30)
         return out.stdout if out.returncode == 0 else None
     except Exception:
         return None
 
 
 def source_provenance() -> dict:
-    """Commit plus a hash of the uncommitted diff (tracked changes and untracked source files)."""
+    """Runtime content identity, plus best-effort Git metadata for reporting only."""
     commit = (_git("rev-parse", "HEAD") or "").strip() or None
     diff = _git("diff", "HEAD", "--", "sbtab", "configs") or ""
     untracked = _git("ls-files", "--others", "--exclude-standard", "--", "sbtab", "configs") or ""
@@ -212,21 +237,29 @@ def source_provenance() -> dict:
             h.update(rel.encode())
             h.update(fp.read_bytes())
     dirty = bool(diff.strip() or untracked.strip())
-    return {"commit": commit, "dirty": dirty, "dirty_diff_hash": h.hexdigest() if dirty else None}
+    return {"commit": commit, "dirty": dirty, "dirty_diff_hash": h.hexdigest() if dirty else None,
+            "source_hash_version": SOURCE_HASH_VERSION, "source_hash": source_content_hash()}
 
 
 def implementation_hash(provenance: Optional[dict] = None) -> str:
-    p = provenance or source_provenance()
-    return canonical_hash({"commit": p["commit"], "dirty_diff_hash": p["dirty_diff_hash"]})
+    # Git may be absent on a compute node or point to a different metadata-only
+    # commit. Neither changes the implementation that the worker will execute.
+    if provenance is None:
+        return source_content_hash()
+    if provenance.get("source_hash_version") != SOURCE_HASH_VERSION:
+        raise ValueError("legacy or unsupported source provenance; create a new run")
+    return provenance["source_hash"]
 
 
 def library_versions() -> dict:
     out = {"python": sys.version.split()[0]}
     for mod in ("numpy", "pandas", "scipy", "sklearn", "torch", "catboost", "optuna", "pyarrow",
-                "pgmpy", "networkx", "sdv", "ctgan", "tabpfgen", "tabpfn"):
+                "pgmpy", "networkx", "sdv", "ctgan", "tabpfgen", "tabpfn", "yaml", "tqdm", "geotorch"):
         try:
-            out[mod] = getattr(__import__(mod), "__version__", "unknown")
-        except Exception:
+            # Some packages (including TabPFGen) expose no __version__. Read the
+            # installed distribution so environment drift is still detected.
+            out[mod] = metadata.version({"sklearn": "scikit-learn", "yaml": "PyYAML"}.get(mod, mod))
+        except metadata.PackageNotFoundError:
             out[mod] = None
     return out
 

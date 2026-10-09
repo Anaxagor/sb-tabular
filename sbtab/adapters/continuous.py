@@ -79,7 +79,8 @@ class ContinuousSolverAdapter(ModelAdapter):
 
 # --------------------------------------------------------------------------- boosted IPF-DSB
 _CATBOOST = dict(cb_iterations=2000, cb_depth=8, cb_learning_rate=0.05, cb_l2_leaf_reg=3.0, cb_thread_count=4)
-_IPF_GRID = dict(num_steps=20, ipf_iters=5, alpha_ou=1.0, gamma_min=1e-4, gamma_max=1e-2, schedule="geom")
+_IPF_GRID = dict(num_steps=20, ipf_iters=5, alpha_ou=1.0, gamma_min=1e-4, gamma_max=1e-2,
+                 schedule="geom", horizon=2.0)
 
 
 class _BoostedIPFAdapter(ContinuousSolverAdapter):
@@ -97,6 +98,7 @@ class _BoostedIPFAdapter(ContinuousSolverAdapter):
             raise ValueError("gamma_min must be <= gamma_max")
         return dict(num_steps=int(c["num_steps"]), ipf_iters=int(c["ipf_iters"]), alpha_ou=float(c["alpha_ou"]),
                     gamma_min=float(c["gamma_min"]), gamma_max=float(c["gamma_max"]), schedule=str(c["schedule"]),
+                    horizon=None if c["horizon"] is None else float(c["horizon"]),
                     seed=int(self.seed))
 
     def _describe_solver(self) -> dict:

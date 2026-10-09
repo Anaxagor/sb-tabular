@@ -60,7 +60,8 @@ def manual_cv(tmp_path, monkeypatch):
 def test_cv_reuse_refuses_changed_implementation(tmp_path, monkeypatch):
     root, path, _, selected, manifest = manual_cv(tmp_path, monkeypatch)
     before = manifest.read_bytes()
-    monkeypatch.setattr(cv, "source_provenance", lambda: {"commit": "changed", "dirty": False, "dirty_diff_hash": None})
+    changed = {**cv.source_provenance(), "source_hash": "changed"}
+    monkeypatch.setattr(cv, "source_provenance", lambda: changed)
     with pytest.raises(StageError, match="compatib|implementation|provenance"):
         cv.run("toy", "mixedsbm", selected, path, root, smoke=True, folds=[1])
     assert manifest.read_bytes() == before
@@ -200,7 +201,7 @@ def test_ipf_dropout_fit_is_reproducible_and_preserves_caller_rng(kind):
     import torch
     from importlib import import_module
     module = import_module(f"sbtab.solvers.{'continuous_time' if kind == 'ct' else 'discrete_time'}.joint_distribution.mlp.ipf_dsb.solver")
-    config = module.IPFDSBConfig(num_steps=3, hidden_units=8, n_layers=2, time_features=8,
+    config = module.IPFDSBConfig(num_steps=3, horizon=0.5, hidden_units=8, n_layers=2, time_features=8,
                                  batch_size=8, cache_batches=1, ipf_iters=1, dropout=0.4, steps_per_phase=2)
     data = np.random.default_rng(0).normal(size=(20, 2)).astype(np.float32)
     torch.manual_seed(812)

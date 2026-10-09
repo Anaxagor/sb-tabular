@@ -4,8 +4,12 @@ TabPFGen wrapper (sebhaan/TabPFGen: SGLD in feature space + TabPFN labelling).
 
 Cost model - read this before comparing budgets
 -----------------------------------------------
-``fit()`` performs NO gradient updates: it only stores the conditioning context (the training
-rows ARE the model).  ALL cost is paid at ``sample()`` time: ``n_sgld_steps`` SGLD steps, each
+``fit()`` performs NO gradient updates: it stores a conditioning subset of the training rows.
+Contexts above the pinned TabPFN row limit are sampled without replacement (10,000 on CUDA,
+1,000 on CPU), using cfg.seed and target stratification for classification. Codecs and the
+requested label prior use the full training input; validation/test rows are never used.
+Sampling positions and settings are saved in checkpoints. ALL generation cost is paid at
+``sample()`` time: ``n_sgld_steps`` SGLD steps, each
 with a ``cdist`` of the synthetic batch against every context row, plus one TabPFN
 fit / predict per generation call.  ``adaptation_cost_`` declares this:
 ``{"fit_updates": 0, "sgld_steps": ..., "context_rows": ...}`` and ``last_sample_cost_`` records
@@ -45,6 +49,7 @@ with a warning.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import math
@@ -364,12 +369,95 @@ class TabPFGenConfig:
             raise ValueError("max_topup_rounds must be >= 1.")
 
 
+def _generate_unbalanced_classification(generator, X_train, y_train, n_samples):
+    """TabPFGen 0.1.4's unbalanced proposal, with label counting kept on CPU.
+
+    Upstream calls np.unique on a CUDA tensor in this branch. Keep its scaler,
+    initialization, SGLD and TabPFN refinement unchanged; only count labels before
+    moving them to the device. Kept callable on CPU for an exact equivalence test.
+    """
+    import torch
+    from tabpfn import TabPFNClassifier
+
+    scaled = generator.scaler.fit_transform(X_train)
+    labels = np.asarray(y_train)
+    x_train = torch.tensor(scaled, device=generator.device, dtype=torch.float32)
+    y_train = torch.tensor(labels, device=generator.device)
+    x_synth = torch.randn(n_samples, X_train.shape[1], device=generator.device) * 0.01
+    y_synth = torch.randint(0, len(np.unique(labels)), (n_samples,), device=generator.device)
+    for _ in range(generator.n_sgld_steps):
+        x_synth = generator._sgld_step(x_synth, y_synth, x_train, y_train)
+    classifier = TabPFNClassifier(device=generator.device)
+    classifier.fit(x_train.cpu().numpy(), y_train.cpu().numpy())
+    probabilities = classifier.predict_proba(x_synth.detach().cpu().numpy())
+    return generator.scaler.inverse_transform(x_synth.detach().cpu().numpy()), probabilities.argmax(axis=1)
+
+
+def tabpfn_context_row_limit(device):
+    """Context limit of the pinned TabPFN 2.0.9 default estimators."""
+    import torch
+
+    device = str(device)
+    on_cpu = device.startswith("cpu") or (device == "auto" and not torch.cuda.is_available())
+    return 1000 if on_cpu else 10_000
+
+
+def validate_tabpfn_limits(n_rows, n_features, n_classes, device):
+    """Validate an already selected context, including feature/class limits."""
+    row_limit = tabpfn_context_row_limit(device)
+    if n_rows > row_limit or n_features > 500 or n_classes > 10:
+        raise ValueError(f"TabPFN default limits exceeded: {n_rows} rows (limit {row_limit}), "
+                         f"{n_features} encoded features (limit 500), {n_classes} classes (limit 10). "
+                         "The conditioning context must satisfy these limits.")
+
+
+def plan_tabpfn_context(n_rows, n_features, n_classes, device):
+    """Allow large training inputs by capping only the conditioning context."""
+    limit = tabpfn_context_row_limit(device)
+    n_context = min(int(n_rows), limit)
+    validate_tabpfn_limits(n_context, n_features, n_classes, device)
+    return {"n_train_rows": int(n_rows), "n_context_rows": n_context,
+            "row_limit": limit, "subsampled": n_context < n_rows}
+
+
+def sample_context_indices(y, n_context, task, seed):
+    """Select training positions only, retaining every classification target class."""
+    y = np.asarray(y)
+    if not 0 < n_context <= len(y):
+        raise ValueError("context size must be between 1 and the number of training rows")
+    if n_context == len(y):
+        return np.arange(len(y), dtype=np.int64)
+    rng = np.random.default_rng(int(seed))
+    if task == "classification":
+        _, labels, counts = np.unique(y, return_inverse=True, return_counts=True)
+        if n_context < len(counts):
+            raise ValueError("context must contain at least one row of each target class")
+        # Reserve one row per class, then distribute the remaining quota in
+        # proportion to remaining support. This also retains singleton classes.
+        quotas = 1 + largest_remainder_allocation(n_context - len(counts), counts - 1)
+        selected = np.concatenate([rng.choice(np.flatnonzero(labels == k), size=int(quota), replace=False)
+                                   for k, quota in enumerate(quotas)])
+    else:
+        selected = rng.choice(len(y), size=n_context, replace=False)
+    return np.sort(selected).astype(np.int64)
+
+
 def _default_generator_factory(cfg: TabPFGenConfig) -> Any:
     try:
         from tabpfgen import TabPFGen  # lazy
     except Exception as e:  # pragma: no cover - depends on the environment
         raise ImportError("TabPFGenGenerative requires `tabpfgen`. Install: pip install tabpfgen") from e
-    return TabPFGen(
+    class GPUCompatibleTabPFGen(TabPFGen):
+        def validate_context(self, X, y, task):
+            validate_tabpfn_limits(len(X), X.shape[1], len(np.unique(y)) if task == "classification" else 0,
+                                   self.device.type)
+
+        def generate_classification(self, X_train, y_train, n_samples, balance_classes=True):
+            if self.device.type == "cuda" and not balance_classes:
+                return _generate_unbalanced_classification(self, X_train, y_train, n_samples)
+            return super().generate_classification(X_train, y_train, n_samples, balance_classes)
+
+    return GPUCompatibleTabPFGen(
         n_sgld_steps=int(cfg.n_sgld_steps),
         sgld_step_size=float(cfg.sgld_step_size),
         sgld_noise_scale=float(cfg.sgld_noise_scale),
@@ -396,6 +484,8 @@ class TabPFGenGenerative(BaselineGenerativeModel):
 
         self._X_train: Optional[np.ndarray] = None
         self._y_train: Optional[np.ndarray] = None       # label INDICES (classification) or float target
+        self._context_row_positions: Optional[np.ndarray] = None
+        self.context_sampling_: Dict[str, Any] = {}
         self._feature_cols: Optional[List[Any]] = None
         self._target_col: Optional[Any] = None
         self._target_dtype: str = "float64"
@@ -523,7 +613,10 @@ class TabPFGenGenerative(BaselineGenerativeModel):
 
         # features -> continuous matrix (one-hot categoricals; NOT z-scored: upstream scales internally)
         self._codec = MixedToContinuousCodec(standardize_numeric=False).fit(df, roles, columns=feature_cols)
-        X = self._codec.encode(df).astype(np.float32)
+        # Checkpoints store a contiguous context. Keep the fit-time context in
+        # the same layout: scaler reductions over F/C arrays can differ slightly,
+        # which TabPFN can amplify into different regression predictions.
+        X = np.ascontiguousarray(self._codec.encode(df), dtype=np.float32)
 
         self._target_support = None
         if self._task == "classification":
@@ -542,10 +635,22 @@ class TabPFGenGenerative(BaselineGenerativeModel):
             if tcol in roles.discrete:
                 self._target_support = np.unique(y.astype(np.float64))
 
-        self._X_train, self._y_train = X, y
+        context = plan_tabpfn_context(len(X), X.shape[1],
+                                     self._label_codec.n_classes if self._label_codec is not None else 0,
+                                     self.cfg.device)
+        positions = sample_context_indices(y, context["n_context_rows"], self._task, self.cfg.seed)
+        self._context_row_positions = positions
+        self.context_sampling_ = {**context, "seed": int(self.cfg.seed),
+            "strategy": ("stratified_target_without_replacement" if self._task == "classification" else
+                         "uniform_without_replacement") if context["subsampled"] else "all_rows",
+            "positions_hash": hashlib.sha256(positions.astype("<i8").tobytes()).hexdigest()}
+        self._X_train = np.ascontiguousarray(X[positions])
+        self._y_train = np.ascontiguousarray(y[positions])
         self.fit_info_ = BaselineFitInfo(n_rows=int(df.shape[0]), n_cols=int(df.shape[1]), columns=cols)
         self._finalise_fit_records()
         self._generator = self._generator_factory(self.cfg)
+        if hasattr(self._generator, "validate_context"):
+            self._generator.validate_context(self._X_train, self._y_train, self._task)
         return self
 
     def _finalise_fit_records(self) -> None:
@@ -559,7 +664,9 @@ class TabPFGenGenerative(BaselineGenerativeModel):
             "use_quantiles": bool(self.cfg.use_quantiles),
         }
         self.conditioning_context_ = {
-            "n_train_rows": int(self._X_train.shape[0]),
+            "n_train_rows": int(self.fit_info_.n_rows) if self.fit_info_ is not None else len(self._X_train),
+            "n_context_rows": int(self._X_train.shape[0]),
+            "sampling": dict(self.context_sampling_),
             "n_encoded_features": int(self._X_train.shape[1]),
             "feature_columns": list(self._feature_cols),
             "encoded_feature_names": self._codec.encoded_names,
@@ -588,9 +695,9 @@ class TabPFGenGenerative(BaselineGenerativeModel):
 
     def sample(self, n: int, seed: Optional[int] = None, **kwargs: Any) -> pd.DataFrame:
         """
-        Exactly ``n`` rows.  ``seed=None`` falls back to ``cfg.seed`` (fit is training-free, so the
-        config seed is only ever consumed here); torch + numpy are seeded, and the row selection
-        uses a private ``np.random.Generator`` derived from the same seed.
+        Exactly ``n`` rows, independently of the capped context size. ``seed=None`` falls back to
+        ``cfg.seed`` (also used for context selection at fit time); torch + numpy are seeded, and
+        the output row selection uses a private ``np.random.Generator`` derived from the same seed.
         """
         self._reject_unknown_kwargs(kwargs, "TabPFGenGenerative.sample()")
         if self._X_train is None or self._y_train is None or self._codec is None or self._generator is None:
@@ -692,6 +799,8 @@ class TabPFGenGenerative(BaselineGenerativeModel):
             "id_factory": self._id_factory.state_dict() if self._id_factory is not None else None,
             "X_train": torch.from_numpy(np.ascontiguousarray(self._X_train)),
             "y_train": torch.from_numpy(np.ascontiguousarray(self._y_train)),
+            "context_row_positions": torch.from_numpy(self._context_row_positions),
+            "context_sampling": dict(self.context_sampling_),
             "fit_info": asdict(self.fit_info_) if self.fit_info_ is not None else None,
             "sgld_settings": dict(self.sgld_settings_),
             "conditioning_context": dict(self.conditioning_context_),
@@ -741,6 +850,12 @@ class TabPFGenGenerative(BaselineGenerativeModel):
         obj._id_factory = FreshIdFactory.from_state(state["id_factory"])
         obj._X_train = state["X_train"].numpy()
         obj._y_train = state["y_train"].numpy()
+        positions = state.get("context_row_positions")
+        obj._context_row_positions = (positions.numpy() if positions is not None else
+                                      np.arange(len(obj._X_train), dtype=np.int64))
+        obj.context_sampling_ = dict(state.get("context_sampling", {
+            "n_train_rows": len(obj._X_train), "n_context_rows": len(obj._X_train),
+            "subsampled": False, "strategy": "legacy_full_context"}))
         if state.get("fit_info") is not None:
             obj.fit_info_ = BaselineFitInfo(**state["fit_info"])
         obj._finalise_fit_records()

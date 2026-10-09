@@ -370,10 +370,143 @@ def test_real_tabpfgen_classification_end_to_end():
     assert m.pretrained_identity_["tabpfgen_version"] is not None
 
 
-def test_real_tabpfgen_regression_returns_exactly_n():
+def test_real_tabpfgen_regression_returns_exactly_n(tmp_path):
     pytest.importorskip("tabpfgen", reason=TABPFGEN_SKIP_REASON)
     rng = np.random.default_rng(0)
     df = pd.DataFrame({"f0": rng.normal(size=80), "f1": rng.normal(size=80), "y": rng.normal(size=80)})
     cfg = TabPFGenConfig(target_col="y", task="regression", n_sgld_steps=5, device="cpu", seed=1)
     m = TabPFGenGenerative(cfg).fit(df, continuous_cols=["f0", "f1"], target_col="y", task="regression")
-    assert len(m.sample(17, seed=0)) == 17
+    out = m.sample(17, seed=0)
+    assert len(out) == 17
+    m.save_checkpoint(tmp_path / "model.pt")
+    restored = TabPFGenGenerative.load_checkpoint(tmp_path / "model.pt")
+    np.testing.assert_allclose(out, restored.sample(17, seed=0), atol=1e-6, rtol=0)
+
+
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_real_tabpfgen_subsampled_context(tmp_path, task):
+    pytest.importorskip("tabpfgen", reason=TABPFGEN_SKIP_REASON)
+    rng = np.random.default_rng(3)
+    n = 1001
+    df = pd.DataFrame({"f0": rng.normal(size=n), "f1": rng.normal(size=n),
+                       "y": rng.integers(0, 2, n) if task == "classification" else rng.normal(size=n)})
+    cfg = TabPFGenConfig(target_col="y", task=task, n_sgld_steps=2, device="cpu", seed=31)
+    model = TabPFGenGenerative(cfg).fit(df, continuous_cols=["f0", "f1"])
+    assert model.conditioning_context_["n_context_rows"] == 1000
+    assert model.context_sampling_["subsampled"] is True
+    output = model.sample(12, seed=9)
+    assert len(output) == 12 and np.isfinite(output.to_numpy()).all()
+    model.save_checkpoint(tmp_path / "model.pt")
+    restored = TabPFGenGenerative.load_checkpoint(tmp_path / "model.pt")
+    np.testing.assert_array_equal(restored._context_row_positions, model._context_row_positions)
+    np.testing.assert_allclose(restored.sample(12, seed=9), output, atol=1e-6, rtol=0)
+
+
+def test_cuda_compatible_proposal_matches_upstream_on_cpu(monkeypatch):
+    upstream = pytest.importorskip("tabpfgen.tabpfgen", reason=TABPFGEN_SKIP_REASON)
+    import tabpfn
+    import torch
+    from sbtab.baselines.tabpfn.model import _generate_unbalanced_classification
+
+    class Classifier:
+        def __init__(self, **kwargs):
+            pass
+        def fit(self, X, y):
+            return self
+        def predict_proba(self, X):
+            p = 1 / (1 + np.exp(-X[:, 0]))
+            return np.column_stack([1 - p, p])
+
+    monkeypatch.setattr(upstream, "TabPFNClassifier", Classifier)
+    monkeypatch.setattr(tabpfn, "TabPFNClassifier", Classifier)
+    X = np.random.default_rng(4).normal(size=(30, 2))
+    y = np.tile([0, 1], 15)
+    outputs = []
+    for corrected in (False, True):
+        torch.manual_seed(8)
+        np.random.seed(8)
+        generator = upstream.TabPFGen(n_sgld_steps=3, device="cpu")
+        outputs.append(_generate_unbalanced_classification(generator, X, y, 12) if corrected else
+                       generator.generate_classification(X, y, 12, balance_classes=False))
+    for before, after in zip(*outputs):
+        np.testing.assert_array_equal(before, after)
+
+
+@pytest.mark.parametrize("rows,features,classes,device", [
+    (10001, 2, 2, "cuda"), (1001, 2, 2, "cpu"), (80, 501, 2, "cuda"), (80, 2, 11, "cuda")])
+def test_tabpfn_limits_fail_before_sampling(rows, features, classes, device):
+    from sbtab.baselines.tabpfn.model import validate_tabpfn_limits
+    with pytest.raises(ValueError, match="limits exceeded"):
+        validate_tabpfn_limits(rows, features, classes, device)
+
+
+@pytest.mark.parametrize("device,limit", [("cpu", 1000), ("cuda", 10000)])
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_large_context_uses_only_training_rows_and_survives_reload(tmp_path, device, limit, task):
+    n = limit + 101
+    labels = np.zeros(n, dtype=int)
+    labels[n // 2:-1] = 1
+    labels[-1] = 2  # singleton class must not disappear from a sampled context
+    df = pd.DataFrame({"f0": np.arange(n, dtype=float), "f1": np.arange(n, dtype=float) * 2,
+                       "y": labels if task == "classification" else np.arange(n, dtype=float) / 10})
+
+    class CheckingGenerator(FakeTabPFGen):
+        def validate_context(self, X, y, task):
+            assert len(X) == len(y) == limit
+            pfn_model.validate_tabpfn_limits(len(X), X.shape[1], len(np.unique(y)) if task == "classification" else 0, device)
+
+    factory = lambda cfg: CheckingGenerator()
+    cfg = TabPFGenConfig(target_col="y", task=task, device=device, seed=31)
+    model = TabPFGenGenerative(cfg, generator_factory=factory).fit(df, continuous_cols=["f0", "f1"])
+    positions = model._context_row_positions
+    assert len(positions) == len(set(positions)) == limit
+    np.testing.assert_array_equal(model._X_train, df[["f0", "f1"]].iloc[positions].to_numpy(dtype=np.float32))
+    assert model.fit_info_.n_rows == n and model.conditioning_context_["n_train_rows"] == n
+    assert model.adaptation_cost_["context_rows"] == limit
+    assert model.context_sampling_["subsampled"] is True
+    if task == "classification":
+        assert set(model._y_train) == {0, 1, 2}
+        np.testing.assert_allclose(model._class_freqs, np.bincount(labels) / n)
+    repeat = TabPFGenGenerative(cfg, generator_factory=factory).fit(df, continuous_cols=["f0", "f1"])
+    np.testing.assert_array_equal(repeat._context_row_positions, positions)
+    other = pfn_model.sample_context_indices(model._label_codec.encode(df.y) if task == "classification" else df.y,
+                                            limit, task, seed=32)
+    assert not np.array_equal(other, positions)
+
+    # The output population remains the full requested size, beyond the context cap.
+    output = model.sample(n, seed=12)
+    assert len(output) == n
+    path = tmp_path / "context.pt"
+    model.save_checkpoint(path)
+    restored = TabPFGenGenerative.load_checkpoint(path, generator_factory=factory)
+    np.testing.assert_array_equal(restored._context_row_positions, positions)
+    assert restored.context_sampling_ == model.context_sampling_
+    pd.testing.assert_frame_equal(restored.sample(n, seed=12), output)
+
+
+@pytest.mark.parametrize("device,limit", [("cpu", 1000), ("cuda", 10000)])
+def test_context_cap_boundary_and_feature_class_limits(device, limit):
+    for n in (limit - 1, limit, limit + 1):
+        plan = pfn_model.plan_tabpfn_context(n, 3, 2, device)
+        assert plan["n_context_rows"] == min(n, limit)
+        assert plan["subsampled"] == (n > limit)
+    np.testing.assert_array_equal(pfn_model.sample_context_indices(np.arange(limit), limit, "regression", 31),
+                                  np.arange(limit))
+    for features, classes in ((501, 2), (3, 11)):
+        with pytest.raises(ValueError, match="limits exceeded"):
+            pfn_model.plan_tabpfn_context(limit + 1, features, classes, device)
+
+
+def test_old_checkpoint_context_is_not_resampled(tmp_path):
+    df = frame(["a", "b", "c"], n=80)
+    model = TabPFGenGenerative(TabPFGenConfig(target_col="y", task="classification"),
+                              generator_factory=fake_factory()).fit(df, continuous_cols=["f0", "f1"])
+    path = tmp_path / "legacy.pt"
+    model.save_checkpoint(path)
+    state = torch.load(path, weights_only=True)
+    state.pop("context_row_positions")
+    state.pop("context_sampling")
+    torch.save(state, path)
+    restored = TabPFGenGenerative.load_checkpoint(path, generator_factory=fake_factory())
+    np.testing.assert_array_equal(restored._X_train, model._X_train)
+    pd.testing.assert_frame_equal(restored.sample(23, seed=8), model.sample(23, seed=8))

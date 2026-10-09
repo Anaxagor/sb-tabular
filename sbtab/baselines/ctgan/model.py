@@ -40,6 +40,7 @@ own fixed constant and every seed would return the same rows.
 from __future__ import annotations
 
 import os
+import inspect
 import pickle
 import warnings
 from dataclasses import asdict, dataclass
@@ -192,6 +193,9 @@ def _default_synthesizer_factory(metadata_dict: Dict[str, Any], cfg: CTGANConfig
         )
     metadata.validate()
 
+    # SDV <=1.17 calls this option cuda; newer releases use enable_gpu.
+    parameters = inspect.signature(CTGANSynthesizer).parameters
+    gpu_key = "cuda" if "cuda" in parameters and "enable_gpu" not in parameters else "enable_gpu"
     return CTGANSynthesizer(
         metadata,
         enforce_rounding=bool(cfg.enforce_rounding),
@@ -209,7 +213,7 @@ def _default_synthesizer_factory(metadata_dict: Dict[str, Any], cfg: CTGANConfig
         batch_size=int(cfg.batch_size),
         log_frequency=bool(cfg.log_frequency),
         pac=int(cfg.pac),
-        enable_gpu=bool(cfg.enable_gpu),
+        **{gpu_key: bool(cfg.enable_gpu)},
         locales=list(cfg.locales),
     )
 

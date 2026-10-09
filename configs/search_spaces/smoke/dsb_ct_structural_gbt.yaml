@@ -6,6 +6,7 @@ model: dsb_ct_structural_gbt
 kind: smoke
 version: 1
 fixed:
+  horizon: null  # tune the raw gamma schedule, preserving this search space
   cb_iterations: 10
   cb_depth: 2
   cb_thread_count: 2

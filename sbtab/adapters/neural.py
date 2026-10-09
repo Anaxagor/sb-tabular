@@ -12,8 +12,8 @@ class _DSBMLPAdapter(ContinuousSolverAdapter):
     """
     ``horizon`` rescales the gamma grid so that T = sum(gamma) equals it. The legacy
     grid (gamma in [1e-4, 1e-2]) gives T ~ 0.046 for 20 steps, far too short for an
-    OU reference started at the data to approach the N(0, I) prior; the adapter
-    default is therefore an explicit horizon. T stays a property of the declared
+    OU reference started at the data to approach the N(0, I) prior. Solvers and
+    adapters therefore default to T = 2. T stays a property of the declared
     reference — training and sampling read it from the same grid.
     ``steps_per_phase`` is the declared training budget (exact optimiser updates per half-iteration).
     """

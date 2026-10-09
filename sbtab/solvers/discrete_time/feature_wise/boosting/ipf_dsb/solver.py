@@ -26,6 +26,7 @@ class StructuralDiscreteBoostedConfig:
     gamma_min: float = 1e-4
     gamma_max: float = 1e-2
     schedule: str = "geom"
+    horizon: Optional[float] = 2.0  # rescale steps; None keeps the raw gamma schedule
 
 class StructuralDiscreteBoostedSolver:
     """
@@ -46,7 +47,7 @@ class StructuralDiscreteBoostedSolver:
     def __init__(self, cfg: StructuralDiscreteBoostedConfig):
         self.cfg = cfg
         self.timegrid = TimeGrid(num_steps=cfg.num_steps, gamma_min=cfg.gamma_min, gamma_max=cfg.gamma_max,
-                                 schedule=cfg.schedule)
+                                 schedule=cfg.schedule, horizon=cfg.horizon)
         self.gammas = self.timegrid.gammas().numpy()
         self.t_grid = self.timegrid.times().numpy()
         if cfg.alpha_ou * float(self.gammas.max()) >= 1.0:
@@ -174,7 +175,9 @@ class StructuralDiscreteBoostedSolver:
             state = pickle.load(fh)
         if state.get("format") != CHECKPOINT_FORMAT:
             raise ValueError(f"unsupported checkpoint format: {state.get('format')!r}")
-        solver = cls(state["cfg"])
+        # Old pickled configs have no horizon field: preserve their raw gamma grid.
+        cfg = replace(state["cfg"], horizon=vars(state["cfg"]).get("horizon"))
+        solver = cls(cfg)
         if not np.allclose(solver.gammas, state["gammas"]):
             raise ValueError("checkpoint time grid does not match its configuration")
         solver.feature_cols = state["feature_cols"]

@@ -156,7 +156,7 @@ def main() -> None:
         for name, df in load_bundle(BUNDLE_DIR / f"{bundle}.pkl").items():
             cfg = draft(bundle, name, df)
             path = out / f"{cfg['name']}.yaml"
-            with open(path, "w") as fh:
+            with open(path, "w", encoding="utf-8") as fh:
                 fh.write("# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.\n")
                 yaml.safe_dump(cfg, fh, sort_keys=False, allow_unicode=True, width=120)
             print(f"wrote {path}")

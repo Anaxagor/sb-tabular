@@ -32,9 +32,9 @@ class TimeGrid:
       - "explicit": the increasing ``points`` are used verbatim (points[0] == 0).
 
     A unit-time Brownian-bridge interpolation requires T = 1: use
-    ``TimeGrid.uniform(N)`` or pass ``horizon=1.0``. DSB variants whose reference
-    is deliberately defined on another horizon keep the unnormalized schedules;
-    they only need training and sampling to agree on that horizon.
+    ``TimeGrid.uniform(N)`` or pass ``horizon=1.0``. IPF-DSB solvers pass their
+    declared reference horizon (default 2.0); ``horizon=None`` retains the raw
+    gamma schedule. Training and sampling must agree on the chosen horizon.
 
     Legacy API
       ``gammas()`` is ``dt()``. ``times()`` is the *inclusive* cumulative sum

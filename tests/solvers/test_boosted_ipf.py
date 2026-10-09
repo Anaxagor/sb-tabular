@@ -47,7 +47,7 @@ def test_every_edge_model_is_fitted_and_called_under_its_own_index(monkeypatch):
 
     monkeypatch.setattr(CatBoostDiscreteJoint, "fit_step", spy_fit)
     monkeypatch.setattr(CatBoostDiscreteJoint, "predict_step", spy_pred)
-    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, ipf_iters=2,
+    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, horizon=None, ipf_iters=2,
                                                                  catboost=CatBoostDiscreteJointConfig(**CB)))
     s.fit(frame())                                                # completes (it used to raise)
     fb, ff = id(s.field_b), id(s.field_f)
@@ -71,7 +71,7 @@ def test_continuous_time_labels_are_one_to_one_and_the_second_evaluation_uses_th
         return real(self, x, t)
 
     monkeypatch.setattr(CatBoostContinuousJoint, "predict", spy)
-    s = JointContinuousBoostedSolver(2, JointContinuousBoostedConfig(num_steps=K, ipf_iters=2,
+    s = JointContinuousBoostedSolver(2, JointContinuousBoostedConfig(num_steps=K, horizon=None, ipf_iters=2,
                                                                      catboost=CatBoostContinuousJointConfig(**CB)))
     s.fit(frame())
     times = [float(t) for t in s.times]
@@ -87,7 +87,7 @@ def test_continuous_time_labels_are_one_to_one_and_the_second_evaluation_uses_th
 
 # --------------------------------------------------------------------------- units and reference
 def test_predictions_are_next_state_means_not_drifts_scaled_by_gamma():
-    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, ipf_iters=1))
+    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, horizon=None, ipf_iters=1))
     s._fitted = True
     s.field_b.predict_step = lambda k, x: x + 1.0                 # stub: mean map shifts by exactly 1
     s.gammas = np.zeros_like(s.gammas)                            # switch the noise off
@@ -97,7 +97,7 @@ def test_predictions_are_next_state_means_not_drifts_scaled_by_gamma():
 
 
 def test_ou_reference_uses_the_step_interval():
-    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=20, alpha_ou=0.7))
+    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=20, horizon=None, alpha_ou=0.7))
     x = np.ones((3, 2), dtype=np.float32)
     for k in (0, 10, 19):
         np.testing.assert_allclose(s._reference_mean(k, x), 1.0 - 0.7 * s.gammas[k], rtol=1e-6)
@@ -117,7 +117,7 @@ def test_forward_cache_holds_actual_reference_trajectory_states(monkeypatch):
                         lambda self, k, x, y, **kw: (cached.setdefault((id(self), k), np.array(x)), real(self, k, x, y, **kw))[1])
     n = 4000
     df = pd.DataFrame(np.random.default_rng(1).normal(size=(n, 2)).astype(np.float32) * 0.2 + 3.0, columns=["a", "b"])
-    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, ipf_iters=1, gamma_min=0.05, gamma_max=0.2,
+    s = JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, horizon=None, ipf_iters=1, gamma_min=0.05, gamma_max=0.2,
                                                                  catboost=CatBoostDiscreteJointConfig(**CB)))
     s.fit(df)
     mean, var = 3.0, 0.04
@@ -160,7 +160,7 @@ def test_structural_graph_is_learned_on_fit_rows_only_and_parents_come_from_the_
     mod = importlib.import_module(cls.__module__)
     monkeypatch.setattr(mod, "learn_dag", lambda df, n_bins=5: (seen_index.append(df.index.to_numpy().copy()), real(df, n_bins))[1])
 
-    s = cls(cfg_cls(num_steps=3, ipf_iters=1, catboost=cb_cls(**CB))).fit(train)
+    s = cls(cfg_cls(num_steps=3, horizon=None, ipf_iters=1, catboost=cb_cls(**CB))).fit(train)
     assert len(seen_index) == 1 and set(seen_index[0]) == set(train.index) and not set(seen_index[0]) & set(held.index)
     st = s.structure
     st.validate()                                                 # acyclic, parents generated first
@@ -197,8 +197,8 @@ def test_known_two_variable_relation_is_recovered_by_structure_learning():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("make", [
-    lambda: JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, ipf_iters=1, catboost=CatBoostDiscreteJointConfig(**CB))),
-    lambda: JointContinuousBoostedSolver(2, JointContinuousBoostedConfig(num_steps=K, ipf_iters=1, catboost=CatBoostContinuousJointConfig(**CB)))])
+    lambda: JointDiscreteBoostedSolver(2, JointDiscreteBoostedConfig(num_steps=K, horizon=None, ipf_iters=1, catboost=CatBoostDiscreteJointConfig(**CB))),
+    lambda: JointContinuousBoostedSolver(2, JointContinuousBoostedConfig(num_steps=K, horizon=None, ipf_iters=1, catboost=CatBoostContinuousJointConfig(**CB)))])
 def test_joint_solvers_sizes_seeds_and_reload(tmp_path, make):
     s = make().fit(frame())
     assert s.n_updates > 0

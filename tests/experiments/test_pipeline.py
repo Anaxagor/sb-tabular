@@ -237,20 +237,36 @@ def test_batch_scripts_quote_paths_and_submit_correct_dependencies(tmp_path):
     scheduler.chmod(0o755)
     config = tmp_path / "cluster settings.sh"
     import shlex
-    config.write_text(f"SBTAB_PYTHON={shlex.quote(os.sys.executable)}\nSBATCH_SITE_ARGS=(--partition=rocky --account=proj_1825)\n")
+    config.write_text(f"SBTAB_PYTHON={shlex.quote(os.sys.executable)}\nSBATCH_SITE_ARGS=(--partition=rocky --account=proj_1752)\n")
     env = {**os.environ, "PATH": str(fakebin) + os.pathsep + os.environ["PATH"],
            "SBATCH_CALLS": str(tmp_path / "calls.jsonl")}
     args = ["bash", str(scripts / "submit.sh"), str(config), "--output-root", str(tmp_path / "output with spaces"),
             "--datasets", "diabetes", "--models", "lightsb", "--smoke"]
-    subprocess.run(args, env=env, check=True, capture_output=True, text=True)
+    submitted = subprocess.run(args, env=env, check=True, capture_output=True, text=True)
     calls = [json.loads(line) for line in Path(env["SBATCH_CALLS"]).read_text().splitlines()]
     assert len(calls) == 3
+    assert f"Cluster configuration: {config}" in submitted.stderr
+    logged_calls = [shlex.split(line)[1:] for line in submitted.stderr.splitlines()
+                    if line.startswith("sbatch ")]
+    assert logged_calls == calls
     assert "--dependency=afterok:100" in calls[1]
     assert "--kill-on-invalid-dep=yes" in calls[1]
     assert "--dependency=afterany:101" in calls[2]
     assert "--array=0-0%8" in calls[1]
-    assert all("--account=proj_1825" in call and "--partition=rocky" in call for call in calls)
+    assert "--gpus=1" in calls[1] and "--cpus-per-task=8" in calls[1]
+    assert any(arg.endswith("experiment-%A_%a.err") for arg in calls[1])
+    plan = read_json(calls[0][-1])
+    assert plan["device"] == "cuda"
+    from sbtab.experiments.experiment_common import load_yaml
+    assert load_yaml(plan["search_spaces"]["lightsb"]["path"])["fixed"]["device"] == "cuda"
+    assert all("--account=proj_1752" in call and "--partition=rocky" in call for call in calls)
     assert calls[0][-2] == str(config)
     assert calls[0][-1].endswith("output with spaces/pipeline/plan.json")
-    subprocess.run([args[0], args[1], "--dry-run", *args[2:]], env=env, check=True, capture_output=True)
+    preview = subprocess.run([args[0], args[1], "--dry-run", *args[2:]], env=env, check=True,
+                             capture_output=True, text=True)
+    assert f"Cluster configuration: {config}" in preview.stderr
+    preview_calls = [shlex.split(line)[1:] for line in preview.stderr.splitlines()
+                     if line.startswith("sbatch ")]
+    assert len(preview_calls) == 3
+    assert all("--account=proj_1752" in call for call in preview_calls)
     assert len(Path(env["SBATCH_CALLS"]).read_text().splitlines()) == 3

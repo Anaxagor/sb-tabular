@@ -232,10 +232,10 @@ class CommonPreprocessor:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "preprocessor.json"
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self.to_dict(), indent=1, allow_nan=False))
+        tmp.write_text(json.dumps(self.to_dict(), indent=1, allow_nan=False), encoding="utf-8")
         tmp.replace(path)
         return path
 
     @classmethod
     def load(cls, directory, schema: DatasetSchema) -> "CommonPreprocessor":
-        return cls.from_dict(json.loads((Path(directory) / "preprocessor.json").read_text()), schema)
+        return cls.from_dict(json.loads((Path(directory) / "preprocessor.json").read_text(encoding="utf-8")), schema)

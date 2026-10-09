@@ -30,7 +30,7 @@ def shifted_gaussian(n: int = 2000) -> np.ndarray:
 # Grid shared by both checks: 16 geometric steps 2e-3..0.3, T = sum(gamma) ~= 1.05, OU reference
 # (alpha 1, sigma sqrt 2): the reference carries the data mean from 3 to ~1 and the std to ~1,
 # i.e. into the bulk of the N(0, I) prior, so two IPF iterations suffice.
-GRID = dict(num_steps=16, gamma_min=2e-3, gamma_max=0.3, schedule="geom")
+GRID = dict(num_steps=16, horizon=None, gamma_min=2e-3, gamma_max=0.3, schedule="geom")
 
 LEARNING_CASES = {
     # 2 IPF iterations x 2 half-steps x 150 updates = 600 updates (~1 s on CPU)
@@ -77,7 +77,7 @@ K = 5
 
 
 def small_dt(**kw) -> DTSolver:
-    base = dict(num_steps=K, gamma_min=1e-2, gamma_max=0.2, hidden_units=8, n_layers=2, batch_size=16,
+    base = dict(num_steps=K, horizon=None, gamma_min=1e-2, gamma_max=0.2, hidden_units=8, n_layers=2, batch_size=16,
                 cache_batches=3, ipf_iters=1, lr=1e-2, seed=0)
     base.update(kw)
     return DTSolver(2, DTConfig(**base))

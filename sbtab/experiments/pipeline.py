@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,9 +17,11 @@ import sys
 import time
 import traceback
 
+import yaml
+
 from sbtab.data.registry import available_datasets, load_dataset_config, schema_from_config
 from sbtab.experiments.experiment_common import (
-    REPO_ROOT, StageError, canonical_hash, claim_output_root, file_hash, file_lock,
+    REPO_ROOT, SOURCE_HASH_VERSION, StageError, atomic_write_text, canonical_hash, claim_output_root, file_hash, file_lock,
     implementation_hash, library_versions, load_metric_config, load_protocol, read_json, write_json,
 )
 from sbtab.solvers.registry import get_entry, missing_requirements, solver_registry
@@ -29,11 +32,13 @@ RUN_ID = "run-pipeline"
 
 
 def create_plan(output_root, datasets=None, models=None, protocol_path=None, smoke=False,
-                search_space_dir=None, dataset_config_dir="configs/datasets", include_heuristic=True):
+                search_space_dir=None, dataset_config_dir="configs/datasets", include_heuristic=True, device=None):
     from sbtab.evaluation import MetricConfig
     from sbtab.experiments.tune import load_search_space
 
     root = Path(output_root).resolve()
+    if device not in (None, "cpu", "cuda"):
+        raise StageError("undefined", "device must be cpu or cuda")
     protocol = load_protocol(protocol_path, smoke=smoke)
     metrics = load_metric_config(protocol)
     MetricConfig.from_document(metrics)
@@ -45,7 +50,7 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
     schemas = {name: schema_from_config(load_dataset_config(name, config_dir)) for name in names}
     chosen = sorted(set(models if models is not None else solver_registry))
     spaces_dir = Path(search_space_dir or ("configs/search_spaces/smoke" if smoke else "configs/search_spaces")).resolve()
-    entries, spaces, excluded = {}, {}, []
+    entries, spaces, excluded, generated_spaces = {}, {}, [], {}
     for model in chosen:
         entry = get_entry(model)
         reason = exclusion_reason(model)
@@ -61,8 +66,22 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
             excluded.append({"model": model, "reason": reason})
             continue
         path = spaces_dir / f"{model}.yaml"
-        load_search_space(path, model, protocol.kind)
+        space = load_search_space(path, model, protocol.kind)
         spaces[model] = {"path": str(path), "hash": file_hash(path)}
+        if device is not None:
+            from sbtab.solvers.registry import get_adapter_class
+            keys = get_adapter_class(model).DEFAULTS
+            key = "device" if "device" in keys else "enable_gpu" if "enable_gpu" in keys else None
+            if key is None or key in space["params"]:
+                raise StageError("undefined", f"{model}: cannot fix execution device in this search space")
+            space["fixed"][key] = device if key == "device" else device == "cuda"
+            # Use YAML's float spelling (1.0e-05), since YAML 1.1 can read JSON's
+            # 1e-05 as a string. Keep every hyperparameter range unchanged.
+            contents = yaml.safe_dump(space, sort_keys=False)
+            effective = root / "pipeline" / "search_spaces" / f"{model}.yaml"
+            generated_spaces[effective] = contents
+            spaces[model] = {"path": str(effective), "hash": hashlib.sha256(contents.encode()).hexdigest(),
+                             "source_path": str(path), "source_hash": file_hash(path)}
         entries[model] = entry
     tasks = []
     for dataset in names:
@@ -74,6 +93,10 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
                           "regime": schemas[dataset].regime, "model_status": entry.status})
     if not tasks:
         raise StageError("not_applicable", "no compatible dataset/model tasks remain")
+    pretrained = {}
+    if "tabpfgen" in entries:
+        from sbtab.experiments.cluster_environment import check_tabpfn_cache
+        pretrained["tabpfgen"] = check_tabpfn_cache()
     plan = {
         "version": PLAN_VERSION, "repo_root": str(REPO_ROOT), "output_root": str(root), "run_id": RUN_ID,
         "protocol_path": str(Path(protocol.path).resolve()), "protocol_hash": protocol.hash(),
@@ -84,6 +107,9 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
                      for name, schema in schemas.items()},
         "search_spaces": spaces, "tasks": tasks, "excluded": excluded,
         "basic_dsb_models": dict(BASIC_DSB_MODELS),
+        "device": device,
+        "pretrained_models": pretrained,
+        "implementation_hash_version": SOURCE_HASH_VERSION,
         "implementation_hash": implementation_hash(), "libraries": library_versions(),
         "statistical_note": protocol.data.get("statistical_note", ""),
     }
@@ -94,10 +120,15 @@ def create_plan(output_root, datasets=None, models=None, protocol_path=None, smo
         if path.exists():
             if read_json(path) != plan:
                 raise StageError("undefined", "existing pipeline plan differs; use a new output root")
+            for item in spaces.values():
+                if not Path(item["path"]).is_file() or file_hash(item["path"]) != item["hash"]:
+                    raise StageError("undefined", "frozen search space changed or is missing")
         else:
             # Mixing unrelated runs in this root would make rank selection ambiguous.
             if any(root.glob("*/*/*/run_manifest.json")) or any(root.glob("*/*/*/cv/cv_run_manifest.json")):
                 raise StageError("undefined", "choose a fresh output root for the pipeline plan")
+            for filename, contents in generated_spaces.items():
+                atomic_write_text(filename, contents)
             write_json(path, plan)
     return {"plan": str(path), "n_tasks": len(tasks), "n_datasets": len(names),
             "n_models": len(entries), "n_trials": plan["n_trials"], "n_folds": plan["n_folds"],
@@ -119,10 +150,20 @@ def load_plan(path, verify=True):
     if str(REPO_ROOT) != plan["repo_root"]:
         raise StageError("undefined", "plan belongs to another checkout; create it on the cluster at its final path")
     protocol = load_protocol(plan["protocol_path"], smoke=plan["smoke"])
-    if protocol.hash() != plan["protocol_hash"] or implementation_hash() != plan["implementation_hash"]:
-        raise StageError("undefined", "protocol or implementation changed after planning; use a new output root")
+    current_protocol_hash = protocol.hash()
+    if current_protocol_hash != plan["protocol_hash"]:
+        raise StageError("undefined", f"protocol changed after planning: expected {plan['protocol_hash']}, "
+                         f"current {current_protocol_hash}; use a new output root")
+    if plan.get("implementation_hash_version") != SOURCE_HASH_VERSION:
+        raise StageError("undefined", "plan uses legacy Git-based implementation verification; "
+                         "create a new plan in a new output root with the updated code")
+    current_implementation_hash = implementation_hash()
+    if current_implementation_hash != plan["implementation_hash"]:
+        raise StageError("undefined", f"implementation changed after planning: expected {plan['implementation_hash']}, "
+                         f"current {current_implementation_hash}; source/config files changed, use a new output root")
     paths = {plan["metrics_path"]: plan["metrics_hash"]}
     paths.update({s["path"]: s["hash"] for s in plan["search_spaces"].values()})
+    paths.update({s["source_path"]: s["source_hash"] for s in plan["search_spaces"].values() if "source_path" in s})
     paths.update({str(Path(plan["dataset_config_dir"]) / f"{name}.yaml"): info["config_hash"]
                   for name, info in plan["datasets"].items()})
     for filename, expected in paths.items():
@@ -130,11 +171,16 @@ def load_plan(path, verify=True):
             raise StageError("undefined", f"configuration changed after planning: {filename}")
     if library_versions() != plan["libraries"]:
         raise StageError("undefined", "Python/dependency versions differ from the pipeline plan")
+    if "tabpfgen" in plan.get("pretrained_models", {}):
+        from sbtab.experiments.cluster_environment import check_tabpfn_cache
+        if check_tabpfn_cache() != plan["pretrained_models"]["tabpfgen"]:
+            raise StageError("undefined", "TabPFN pretrained weights or cache location changed after planning")
     return plan
 
 
 def prepare(plan_path):
     from sbtab.experiments.prepare_splits import run
+    from sbtab.experiments import tune
     plan = load_plan(plan_path)
     root = Path(plan["output_root"])
     protocol = load_protocol(plan["protocol_path"], smoke=plan["smoke"])
@@ -143,6 +189,14 @@ def prepare(plan_path):
         for name in plan["datasets"]:
             try:
                 value = run(name, protocol, root, config_dir=plan["dataset_config_dir"])
+                if value["split_status"] == "ok" and "tabpfgen" in plan["search_spaces"]:
+                    try:
+                        preview = tune.run(name, "tabpfgen", root / name / "splits.json", plan["search_spaces"]["tabpfgen"]["path"],
+                                           resume=True, smoke=plan["smoke"], protocol_path=plan["protocol_path"], dry_run=True)
+                        support = {"status": "ok", "context": preview["tabpfgen_context"]}
+                    except Exception as error:
+                        support = {"status": getattr(error, "status", "undefined"), "error": str(error)}
+                    value["models"] = {"tabpfgen": support}
             except Exception as e:
                 value = {"dataset": name, "split_status": getattr(e, "status", "undefined"),
                          "error": str(e), "trace": traceback.format_exc()}
@@ -181,6 +235,12 @@ def worker(plan_path, task_id, stage="all", retry_failed_folds=False):
             dataset_status = preparation["datasets"][task["dataset"]]
             if dataset_status["split_status"] != "ok":
                 raise StageError(dataset_status["split_status"], f"dataset preflight failed: {dataset_status}")
+            support = dataset_status.get("models", {}).get(task["model"], {"status": "ok"})
+            if support["status"] != "ok":
+                raise StageError(support["status"], support.get("error", "model preflight failed"))
+            if plan.get("device") == "cuda" and stage != "metrics":
+                from sbtab.experiments.cluster_environment import check_cuda
+                record["cuda"] = check_cuda()
             from sbtab.experiments import tune, cross_validate, calculate_metrics
             splits = root / task["dataset"] / "splits.json"
             selected = run_dir / "tuning" / "selected_config.json"
@@ -284,6 +344,8 @@ def main(argv=None):
     plan.add_argument("--protocol", dest="protocol_path", default=None)
     plan.add_argument("--smoke", action="store_true")
     plan.add_argument("--search-space-dir", default=None)
+    plan.add_argument("--device", choices=("cpu", "cuda"), default=None,
+                      help="freeze a device override for all selected generators")
     plan.add_argument("--dataset-config-dir", default="configs/datasets")
     plan.add_argument("--exclude-heuristic", dest="include_heuristic", action="store_false")
     for name in ("prepare", "worker", "aggregate"):

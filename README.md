@@ -199,11 +199,16 @@ new `evaluation/<metric-version>-<hash>/` namespace.
 ### Complete pipeline and SLURM arrays
 
 The [cluster run guide](docs/CLUSTER_EXPERIMENT.md) connects all stages into an array for partition
-`rocky`, account `proj_1825`: one task per compatible dataset/model pair, 100 tuning trials, five
-fresh CV fits, all test metrics and TSTR, followed by aggregation. It includes configurable sbatch
-scripts, dependency handling, shared-cache locking, resumable trial/fold orchestration and explicit
-failure summaries. Start by copying `scripts/slurm/cluster.example.sh` to `cluster.local.sh` and
-setting its Python environment and resource limits.
+`rocky`, account `proj_1752`: one task per compatible dataset/model pair, 100 tuning trials, five
+fresh CV fits, all test metrics and TSTR, followed by aggregation. Each task requests one GPU,
+eight CPUs and two days; generator tuning, training and sampling use CUDA. The guide includes the
+HSE login-02 environment setup, offline pretrained-weight preparation, a GPU smoke-check job,
+resumable trials/folds and failure summaries. Install `requirements-cluster.txt` through
+`scripts/setup_cluster_env.sh`, then edit the included `scripts/slurm/cluster.local.sh` locally.
+Upload code, datasets and configuration with `bash scripts/sync_cluster.sh USER@HOST:/home/USER/sb-tabular`
+(add `--dry-run` before the destination to preview). The helper verifies file contents and preserves
+cluster environments, caches, `artifacts/` and `slurm_logs/`; no Git is needed on the cluster.
+See the guide for the update workflow and dependency changes.
 
 DSB and DSBM experiments use only the continuous-time joint MLP models `dsb_ct_joint_mlp` and
 `dsbm_ct_joint_mlp`. Their discrete-time, boosted and structural variants are excluded from planning
@@ -289,21 +294,43 @@ python -m pytest tests            # from the repository root
 works without them, their stages report the missing package, and their tests **skip — a skip is not a validation
 of the adapter**. `geotorch` is only needed for LightSB with a full covariance. Pin `catboost` for a benchmark run:
 the utility evaluator freezes its resolved defaults per dataset. Python ≥ 3.10; run from the repository root.
+For the GPU cluster experiment, use the pinned Python 3.11 environment and setup commands in the
+[cluster run guide](docs/CLUSTER_EXPERIMENT.md#2-configure-the-hse-cluster-environment).
+TabPFGen uses a reproducible training-only context subset when its training input exceeds
+10,000 rows on GPU or 1,000 on CPU. Classification subsets retain all target classes; generated
+sample sizes still follow the experiment protocol. Context selections are saved in checkpoints.
+To repair rare-category coverage while keeping all eligible rows, select
+`--protocol configs/protocols/sbtab_8515_hpo100_cv5_v3.yaml`. It records same-stratum train/validation
+row swaps, retains the 85/15 sizes and ordinary five-fold KFold, and places every level of the
+blocking columns in validation and in every fold's training set. V1/v2 retain their original behavior;
+the default is still v2. Use a fresh output root for v3; see the cluster guide for the full command.
 
 ## Status and known gaps
 
 The [follow-up review](docs/REVIEW_2026-09-23.md) records the refactor corrections. With the additional
-[cluster orchestration checks](docs/CLUSTER_EXPERIMENT.md), the full suite on 2026-09-24 had **798 passed, 9 skipped**;
-seven concurrent batch-script smoke tasks completed 21 tuning trials and 35 fresh CV folds locally.
+[cluster orchestration checks](docs/CLUSTER_EXPERIMENT.md), the full suite on 2026-09-26 had **880 passed, 12 skipped**;
+24 batch-script smoke pipelines spanning all ten selected generators completed 72 tuning trials and
+120 fresh CV folds locally. Ten skipped tests require an allocated CUDA GPU; the other two concern
+optional notebook validation and the missing-dependency branch for the installed `geotorch` package.
 Evaluation outputs now use
 an `-eval2` namespace suffix so corrected failure/status/aggregation records do not overwrite earlier evaluations.
 See the [implementation report](docs/IMPLEMENTATION_REPORT.md) for the per-solver mathematical contracts,
-dataset feasibility and earlier validation. Remaining limitations include:
+dataset feasibility and earlier validation.
+
+IPF-DSB solvers and adapters now default to `horizon=2.0`, independent of the step count. The gamma
+schedule is rescaled to span that horizon; `horizon=None` explicitly restores the raw schedule.
+Older checkpoints retain their original grids. The selected joint MLP DSB experiment still tunes
+`horizon` over `[0.5, 3.0]`; retained boosted search spaces explicitly use `horizon: null` so their
+`gamma_max` search keeps its original meaning. Boosted variants remain excluded from the experiments.
+The longer default reduces the initial OU reference's mismatch with the Gaussian prior, but finite
+time and Euler discretisation still introduce approximation error. Coarse grids must satisfy
+`alpha_ou * max(dt) < 1`; increase the step count or reduce the horizon if this check fails.
+
+Remaining limitations include:
 
 - The production benchmark has **not** been run; only bounded smoke runs and tests were executed.
-- CTGAN and TabPFGen adapters were tested with fakes only (libraries not installed); no GPU path was exercised.
-- The IPF-DSB solvers' legacy default time grid is too short (T ≈ 0.046) for an N(0, I) prior; the search spaces
-  tune `horizon` / `gamma_max`.
+- The pinned environment includes real CTGAN and TabPFGen libraries, tested locally on CPU. CUDA execution
+  must pass `scripts/slurm/check_gpu.sbatch` on an allocated cluster GPU before production submission.
 - Checkpoints are inference-complete but not resumable mid-fit; the resume granularity is a trial or a fold.
 - Historical results under `sbtab/experiments/legacy/` carry no run-to-commit provenance, use different metric
   definitions (`legacy/0`) and must not be mixed with `sbtab.metrics/1` results.

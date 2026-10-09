@@ -4,8 +4,9 @@ Common interface and column-role handling for the non-SB baselines.
 Contract every baseline wrapper follows
 ---------------------------------------
 * ``fit(data, *, continuous_cols=, discrete_cols=, categorical_cols=, target_col=, task=, id_col=)``
-  trains on exactly the rows it is given.  No wrapper performs a hidden train/validation
-  split, and no wrapper looks at anything but ``data``.
+  uses only the rows it is given. No wrapper performs a hidden train/validation split.
+  TabPFGen alone caps its conditioning context by a documented, seeded training-row
+  sample; its codecs and label prior still use the full input, and the sample is recorded.
 * Column roles come from the EXPLICIT lists.  When at least one explicit list is given, no
   dtype / cardinality inference runs anywhere in the wrapper: every column must be assigned
   a role (or be the ``id_col``), otherwise ``fit`` raises.  The legacy ``schema=`` /

@@ -1,0 +1,43 @@
+# Opt-in coverage repair; v1/v2 files and default selection remain unchanged.
+# Same eligibility as v2; no additional row filtering. Bounded search may still fail.
+# Every accepted T/V swap is recorded and replayed during artifact verification.
+protocol_id: sbtab_smoke_v3
+supersedes: sbtab_smoke_v2
+kind: smoke
+eligibility:
+  min_value_count: 3
+  columns: finite_support
+  iterate_to_fixed_point: true
+split:
+  test_size: 0.15
+  random_state: 5
+  stratify: true
+  regression_strata_bins: 10
+  pool_order: sorted_row_id
+  support_repair:
+    method: stratum_swap/1
+    validation_coverage: blocking_columns
+    max_swaps: 128
+    max_candidate_evaluations: 8192
+tuning:
+  n_trials: 3
+  direction: minimize
+  sampler: tpe
+  sampler_seed: 5
+  n_jobs: 1
+  pruner: none
+  checkpoint_retention: all
+cv:
+  population: T
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  n_generated: len_train_fold
+seeds:
+  base: 5
+metrics_config: configs/metrics/metrics_v1.yaml
+statistical_note: 'Smoke protocol: same split/CV definition as production, reduced
+  trial budget. Support-constrained T/V selection uses only column levels and target
+  strata, never model metrics. Same-stratum swaps preserve eligible rows and stratum
+  counts; CV remains ordinary sklearn.KFold on the repaired T pool. This changes memberships
+  relative to v2.'

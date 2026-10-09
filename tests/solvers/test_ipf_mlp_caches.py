@@ -39,7 +39,7 @@ SIGMA = 1.3
 
 def make_solver(kind: str, **kw):
     solver_cls, cfg_cls = KINDS[kind]
-    base = dict(num_steps=K, gamma_min=1e-2, gamma_max=0.3, schedule="geom", sigma=SIGMA, alpha_ou=1.0,
+    base = dict(num_steps=K, horizon=None, gamma_min=1e-2, gamma_max=0.3, schedule="geom", sigma=SIGMA, alpha_ou=1.0,
                 hidden_units=16, n_layers=2, batch_size=32, cache_batches=4, ipf_iters=1, seed=0)
     if kind == "ct":
         base["time_features"] = 16
@@ -247,10 +247,10 @@ def test_ct_training_rows_carry_the_clock_of_their_edge():
 
 def test_ct_clock_is_rescaled_and_separates_neighbouring_edges():
     """
-    Defaults: geometric grid, T ~= 0.046. Raw times cannot be told apart by the
+    Legacy raw geometric grid, T ~= 0.046. Raw times cannot be told apart by the
     sinusoidal embedding (max_period 1e4); the rescaled clock time_scale * t / T can.
     """
-    solver = CTSolver(2, CTConfig(hidden_units=16, n_layers=2, time_features=32))
+    solver = CTSolver(2, CTConfig(horizon=None, hidden_units=16, n_layers=2, time_features=32))
     grid, T = solver.timegrid.grid(), solver.timegrid.T
     assert torch.allclose(solver._clock["forward"], grid[:-1] * (1000.0 / T))
     assert torch.allclose(solver._clock["backward"], grid[1:] * (1000.0 / T))

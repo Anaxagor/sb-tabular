@@ -1,6 +1,7 @@
 """Experiment-stage acceptance tests: Optuna budget/resume, sample sizes, persistence, timing, registry coverage."""
 import glob
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -40,6 +41,44 @@ def quiet(monkeypatch):
 
 
 # --------------------------------------------------------------------------- Optuna / resume
+def test_tabpfgen_large_training_pool_is_subsampled_in_tuning_and_cv(tmp_path, monkeypatch):
+    from sbtab.baselines.tabpfn import model as pfn
+
+    root, splits_path, _, _ = make_dataset(tmp_path, monkeypatch, n=1500)
+    splits = json.loads(splits_path.read_text())
+    seen = []
+
+    class Generator:
+        def validate_context(self, X, y, task):
+            seen.append(len(X))
+            assert len(X) == len(y) == 1000
+            assert set(y) == {0, 1}
+
+        def generate_classification(self, X, y, n_samples, balance_classes):
+            return np.random.normal(size=(n_samples, X.shape[1])), np.random.randint(0, 2, n_samples)
+
+    monkeypatch.setattr(tune, "missing_requirements", lambda model: ())
+    monkeypatch.setattr(cross_validate, "missing_requirements", lambda model: ())
+    monkeypatch.setattr(pfn, "_default_generator_factory", lambda cfg: Generator())
+    space = SMOKE_SPACE.format("tabpfgen")
+    preview = tune.run("toy", "tabpfgen", splits_path, space, resume=False, smoke=True, dry_run=True)
+    assert preview["tabpfgen_context"] == {
+        "n_train_rows": 1275, "n_context_rows": 1000, "row_limit": 1000, "subsampled": True}
+    assert not list(root.rglob("study.sqlite3"))
+    tuned = tune.run("toy", "tabpfgen", splits_path, space, resume=False, smoke=True)
+    assert tuned["counts"]["COMPLETE"] == 3
+    run = Path(tuned["run_dir"])
+    for status_path in (run / "tuning").glob("trial-*/status.json"):
+        status = json.loads(status_path.read_text())
+        assert status["describe"]["conditioning_context"]["n_context_rows"] == 1000
+        assert len(pd.read_parquet(status_path.parent / "synthetic.parquet")) == splits["n_V"]
+    cv = cross_validate.run("toy", "tabpfgen", run / "tuning/selected_config.json", splits_path,
+                            root, smoke=True)
+    assert cv["n_ok"] == 5 and seen == [1000] * 8
+    for fold in splits["folds"]:
+        assert len(pd.read_parquet(run / "cv" / f"fold-{fold['fold']}" / "synthetic.parquet")) == len(fold["train_row_ids"])
+
+
 @pytest.mark.integration
 def test_tuning_budget_resume_failures_best_selection_and_downstream_stages(tmp_path, monkeypatch):
     root, splits_path, frame, schema = make_dataset(tmp_path, monkeypatch)

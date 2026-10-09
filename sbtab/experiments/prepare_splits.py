@@ -20,6 +20,10 @@ The v2 eligibility rule is a different thing: it removes rows by value counts of
 whole source table, before and independently of any split. It reduces blocking but
 cannot guarantee coverage (3 rows of a value can still fall 1 into V and 2 into the
 same CV test fold), so this validation runs after it and can still stop a dataset.
+
+The opt-in v3 protocol repairs coverage by seeded, same-stratum T/V swaps before
+constructing the same ordinary KFold. No additional rows are removed. Its bounded
+search, audit trail and unresolved failures are explicit; v1/v2 remain unchanged.
 """
 from __future__ import annotations
 
@@ -131,6 +135,11 @@ def build_splits(frame: pd.DataFrame, schema: DatasetSchema, manifest: dict, pro
                          {"stratification": strata_meta}) from e
     T = np.sort(t_ids)          # pool_order: sorted_row_id — KFold positions refer to this order
     V = np.sort(v_ids)
+    repair = None
+    if "support_repair" in sp:
+        from sbtab.data.support_split import repair_support_split
+        T, V, repair = repair_support_split(frame, schema, T, V, strata, sp["random_state"], cv,
+                                           sp["support_repair"])
 
     kf = KFold(n_splits=cv["n_splits"], shuffle=cv["shuffle"], random_state=cv["random_state"])
     folds = []
@@ -141,6 +150,9 @@ def build_splits(frame: pd.DataFrame, schema: DatasetSchema, manifest: dict, pro
     violations = support_violations(frame, schema, T, V, "V_vs_T")
     for f in folds:
         violations += support_violations(frame, schema, f["train_row_ids"], f["test_row_ids"], f"fold_{f['fold']}")
+    if repair is not None:
+        violations += [v for v in support_violations(frame, schema, V, T, "T_vs_V")
+                       if v["column"] in repair["validation_columns"]]
     status = "blocked_support" if violations else "ok"
 
     value_counts = {}
@@ -161,6 +173,14 @@ def build_splits(frame: pd.DataFrame, schema: DatasetSchema, manifest: dict, pro
         "policy": "No alternative seed, pinned row, merged category, changed K, discarded row or global encoder "
                   "is used to bypass a failure. A support-constrained split would be a separately versioned protocol.",
     }
+    if repair is not None:
+        support_report["support_repair"] = repair
+        support_report["conditions"].append("validation covers every level of each initially blocking finite-support column")
+        support_report["policy"] = (
+            "Same-stratum T/V swaps repair training support before fixed sklearn.KFold. "
+            "All eligible rows, T/V sizes, stratum counts, seeds and K are preserved. "
+            "Validation contains every level of the initially blocking columns. "
+            "No fitted transforms or model metrics enter split selection. Unresolved support blocks the dataset.")
     splits = {
         "version": SPLITS_VERSION, "dataset": schema.name,
         "protocol_id": protocol.id, "protocol_kind": protocol.kind, "protocol_hash": protocol.hash(),
@@ -176,6 +196,10 @@ def build_splits(frame: pd.DataFrame, schema: DatasetSchema, manifest: dict, pro
         "folds": folds,
         "statistical_note": protocol.data.get("statistical_note", ""),
     }
+    if repair is not None:
+        splits["split"].update(splitter="sklearn.train_test_split + stratum_swap/1",
+                              regression_strata_bins=sp["regression_strata_bins"],
+                              support_repair={"rule": dict(sp["support_repair"]), "audit": repair})
     splits["membership_hash"] = canonical_hash({"T": splits["T_hash"], "V": splits["V_hash"],
                                                 "folds": [(f["train_hash"], f["test_hash"]) for f in folds]})
     return splits, support_report
@@ -250,11 +274,11 @@ def load_split_artifacts(splits_path) -> Tuple[pd.DataFrame, DatasetSchema, dict
         raise StageError("undefined", "data.parquet columns do not match schema.json")
     for c in schema.categorical:
         frame[c] = frame[c].astype(object).where(~frame[c].isna(), None)
-    validate_split_artifacts(frame, splits)
+    validate_split_artifacts(frame, splits, schema)
     return frame, schema, splits
 
 
-def validate_split_artifacts(frame: pd.DataFrame, splits: dict) -> None:
+def validate_split_artifacts(frame: pd.DataFrame, splits: dict, schema: Optional[DatasetSchema] = None) -> None:
     """Verify persisted values and actual memberships, rather than trusting stored hashes."""
     def require(ok, message):
         if not ok:
@@ -277,6 +301,21 @@ def validate_split_artifacts(frame: pd.DataFrame, splits: dict) -> None:
     for name in ("T", "V"):
         require(row_id_hash(splits[f"{name}_row_ids"]) == splits[f"{name}_hash"], f"{name} membership hash mismatch")
     cv = splits["cv"]
+    if "support_repair" in splits["split"]:
+        from sbtab.data.support_split import repair_support_split
+        require(schema is not None, "schema required to verify support-repaired splits")
+        sp = splits["split"]
+        proto = Protocol("<split artifact>", {"split": {**sp, "stratify": True}})
+        strata, meta = stratification_vector(frame, schema, proto)
+        require(meta == sp["stratification"], "stratification metadata mismatch")
+        initial_T, initial_V = train_test_split(frame.index.to_numpy(dtype=np.int64), test_size=sp["test_size"],
+                                               random_state=sp["random_state"], stratify=strata)
+        expected_T, expected_V, audit = repair_support_split(frame, schema, initial_T, initial_V, strata,
+            sp["random_state"], cv, sp["support_repair"]["rule"])
+        require(expected_T.tolist() == splits["T_row_ids"] and expected_V.tolist() == splits["V_row_ids"],
+                "T/V membership does not match declared support repair")
+        require(audit == sp["support_repair"]["audit"], "support repair audit mismatch")
+        require((audit["final_deficit"] == 0) == (splits["split_status"] == "ok"), "support status mismatch")
     require(len(splits["folds"]) == cv["n_splits"], "fold count mismatch")
     kf = KFold(n_splits=cv["n_splits"], shuffle=cv["shuffle"], random_state=cv["random_state"])
     pool = np.asarray(splits["T_row_ids"])

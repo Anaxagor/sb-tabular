@@ -209,14 +209,14 @@ class ModelAdapter(ABC):
             "n_updates": self.n_updates, "describe": self.describe(), "state": self._state(),
         }
         tmp = d / "adapter.json.tmp"
-        tmp.write_text(json.dumps(meta, indent=1, default=_json_default))
+        tmp.write_text(json.dumps(meta, indent=1, default=_json_default), encoding="utf-8")
         tmp.replace(d / "adapter.json")
         return d
 
     @classmethod
     def load_checkpoint(cls, path) -> "ModelAdapter":
         d = Path(path)
-        meta = json.loads((d / "adapter.json").read_text())
+        meta = json.loads((d / "adapter.json").read_text(encoding="utf-8"))
         if meta.get("format") != ADAPTER_FORMAT:
             raise ValueError(f"unsupported adapter checkpoint format {meta.get('format')!r}")
         if meta["registry_id"] != cls.registry_id:

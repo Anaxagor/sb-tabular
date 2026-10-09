@@ -31,4 +31,6 @@ adult_mixedsbm_processed.csv
 artifacts/
 *.sqlite3
 .pytest_cache/
-scripts/slurm/cluster.local.sh
+slurm_logs/
+.venv-cluster/
+.cache/

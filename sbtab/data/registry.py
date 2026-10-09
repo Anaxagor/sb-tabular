@@ -36,7 +36,7 @@ def load_dataset_config(name: str, config_dir=DEFAULT_CONFIG_DIR) -> dict:
     path = Path(config_dir) / f"{name}.yaml"
     if not path.exists():
         raise DatasetConfigError(f"no dataset config {path}; available: {available_datasets(config_dir)}")
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
     if cfg.get("name") != name:
         raise DatasetConfigError(f"{path}: 'name' must equal the file stem")
