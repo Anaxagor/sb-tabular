@@ -110,6 +110,8 @@ class CSBMAdapter(ModelAdapter):
     DEFAULTS = dict(
         num_outer_iterations=3, epochs=15, num_steps=50, mixing_rate=1.0, ordered_bandwidth=0.2, ce_lambda=0.001,
         lr=1e-3, batch_size=264, emb_dim=16, hidden_dim=256, time_dim=64, sample_batch_size=4096, device="cpu",
+        n_layers=2, dropout=0.0, forward_lr=None, backward_lr=None,
+        forward_weight_decay=1e-2, backward_weight_decay=1e-2,
     )
 
     def _solver_config(self):
@@ -143,6 +145,14 @@ class CSBMAdapter(ModelAdapter):
     def describe(self) -> dict:
         s = self.solver
         return {"variant": s.variant, "orientation": {"x0": "data", "x1": "prior", "generation": "backward"},
+                "architecture": {"n_layers": s.cfg.n_layers, "dropout": s.cfg.dropout,
+                                 "emb_dim": s.cfg.emb_dim, "hidden_dim": s.cfg.hidden_dim,
+                                 "time_dim": s.cfg.time_dim},
+                "optimizers": {
+                    "forward": {"lr": s.updater.forward_opt.param_groups[0]["lr"],
+                                "weight_decay": s.updater.forward_opt.param_groups[0]["weight_decay"]},
+                    "backward": {"lr": s.updater.backward_opt.param_groups[0]["lr"],
+                                 "weight_decay": s.updater.backward_opt.param_groups[0]["weight_decay"]}},
                 "reference": s.reference.describe(), "reference_trace": s.reference_trace,
                 "grid": {"schedule": "uniform", "num_steps": s.cfg.num_steps, "horizon": 1.0},
                 "stages": s.stage_log, "representation": self.rep.kind,

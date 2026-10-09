@@ -65,8 +65,10 @@ class CSBMSolver:
         self.updater = CSBMUpdater(
             forward_model=forward_model,
             backward_model=backward_model,
-            forward_opt=torch.optim.AdamW(forward_model.parameters(), lr=cfg.lr),
-            backward_opt=torch.optim.AdamW(backward_model.parameters(), lr=cfg.lr),
+            forward_opt=torch.optim.AdamW(forward_model.parameters(), lr=cfg.learning_rate("forward"),
+                                          weight_decay=cfg.forward_weight_decay),
+            backward_opt=torch.optim.AdamW(backward_model.parameters(), lr=cfg.learning_rate("backward"),
+                                           weight_decay=cfg.backward_weight_decay),
             ref_process=self.reference,
             loss_fn=CSBMLoss(reference=self.reference, lmbda=cfg.ce_lambda),
             timegrid=self.timegrid,
@@ -77,7 +79,8 @@ class CSBMSolver:
 
     def _new_model(self) -> CSBMTableMLP:
         return CSBMTableMLP(self.cardinalities, emb_dim=self.cfg.emb_dim, hidden_dim=self.cfg.hidden_dim,
-                            time_dim=self.cfg.time_dim).to(self.device)
+                            time_dim=self.cfg.time_dim, n_layers=self.cfg.n_layers,
+                            dropout=self.cfg.dropout).to(self.device)
 
     def _generator(self, seed: int) -> torch.Generator:
         g = torch.Generator(device=str(self.device))
@@ -127,6 +130,17 @@ class CSBMSolver:
         return n_updates, last
 
     def fit(self, x_data, x_prior=None):
+        """Fit with a local dropout RNG; preserve the caller's random stream."""
+        self._fitted = False
+        devices = [self.device] if self.device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            torch.random.default_generator.manual_seed(self.cfg.seed + 104729)
+            if self.device.type == "cuda":
+                with torch.cuda.device(self.device):
+                    torch.cuda.manual_seed(self.cfg.seed + 104729)
+            return self._fit(x_data, x_prior)
+
+    def _fit(self, x_data, x_prior=None):
         """
         x_data  (N, D) integer codes of the training rows (x0).
         x_prior optional (N, D) prior sample (x1); by default N uniform draws.

@@ -2,10 +2,17 @@
 # iterations, so this is NOT the canonical fixed-reference CSBM (use `csbm` for that).
 model: csbm_annealed
 kind: production
-version: 1
+version: 2
 fixed:
   device: cpu
 params:
+  n_layers:
+    type: categorical
+    choices: [2, 3, 4, 5, 6]
+  dropout:
+    type: float
+    low: 0.0
+    high: 0.3
   num_outer_iterations:
     type: categorical
     choices:
@@ -33,10 +40,25 @@ params:
     type: float
     low: 0.1
     high: 0.6
-  lr:
+  forward_lr:
     type: float
     low: 0.0001
     high: 0.003
+    log: true
+  backward_lr:
+    type: float
+    low: 0.0001
+    high: 0.003
+    log: true
+  forward_weight_decay:
+    type: float
+    low: 0.000001
+    high: 0.01
+    log: true
+  backward_weight_decay:
+    type: float
+    low: 0.000001
+    high: 0.01
     log: true
   batch_size:
     type: categorical

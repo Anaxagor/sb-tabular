@@ -130,11 +130,35 @@ VE score-SDE: no self-paced per-sample weights, fine-tuning stage, VP/sub-VP SDE
 ncsnpp-tabular network), `lightsb_m` (the code is LightSB), `tabbyflow` (tested standalone implementation;
 benchmark adapter/checkpoints pending), and `tabsyn`.
 
+CSBM and `csbm_annealed` accept `n_layers`, `dropout`, `forward_lr`, `backward_lr`,
+`forward_weight_decay`, and `backward_weight_decay`. A direction-specific learning rate overrides `lr`;
+when omitted, it inherits `lr`. Defaults remain two hidden layers, zero dropout, and weight decay `0.01`
+in each direction, so existing `sbtab.csbm/2` checkpoints retain their architecture. The production search
+spaces tune depth, dropout, and the two optimizers independently; all settings survive checkpoint reload.
+
 ForestDiffusion was imported from `forest_diffusion` (`50635ca`) and corrected during the
 [generative algorithm audit](docs/GENERATIVE_ALGORITHM_AUDIT.md). It uses joint unconditional generation,
 train-fitted z-scores and full one-hot encoding, with no continuous clipping. Its iterator avoids materializing
 all time levels, but XGBoost's QuantileDMatrix retains quantized training data in memory. The default search
-space uses Forest-Flow; set `diffusion_type: vp` for Forest-VP. XGBoost >= 2.1 is required.
+space uses Forest-Flow. The separate [Forest-VP production profile](configs/search_spaces/forest_vp/forestdiffusion.yaml)
+keeps the same search ranges and fixes `diffusion_type: vp`. XGBoost >= 2.1 is required.
+
+Create a Forest-VP plan through the existing pipeline:
+
+```bash
+python -m sbtab.experiments.pipeline plan \
+    --output-root artifacts/forest-vp-production \
+    --models forestdiffusion \
+    --search-space-dir configs/search_spaces/forest_vp \
+    --device cpu
+```
+
+For a bounded smoke run, add `--smoke`, use `--output-root artifacts/forest-vp-smoke`, and select
+`--search-space-dir configs/search_spaces/smoke/forest_vp`. These directories contain only the
+ForestDiffusion profile, so specify `--models forestdiffusion`. Run the resulting plan with the normal
+`prepare`, `worker`, and `aggregate` stages. Flow and VP share the model ID `forestdiffusion`; use separate
+output roots for them. Plans and resumed studies validate the search-space hash and reject a profile switch.
+Direct `tune` calls can use `--search-space configs/search_spaces/forest_vp/forestdiffusion.yaml`.
 
 The audit also corrected MSBM's categorical reference; checkpoints now use `sbtab.mixedsbm/4`.
 Older MSBM checkpoints must be retrained because their transition law differs.

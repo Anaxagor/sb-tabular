@@ -2,12 +2,16 @@
 # iterations, so this is NOT the canonical fixed-reference CSBM (use `csbm` for that).
 model: csbm_annealed
 kind: smoke
-version: 1
+version: 2
 fixed:
   num_outer_iterations: 2
   epochs: 2
   num_steps: 6
   hidden_dim: 32
+  n_layers: 3
+  dropout: 0.1
+  forward_weight_decay: 0.0001
+  backward_weight_decay: 0.002
   emb_dim: 4
   time_dim: 16
   device: cpu
@@ -19,8 +23,13 @@ params:
     low: 0.5
     high: 4.0
     log: true
-  lr:
+  forward_lr:
     type: float
     low: 0.001
+    high: 0.003
+    log: true
+  backward_lr:
+    type: float
+    low: 0.004
     high: 0.01
     log: true

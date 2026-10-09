@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
+from numbers import Integral, Real
 from typing import Optional
 
 
@@ -15,7 +16,12 @@ class CSBMConfig:
     num_outer_iterations: int = 3
     epochs: int = 15
     batch_size: int = 264
+    # A direction-specific value overrides lr; None keeps the legacy fallback.
     lr: float = 1e-3
+    forward_lr: Optional[float] = field(default=None, kw_only=True)
+    backward_lr: Optional[float] = field(default=None, kw_only=True)
+    forward_weight_decay: float = field(default=1e-2, kw_only=True)
+    backward_weight_decay: float = field(default=1e-2, kw_only=True)
 
     # One uniform unit-horizon grid: state index n lives at t[n] = n / num_steps.
     num_steps: int = 50
@@ -26,6 +32,8 @@ class CSBMConfig:
     emb_dim: int = 16
     hidden_dim: int = 256
     time_dim: int = 64
+    n_layers: int = field(default=2, kw_only=True)
+    dropout: float = field(default=0.0, kw_only=True)
 
     device: str = "cpu"
     seed: int = 42
@@ -35,8 +43,28 @@ class CSBMConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or int(value) != value or value < 1:
                 raise ValueError(f"{name} must be an integer >= 1")
-        if not math.isfinite(self.lr) or self.lr <= 0:
-            raise ValueError("lr must be finite and positive")
+        for name in ("lr", "forward_lr", "backward_lr"):
+            value = getattr(self, name)
+            if name != "lr" and value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        for name in ("forward_weight_decay", "backward_weight_decay"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and nonnegative")
+        if isinstance(self.n_layers, bool) or not isinstance(self.n_layers, Integral) or self.n_layers < 1:
+            raise ValueError("n_layers must be an integer >= 1")
+        if (isinstance(self.dropout, bool) or not isinstance(self.dropout, Real)
+                or not math.isfinite(self.dropout) or not 0 <= self.dropout < 1):
+            raise ValueError("dropout must be finite and in [0, 1)")
+
+    def learning_rate(self, direction: str) -> float:
+        """Effective rate: the direction override takes precedence over ``lr``."""
+        if direction not in ("forward", "backward"):
+            raise ValueError("direction must be forward or backward")
+        override = getattr(self, f"{direction}_lr")
+        return self.lr if override is None else override
 
 
 @dataclass
