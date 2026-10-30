@@ -1,0 +1,45 @@
+# Search space for `tabddpm` (production). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration.
+model: tabddpm
+kind: production
+version: 1
+fixed:
+  device: cpu
+  scheduler: cosine
+  gaussian_loss_type: mse
+params:
+  steps:
+    type: categorical
+    choices:
+    - 5000
+    - 10000
+    - 20000
+    - 30000
+  num_timesteps:
+    type: categorical
+    choices:
+    - 100
+    - 1000
+  batch_size:
+    type: categorical
+    choices:
+    - 256
+    - 1024
+    - 4096
+  lr:
+    type: float
+    low: 1.0e-05
+    high: 0.003
+    log: true
+  n_layers:
+    type: int
+    low: 2
+    high: 8
+  layer_size:
+    type: categorical
+    choices:
+    - 128
+    - 256
+    - 512
+    - 1024

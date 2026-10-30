@@ -1,0 +1,43 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: stroke_prediction
+source:
+  bundle: datasets_mixed.pkl
+  key: Stroke Prediction
+task: classification
+target: stroke
+missing_policy: impute
+dropped_columns: []
+columns:
+- name: gender
+  role: feature
+  type: categorical
+- name: age
+  role: feature
+  type: continuous
+- name: hypertension
+  role: feature
+  type: categorical
+- name: heart_disease
+  role: feature
+  type: categorical
+- name: ever_married
+  role: feature
+  type: categorical
+- name: work_type
+  role: feature
+  type: categorical
+- name: Residence_type
+  role: feature
+  type: categorical
+- name: avg_glucose_level
+  role: feature
+  type: continuous
+- name: bmi
+  role: feature
+  type: continuous
+- name: smoking_status
+  role: feature
+  type: categorical
+- name: stroke
+  role: target
+  type: categorical

@@ -26,3 +26,29 @@ tabddpm_uci_optuna_results/uci_1_abalone_best.json
 tabddpm_uci_optuna_results/
 adult_mixedsbm_processed.csv
 *.csv
+
+# local experiment artifacts (splits, studies, checkpoints, synthetic tables, metrics)
+artifacts/
+*.sqlite3
+.pytest_cache/
+slurm_logs/
+*.sbatch
+slurm-*.out
+slurm-*.err
+/scripts/slurm/
+# Tests for local deployment helpers stay with the private cluster setup.
+/tests/experiments/test_ctgan_legacy.py
+/tests/experiments/test_relaunch.py
+/tests/experiments/test_resume_submission.py
+/tests/experiments/test_saved_metrics.py
+/tests/experiments/test_slurm_resources.py
+.venv-cluster/
+.cache/
+
+# Local credentials and machine-specific settings.
+.env
+.env.*
+!.env.example
+!.env.template
+/.aws/
+/.ssh/

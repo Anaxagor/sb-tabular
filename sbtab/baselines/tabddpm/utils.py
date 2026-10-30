@@ -154,25 +154,24 @@ def log_sub_exp(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 @torch.jit.script
 def sliced_logsumexp(x, slices):
-    lse = torch.logcumsumexp(
-        torch.nn.functional.pad(x, [1, 0, 0, 0], value=-float('inf')),
-        dim=-1)
-
-    slice_starts = slices[:-1]
-    slice_ends = slices[1:]
-
-    slice_lse = log_sub_exp(lse[:, slice_ends], lse[:, slice_starts])
-    slice_lse_repeated = torch.repeat_interleave(
-        slice_lse,
-        slice_ends - slice_starts, 
-        dim=-1
-    )
-    return slice_lse_repeated
+    # Each categorical variable is a separate distribution. Subtracting two
+    # cumulative log-sums loses an entire later block when its scale is small
+    # compared with an earlier one (log(exp(a) - exp(a)) == -inf).
+    blocks = []
+    for i in range(len(slices) - 1):
+        block = x[:, int(slices[i]):int(slices[i + 1])]
+        blocks.append(torch.logsumexp(block, dim=-1, keepdim=True).expand_as(block))
+    return torch.cat(blocks, dim=-1)
 
 def log_onehot_to_index(log_x):
     return log_x.argmax(1)
 
-class FoundNANsError(BaseException):
-    """Found NANs during sampling"""
+class FoundNANsError(RuntimeError):
+    """Found NANs during sampling.
+
+    Subclasses ``RuntimeError`` (upstream used ``BaseException``, which escapes every
+    ``except Exception`` handler and would abort e.g. a whole Optuna study instead of
+    failing a single trial).
+    """
     def __init__(self, message='Found NANs during sampling.'):
         super(FoundNANsError, self).__init__(message)

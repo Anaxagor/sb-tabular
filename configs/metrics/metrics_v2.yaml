@@ -1,0 +1,18 @@
+# Canonical metric definition v2. Common to every generator and fold.
+# TSTR uses fixed CatBoost CPU defaults (1000 trees, depth 6, l2=3, lr=.03),
+# with task-appropriate loss/bootstrap; parameters are never probe-fitted or tuned.
+# Delta% = 100*abs(real-synthetic)/abs(real); a zero real reference is undefined.
+# v1 remains historical: its signed gaps and fitted automatic defaults differ.
+metric_version: sbtab.metrics/2
+kl_total_bins: 50              # 48 equal-width interior + underflow + overflow; TRAIN edges
+kl_smoothing_mass: 1.0e-6
+kl_direction: real_to_synthetic
+conditional_max_levels: 50
+conditional_min_rows: 10
+regression_target_strata: 5
+mmd_bandwidth_max_rows: 1024
+mmd_max_rows: 2048
+mmd_seeds: [0, 1, 2]
+mmd_block_size: 1024
+utility_seed: 0
+utility_thread_count: 4

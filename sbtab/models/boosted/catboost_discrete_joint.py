@@ -29,7 +29,12 @@ class CatBoostDiscreteJointConfig:
 
     allow_writing_files: bool = False
 
-    
+    # residual=True fits y - x and predicts x + model(.). Use it for MEAN-MATCHING
+    # targets (IPF-DSB next-state means): those maps are identity plus an O(gamma)
+    # correction, and trees cannot represent an identity map, so regressing y
+    # directly leaves an error far above the correction. Keep it False for drift /
+    # velocity targets (IMF-DSBM). The IPF solvers enforce True themselves.
+    residual: bool = False
 
 
 class CatBoostDiscreteJoint:
@@ -97,9 +102,18 @@ class CatBoostDiscreteJoint:
         self._check_deps()
         from catboost import CatBoostRegressor
 
+        if x0 is not None:
+            raise ValueError("CatBoostDiscreteJoint has no parent context; x0 is not supported")
         t = float(self.t_grid[k])
-        del x0
         X_feat = self._build_features(x, t=t)
+        x_arr = np.asarray(x, dtype=np.float32).reshape(len(X_feat), -1)
+        y = np.asarray(y, dtype=np.float32).reshape(len(X_feat), -1)
+        if self.cfg.residual:
+            y = y - x_arr
+        # MultiRMSE needs a 2-D target with at least two columns.
+        loss_function = "MultiRMSE" if self.dim > 1 else "RMSE"
+        if self.dim == 1:
+            y = y.reshape(-1)
 
         boosting_type = "Plain" if self.cfg.task_type == "GPU" else "Ordered"
 
@@ -108,7 +122,7 @@ class CatBoostDiscreteJoint:
             depth=self.cfg.depth,
             learning_rate=self.cfg.learning_rate,
             l2_leaf_reg=self.cfg.l2_leaf_reg,
-            loss_function="MultiRMSE",
+            loss_function=loss_function,
             task_type=self.cfg.task_type,
             boosting_type=boosting_type,
             thread_count=self.cfg.thread_count,
@@ -120,7 +134,9 @@ class CatBoostDiscreteJoint:
         model.fit(X_feat, y)
 
         self.models[k] = model
-        
+
+    def is_fitted(self, k: int) -> bool:
+        return self.models[k] is not None
 
     # -------------------------------------------------------
 
@@ -135,7 +151,9 @@ class CatBoostDiscreteJoint:
             raise RuntimeError(f"Model for time step {k} is not trained.")
         X_feat = self._build_features(x, t=float(self.t_grid[k]))
         pred = model.predict(X_feat)
-        pred = np.asarray(pred, dtype=np.float32)
+        pred = np.asarray(pred, dtype=np.float32).reshape(len(X_feat), -1)
+        if self.cfg.residual:
+            pred = pred + np.asarray(x, dtype=np.float32).reshape(len(X_feat), -1)
         return pred
 
 

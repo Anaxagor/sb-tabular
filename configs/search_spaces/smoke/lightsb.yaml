@@ -1,0 +1,22 @@
+# Search space for `lightsb` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: lightsb
+kind: smoke
+version: 1
+fixed:
+  n_potentials: 8
+  max_iter: 50
+  device: cpu
+params:
+  epsilon:
+    type: float
+    low: 0.05
+    high: 1.0
+    log: true
+  lr:
+    type: float
+    low: 0.001
+    high: 0.01
+    log: true

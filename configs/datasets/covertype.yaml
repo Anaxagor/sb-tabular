@@ -1,0 +1,40 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: covertype
+source:
+  bundle: datasets_continuous_only.pkl
+  key: covertype
+task: regression
+target: Horizontal_Distance_To_Hydrology
+missing_policy: reject
+dropped_columns: []
+columns:
+- name: Elevation
+  role: feature
+  type: continuous
+- name: Aspect
+  role: feature
+  type: continuous
+- name: Slope
+  role: feature
+  type: continuous
+- name: Horizontal_Distance_To_Hydrology
+  role: target
+  type: continuous
+- name: Vertical_Distance_To_Hydrology
+  role: feature
+  type: continuous
+- name: Horizontal_Distance_To_Roadways
+  role: feature
+  type: continuous
+- name: Hillshade_9am
+  role: feature
+  type: continuous
+- name: Hillshade_Noon
+  role: feature
+  type: continuous
+- name: Hillshade_3pm
+  role: feature
+  type: continuous
+- name: Horizontal_Distance_To_Fire_Points
+  role: feature
+  type: continuous

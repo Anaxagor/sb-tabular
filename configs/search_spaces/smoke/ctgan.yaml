@@ -1,0 +1,19 @@
+# Search space for `ctgan` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration.
+model: ctgan
+kind: smoke
+version: 1
+fixed:
+  epochs: 2
+  batch_size: 64
+  pac: 4
+  embedding_dim: 16
+  generator_width: 32
+  discriminator_width: 32
+params:
+  generator_lr:
+    type: float
+    low: 0.0001
+    high: 0.0005
+    log: true

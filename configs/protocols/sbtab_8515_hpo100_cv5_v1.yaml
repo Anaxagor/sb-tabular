@@ -1,0 +1,39 @@
+# Canonical production protocol. Every constant below is part of the protocol
+# hash: changing a ratio, seed, trial count, fold definition or metric config
+# requires a NEW protocol id. None of these values can be overridden on the CLI.
+protocol_id: sbtab_8515_hpo100_cv5_v1
+kind: production
+
+split:
+  test_size: 0.15            # V = 15 % tuning-validation, T = 85 % tuning-training pool
+  random_state: 5
+  stratify: true             # classification: task label; regression: target quantile strata
+  regression_strata_bins: 10 # start value; repeated edges dropped, reduced until feasible
+  pool_order: sorted_row_id  # order of T that KFold positions refer to
+
+tuning:
+  n_trials: 100              # ALLOCATED trial records, failed attempts included
+  direction: minimize
+  sampler: tpe
+  sampler_seed: 5
+  n_jobs: 1
+  pruner: none
+  checkpoint_retention: all
+
+cv:
+  population: T              # no row of V may enter a CV train or test fold
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  n_generated: len_train_fold
+
+seeds:
+  base: 5
+
+metrics_config: configs/metrics/metrics_v1.yaml
+
+statistical_note: >-
+  Fixed-hyperparameter cross-validation after dataset-level tuning; NOT nested CV.
+  V is used for selection only. Every tuning candidate was trained on all of T, so
+  the CV test rows E_k took part in training the candidates that selected the
+  hyperparameters; CV on T is not an independent outer evaluation of the tuning procedure.
