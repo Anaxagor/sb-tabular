@@ -1,0 +1,36 @@
+# SEPARATE smoke protocol for bounded correctness runs (--smoke). It has its own id
+# and hash and writes to its own artifact namespace. A smoke run is never evidence
+# that the 100-trial benchmark was completed.
+protocol_id: sbtab_smoke_v1
+kind: smoke
+
+split:
+  test_size: 0.15
+  random_state: 5
+  stratify: true
+  regression_strata_bins: 10
+  pool_order: sorted_row_id
+
+tuning:
+  n_trials: 3
+  direction: minimize
+  sampler: tpe
+  sampler_seed: 5
+  n_jobs: 1
+  pruner: none
+  checkpoint_retention: all
+
+cv:
+  population: T
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  n_generated: len_train_fold
+
+seeds:
+  base: 5
+
+metrics_config: configs/metrics/metrics_v1.yaml
+
+statistical_note: >-
+  Smoke protocol: same split/CV definition as production, reduced trial budget.

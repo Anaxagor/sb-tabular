@@ -1,0 +1,19 @@
+# Bounded CPU exercise of the same OT model, fitting and checkpoint path.
+model: tabbyflow
+kind: smoke
+version: 1
+fixed:
+  max_train_steps: 200
+  batch_size: 32
+  n_frequencies: 16
+  ode_steps: 5
+  sample_batch_size: 64
+  cond_vel: ot
+  ode_solver: euler
+  device: cpu
+params:
+  lr:
+    type: float
+    low: 0.001
+    high: 0.002
+    log: true

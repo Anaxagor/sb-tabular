@@ -1,0 +1,17 @@
+# Metric configuration sbtab.metrics/1. These are explicit engineering choices made
+# for reproducibility, not universal standards. They are identical for every
+# generator; changing any of them requires a new metric version, which writes to a
+# new evaluation/<metric-version>/ namespace instead of overwriting results.
+metric_version: sbtab.metrics/1
+kl_total_bins: 50              # 48 equal-width interior + underflow + overflow; edges from TRAIN rows
+kl_smoothing_mass: 1.0e-6      # (p + mass/B) / (1 + mass), both distributions
+kl_direction: real_to_synthetic
+conditional_max_levels: 50
+conditional_min_rows: 10
+regression_target_strata: 5
+mmd_bandwidth_max_rows: 1024
+mmd_max_rows: 2048
+mmd_seeds: [0, 1, 2]
+mmd_block_size: 1024
+utility_seed: 0
+utility_thread_count: 4

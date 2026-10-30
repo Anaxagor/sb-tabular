@@ -1,0 +1,54 @@
+# SEPARATE smoke protocol for bounded correctness runs (--smoke). It has its own id
+# and hash and writes to its own artifact namespace. A smoke run is never evidence
+# that the 100-trial benchmark was completed.
+protocol_id: sbtab_smoke_v2
+supersedes: sbtab_smoke_v1       # v1 is frozen: no eligibility rule, never removes a row
+kind: smoke
+
+# Dataset eligibility — defines D, the complete eligible dataset, BEFORE any split and identically for every
+# model. A row is removed when its value in a finite-support column occurs in fewer than `min_value_count` rows
+# of the source table (iterated to a fixed point). v1 had no such rule and never removed a row.
+#   columns: finite_support = categorical + discrete columns incl. the classification target, i.e. exactly the
+#            columns the category-support check covers ("categorical" would leave datasets blocked by discrete
+#            columns such as bedrooms / Informational). A missing categorical value counts as the level __missing__.
+#   NOTE 1  rare TARGET classes are removed too (e.g. lymphography loses the 2-row class `normal`); this is
+#           reported per dataset as `task_changed` in eligibility_report.json.
+#   NOTE 2  a count threshold REDUCES but does not GUARANTEE support coverage under the fixed split: measured on
+#           the 28 configured datasets, 18 pass without the rule, 25 with min_value_count = 3, 28 with 5
+#           (and fewer again from 15 upwards, where whole columns become "rare"). The support validation
+#           therefore stays in force; a dataset that still fails is stopped with blocked_support as before.
+eligibility:
+  min_value_count: 3
+  columns: finite_support
+  iterate_to_fixed_point: true
+
+split:
+  test_size: 0.15
+  random_state: 5
+  stratify: true
+  regression_strata_bins: 10
+  pool_order: sorted_row_id
+
+tuning:
+  n_trials: 3
+  direction: minimize
+  sampler: tpe
+  sampler_seed: 5
+  n_jobs: 1
+  pruner: none
+  checkpoint_retention: all
+
+cv:
+  population: T
+  n_splits: 5
+  shuffle: true
+  random_state: 42
+  n_generated: len_train_fold
+
+seeds:
+  base: 5
+
+metrics_config: configs/metrics/metrics_v1.yaml
+
+statistical_note: >-
+  Smoke protocol: same split/CV definition as production, reduced trial budget.

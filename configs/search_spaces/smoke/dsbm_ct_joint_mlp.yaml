@@ -1,0 +1,26 @@
+# Search space for `dsbm_ct_joint_mlp` (smoke). Every key must be consumed by the model adapter (strict):
+# an unknown key is rejected before the study starts. The training budget is a declared part of the
+# trial configuration. `noise` is deliberately absent: dropping the dynamics noise of a
+# stochastic-drift model is not a marginal-preserving sampler.
+model: dsbm_ct_joint_mlp
+kind: smoke
+version: 1
+fixed:
+  n_stages: 3
+  num_steps: 8
+  inner_iters: 20
+  hidden_dim: 16
+  n_layers: 2
+  time_emb_dim: 8
+  device: cpu
+params:
+  sigma:
+    type: float
+    low: 0.1
+    high: 1.0
+    log: true
+  lr:
+    type: float
+    low: 0.001
+    high: 0.01
+    log: true

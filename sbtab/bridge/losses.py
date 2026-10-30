@@ -19,12 +19,18 @@ class RegressionLoss:
     In DSB/IPF caches typically you regress:
       - target = (x_prev - x_next)  OR  (x_prev) depending on parametrization
     We keep it generic: predict -> target.
+
+    Normalisation: the per-row loss is the MEAN over coordinates (not the squared
+    norm), then reduced over the batch. It is therefore a per-feature average,
+    the same unit as the per-column categorical loss below.
     """
     kind: str = "mse"  # "mse" | "huber"
     huber_delta: float = 1.0
     reduction: str = "mean"  # "mean" | "sum"
 
     def __call__(self, pred: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if pred.ndim != 2 or pred.shape[1] == 0:
+            raise ValueError("RegressionLoss needs at least one coordinate; branch on absent blocks before calling")
         if self.kind == "mse":
             loss = F.mse_loss(pred, target, reduction="none")
         elif self.kind == "huber":
@@ -43,84 +49,109 @@ class RegressionLoss:
             return loss.sum()
         raise ValueError(f"Unknown reduction: {self.reduction}")
 
+
 class CSBMLoss:
+    """
+    Categorical bridge-matching loss: KL(bridge step || model-induced step) plus
+    ``lmbda`` times the endpoint cross-entropy.
+
+    Normalisation: each (row, column) pair yields one scalar; the loss is their
+    mean over the batch AND over columns, exactly once. It is a per-column
+    average, so duplicating an identical column leaves the value unchanged.
+
+    Padded categories are masked to -inf before the softmax and carry zero mass.
+    """
+
     def __init__(self, reference: CategoricalReference, lmbda: float = 0.001):
         self.lmbda = lmbda
         self.reference = reference
 
-    def forward_loss(self, pred_logits_x1, x_1_true, x_t, n, K):
-        model_transition = self.reference.model_induced_next_step(pred_logits_x1, x_t, n, K)
+    @staticmethod
+    def _kl(target: torch.Tensor, model: torch.Tensor) -> torch.Tensor:
+        """sum_s target log(target / model) per (row, column), with 0 log 0 = 0."""
+        pos = target > 0
+        one = torch.ones_like(target)
+        t_safe = torch.where(pos, target, one)
+        m_safe = torch.where(pos, model, one)
+        return torch.where(pos, target * (torch.log(t_safe) - torch.log(m_safe)), torch.zeros_like(target)).sum(dim=-1)
 
-        target_transition = self.reference.bridge_next_given_prev(x_t, x_1_true, n, K)
+    def _ce(self, logits: torch.Tensor, true_idx: torch.Tensor) -> torch.Tensor:
+        logp = torch.log_softmax(self.reference.masked_logits(logits).double(), dim=-1)
+        return -logp.gather(-1, true_idx.long().unsqueeze(-1)).squeeze(-1)
 
-        kl_input = torch.log(model_transition.view(-1, self.reference.S_max) + 1e-12)
-        kl_target = target_transition.view(-1, self.reference.S_max)
+    def per_column(self, model_transition, target_transition, logits, true_idx) -> torch.Tensor:
+        """(B, D) matrix of per-row, per-column losses."""
+        return self._kl(target_transition, model_transition) + self.lmbda * self._ce(logits, true_idx)
 
-        kl_term = F.kl_div(kl_input, kl_target, reduction="batchmean")
-
-        ce_input = pred_logits_x1.view(-1, self.reference.S_max)
-        ce_target = x_1_true.view(-1)
-        simple_term = F.cross_entropy(ce_input, ce_target)
-
-        return kl_term + self.lmbda * simple_term
+    def forward_loss(self, pred_logits_x1, x_1_true, x_t, n, K=None):
+        model_transition = self.reference.model_induced_next_step(pred_logits_x1, x_t, n)
+        target_transition = self.reference.bridge_next_given_prev(x_t, x_1_true, n)
+        return self.per_column(model_transition, target_transition, pred_logits_x1, x_1_true).mean()
 
     def backward_loss(self, pred_logits_x0, x_0_true, x_t, n):
         model_transition = self.reference.model_induced_prev_step(pred_logits_x0, x_t, n)
         target_transition = self.reference.bridge_prev_given_next(x_0_true, x_t, n)
+        return self.per_column(model_transition, target_transition, pred_logits_x0, x_0_true).mean()
 
-        kl_input = torch.log(model_transition.view(-1, self.reference.S_max) + 1e-12)
-        kl_target = target_transition.view(-1, self.reference.S_max)
-
-        kl_term = F.kl_div(kl_input, kl_target, reduction="batchmean")
-
-        ce_input = pred_logits_x0.view(-1, self.reference.S_max)
-        ce_target = x_0_true.view(-1)
-        simple_term = F.cross_entropy(ce_input, ce_target)
-
-        return kl_term + self.lmbda * simple_term
 
 class MixedSBMLoss(nn.Module):
+    """
+    lambda_num * L_num + lambda_cat * L_cat.
+
+    L_num is the mean squared error per numerical coordinate and L_cat the mean
+    categorical loss per column, so both terms are per-feature averages and the
+    two weights are directly comparable. L_cat is normalised once, inside
+    CSBMLoss; there is no further division by the column count.
+
+    An absent block (no numerical or no categorical columns) is skipped before
+    its loss is computed. It contributes nothing, rather than NaN times zero.
+    """
+
     def __init__(
             self,
-            reference: CategoricalReference,
+            reference: Optional[CategoricalReference],
             lambda_num: float = 0.5,
             lambda_cat: float = 0.5,
             ce_lambda: float = 0.001
     ):
         super().__init__()
         self.num_loss_fn = RegressionLoss(kind="mse", reduction="mean")
-        self.cat_loss_fn = CSBMLoss(reference=reference, lmbda=ce_lambda)
+        self.cat_loss_fn = CSBMLoss(reference=reference, lmbda=ce_lambda) if reference is not None else None
 
         self.lambda_num = lambda_num
         self.lambda_cat = lambda_cat
 
     def forward(
             self,
-            pred_num: torch.Tensor,
-            target_num: torch.Tensor,
-            pred_logits_cat: torch.Tensor,
-            true_cat: torch.Tensor,
-            x_t_cat: torch.Tensor,
+            pred_num: Optional[torch.Tensor],
+            target_num: Optional[torch.Tensor],
+            pred_logits_cat: Optional[torch.Tensor],
+            true_cat: Optional[torch.Tensor],
+            x_t_cat: Optional[torch.Tensor],
             n: torch.Tensor,
             K: int = None,
             direction: str = "forward"
     ) -> torch.Tensor:
-
-        l_num = self.num_loss_fn(pred_num, target_num)
-
-        if direction == "forward":
-            l_cat = self.cat_loss_fn.forward_loss(pred_logits_cat, true_cat, x_t_cat, n, K)
-        elif direction == "backward":
-            l_cat = self.cat_loss_fn.backward_loss(pred_logits_cat, true_cat, x_t_cat, n)
-        else:
+        if direction not in ("forward", "backward"):
             raise ValueError("direction must be 'forward' or 'backward'")
 
-        # It's supposed that pred_logits_cat has shape of (Batch size, Number of categories, Max possible category)
-        # If the shape is different we get back to just C = 1 for stability reasons
-        C = pred_logits_cat.shape[1] if pred_logits_cat.ndim == 3 else 1
+        has_num = pred_num is not None and pred_num.ndim == 2 and pred_num.shape[1] > 0
+        has_cat = (
+            self.cat_loss_fn is not None
+            and pred_logits_cat is not None
+            and pred_logits_cat.ndim == 3
+            and pred_logits_cat.shape[1] > 0
+        )
+        if not has_num and not has_cat:
+            raise ValueError("MixedSBMLoss needs at least one numerical or categorical column")
 
-        l_cat_normalized = (1.0 / C) * l_cat
-
-        total_loss = self.lambda_num * l_num + self.lambda_cat * l_cat_normalized
-
-        return total_loss
+        total = None
+        if has_num:
+            total = self.lambda_num * self.num_loss_fn(pred_num, target_num).double()
+        if has_cat:
+            if direction == "forward":
+                l_cat = self.cat_loss_fn.forward_loss(pred_logits_cat, true_cat, x_t_cat, n)
+            else:
+                l_cat = self.cat_loss_fn.backward_loss(pred_logits_cat, true_cat, x_t_cat, n)
+            total = self.lambda_cat * l_cat if total is None else total + self.lambda_cat * l_cat
+        return total

@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from sbtab.bridge.losses import RegressionLoss
+from sbtab.numerics import check_gradients, require_finite
 
 
 @dataclass
@@ -41,7 +42,7 @@ class NeuralTrainer:
 
         model.train()
         for _epoch in range(self.cfg.max_epochs):
-            for batch in loader:
+            for step, batch in enumerate(loader):
                 x, t, target = batch  # shapes: (B,D), (B,1), (B,D)
                 x = x.to(device)
                 t = t.to(device)
@@ -49,9 +50,10 @@ class NeuralTrainer:
 
                 pred = predict_fn(model, x, t)
                 loss = self.loss_fn(pred, target)
+                context = dict(model=type(model).__name__, stage="training", epoch=_epoch, step=step)
+                require_finite(loss, "loss", **context)
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
-                if self.cfg.grad_clip is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(self.cfg.grad_clip))
+                check_gradients(model.parameters(), max_norm=self.cfg.grad_clip, **context)
                 opt.step()

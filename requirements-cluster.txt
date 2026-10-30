@@ -1,0 +1,19 @@
+# Python 3.11, GPU benchmark. Install CUDA PyTorch first via scripts/setup_cluster_env.sh.
+# Direct dependencies are pinned; freeze the resolved environment before planning.
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.15.3
+scikit-learn==1.5.2
+torch==2.6.0
+tqdm==4.66.6
+PyYAML==6.0.2
+pyarrow==19.0.1
+catboost==1.2.7
+xgboost==2.1.4
+pgmpy==1.0.0
+networkx==3.2.1
+optuna==4.2.1
+pytest==8.3.5
+sdv==1.17.4
+ctgan==0.10.2
+geotorch==0.3.0

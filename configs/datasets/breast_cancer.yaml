@@ -1,0 +1,69 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: breast_cancer
+source:
+  bundle: datasets_categorical.pkl
+  key: Breast cancer
+task: classification
+target: Class
+missing_policy: impute
+dropped_columns: []
+columns:
+- name: age
+  role: feature
+  type: categorical
+  ordered_values:
+  - 20-29
+  - 30-39
+  - 40-49
+  - 50-59
+  - 60-69
+  - 70-79
+- name: menopause
+  role: feature
+  type: categorical
+- name: tumor-size
+  role: feature
+  type: categorical
+  ordered_values:
+  - 0-4
+  - 9-May
+  - 14-Oct
+  - 15-19
+  - 20-24
+  - 25-29
+  - 30-34
+  - 35-39
+  - 40-44
+  - 45-49
+  - 50-54
+- name: inv-nodes
+  role: feature
+  type: categorical
+  ordered_values:
+  - 0-2
+  - 5-Mar
+  - 8-Jun
+  - 11-Sep
+  - 14-Dec
+  - 15-17
+  - 24-26
+- name: node-caps
+  role: feature
+  type: categorical
+- name: deg-malig
+  role: feature
+  type: discrete
+- name: breast
+  role: feature
+  type: categorical
+- name: breast-quad
+  role: feature
+  type: categorical
+- name: irradiat
+  role: feature
+  type: categorical
+- name: Class
+  role: target
+  type: categorical
+notes: >-
+  tumor-size and inv-nodes contain Excel date-mangled range labels from the UCI source: '9-May' = 5-9, '14-Oct' = 10-14, '5-Mar' = 3-5, '8-Jun' = 6-8, '11-Sep' = 9-11, '14-Dec' = 12-14. The declared ordinal order was checked against these meanings (the mangled label's leading number is the range's upper bound, so it sorts correctly). Labels are kept verbatim.

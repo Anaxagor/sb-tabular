@@ -1,0 +1,59 @@
+# Explicit benchmark metadata. Edit by hand; a change creates a new schema hash.
+name: adult
+source:
+  bundle: datasets_mixed.pkl
+  key: Adult
+task: classification
+target: income
+missing_policy: impute
+dropped_columns: []
+columns:
+- name: age
+  role: feature
+  type: continuous
+- name: workclass
+  role: feature
+  type: categorical
+- name: fnlwgt
+  role: feature
+  type: continuous
+- name: education
+  role: feature
+  type: categorical
+- name: education-num
+  role: feature
+  type: discrete
+- name: marital-status
+  role: feature
+  type: categorical
+- name: occupation
+  role: feature
+  type: categorical
+- name: relationship
+  role: feature
+  type: categorical
+- name: race
+  role: feature
+  type: categorical
+- name: sex
+  role: feature
+  type: categorical
+- name: capital-gain
+  role: feature
+  type: continuous
+- name: capital-loss
+  role: feature
+  type: continuous
+- name: hours-per-week
+  role: feature
+  type: continuous
+- name: native-country
+  role: feature
+  type: categorical
+- name: income
+  role: target
+  type: categorical
+value_maps:
+  income:
+    <=50K.: <=50K
+    '>50K.': '>50K'

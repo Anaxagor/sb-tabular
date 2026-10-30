@@ -1,0 +1,92 @@
+# feature/tuning MSBM ranges on the canonical experiment protocol.
+# alpha is per-step; this is not the former semigroup/two-network model.
+# Historical conditional pruning and noise=False search remain in the archived script.
+# Canonical experiments keep dynamics noise enabled, as required by their protocol.
+model: mixedsbm
+kind: production
+version: 2
+fixed:
+  epochs_per_direction: null
+  min_steps_per_direction: 0
+  device: cpu
+params:
+  cat_emb_dim:
+    type: int
+    low: 8
+    high: 32
+  hidden_dim:
+    type: categorical
+    choices:
+    - 128
+    - 256
+    - 512
+  time_dim:
+    type: int
+    low: 32
+    high: 128
+    step: 32
+  n_layers:
+    type: int
+    low: 2
+    high: 6
+  dropout:
+    type: float
+    low: 0.0
+    high: 0.3
+  num_steps:
+    type: int
+    low: 200
+    high: 2000
+    log: true
+  sigma:
+    type: float
+    low: 0.03
+    high: 0.3
+    log: true
+  lambda_num:
+    type: float
+    low: 0.1
+    high: 1.0
+  lambda_cat:
+    type: float
+    low: 0.1
+    high: 1.0
+  alpha:
+    type: float
+    low: 0.01
+    high: 1.0
+  ce_lambda:
+    type: float
+    low: 0.01
+    high: 1.0
+  lr:
+    type: float
+    low: 0.0005
+    high: 0.002
+    log: true
+  weight_decay:
+    type: float
+    low: 1.0e-06
+    high: 0.001
+    log: true
+  batch_size:
+    type: categorical
+    choices:
+    - 128
+    - 256
+    - 512
+  steps_per_direction:
+    type: int
+    low: 500
+    high: 4000
+    log: true
+  n_stages:
+    type: categorical
+    choices:
+    - 3
+    - 5
+    - 7
+  grad_clip:
+    type: float
+    low: 0.0
+    high: 1.0

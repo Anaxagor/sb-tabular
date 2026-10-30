@@ -1,0 +1,27 @@
+# Bounded smoke budget for the feature/tuning MSBM implementation.
+model: mixedsbm
+kind: smoke
+version: 2
+fixed:
+  n_stages: 3
+  epochs_per_direction: null
+  num_steps: 8
+  hidden_dim: 32
+  n_layers: 2
+  time_dim: 16
+  cat_emb_dim: 4
+  dropout: 0.0
+  device: cpu
+  steps_per_direction: 4
+  min_steps_per_direction: 0
+params:
+  sigma:
+    type: float
+    low: 0.1
+    high: 1.0
+    log: true
+  lr:
+    type: float
+    low: 0.001
+    high: 0.01
+    log: true
