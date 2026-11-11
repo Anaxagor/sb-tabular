@@ -3,15 +3,16 @@ from typing import Literal, Tuple, Optional
 import torch
 from tqdm import tqdm
 
-from .losses import MixedSBMLoss
-from .reference import CategoricalReference
+from sbtab.bridge.losses import MixedSBMLoss
+from sbtab.bridge.reference import CategoricalReference
 from sbtab.numerics import check_gradients, require_finite
+
 
 class MixedSBMUpdater:
     def __init__(
         self,
         model: "MixedSbmMlp",
-        ref_cat: CategoricalReference,
+        ref_cat: Optional[CategoricalReference],
         cfg: "MixedSBMConfig",
         has_cont: bool,
         has_cat: bool
@@ -73,7 +74,12 @@ class MixedSBMUpdater:
             n = torch.randint(0, self.cfg.num_steps, (B,), device=device, generator=generator)
         else:
             n = torch.randint(1, self.cfg.num_steps + 1, (B,), device=device, generator=generator)
-        t = n.float().view(-1, 1) / self.cfg.num_steps
+
+        grid = self.loss_fn.cat_loss_fn.reference.timegrid.grid().to(
+            device) if self.has_cat and self.loss_fn.cat_loss_fn is not None else torch.linspace(0, 1,
+                                                                                                 self.cfg.num_steps + 1,
+                                                                                                 device=device)
+        t = grid[n].view(-1, 1)
 
         if self.has_cont:
             noise_num = torch.randn(z0_num.shape, dtype=z0_num.dtype, device=device, generator=generator)
@@ -87,8 +93,8 @@ class MixedSBMUpdater:
         else:
             x_t_num, target_num = z0_num, z1_num
 
-        if self.has_cat:
-            x_t_cat = self.ref_cat.sample_x_t(z0_cat, z1_cat, n, self.cfg.num_steps, generator=generator)
+        if self.has_cat and self.ref_cat is not None:
+            x_t_cat = self.ref_cat.sample_x_t(z0_cat, z1_cat, n, generator=generator)
             target_cat = z1_cat if direction == 'f' else z0_cat
         else:
             x_t_cat, target_cat = z0_cat, z1_cat
@@ -128,19 +134,21 @@ class MixedSBMUpdater:
         pred_num, pred_logits_cat = self.model(x_t_num, x_t_cat, t)
         if self.has_cont:
             require_finite(pred_num, "drift", **context)
-        if self.has_cat:
+        if self.has_cat and self.ref_cat is not None:
             valid_logits = pred_logits_cat.masked_select(self.ref_cat.valid_mask.expand_as(pred_logits_cat))
             require_finite(valid_logits, "categorical_logits", **context)
 
         loss = self.loss_fn(
             pred_num=pred_num,
-            true_num=target_num,
+            target_num=target_num,
             pred_logits_cat=pred_logits_cat,
-            true_cat=target_cat,
+            target_cat=target_cat,
             x_t_cat=x_t_cat,
             n=n,
             K=self.cfg.num_steps,
             direction=direction,
+        ) if hasattr(self.loss_fn, 'forward') else self.loss_fn(
+            pred_num, target_num, pred_logits_cat, target_cat, x_t_cat, n, K=self.cfg.num_steps, direction=direction
         )
         require_finite(loss, "loss", **context)
         loss.backward()
@@ -219,6 +227,7 @@ class MixedSBMUpdater:
         log_every = max(1, total_steps // 25)
         loss_acc = torch.zeros((), device=device)
         steps_since_log = 0
+        avg = 0.0
 
         with tqdm(total=total_steps, desc=f"Training {direction}-direction", unit="step") as pbar:
             for step in range(total_steps):
