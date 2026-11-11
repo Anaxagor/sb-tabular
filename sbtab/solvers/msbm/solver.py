@@ -3,9 +3,9 @@ from dataclasses import asdict
 from typing import List, Optional, Dict, Any, Tuple, Literal
 import torch
 from tqdm import tqdm
-from .pathsampler import MixedPathSampler
+from sbtab.bridge.pathsampler import MixedPathSampler
 from sbtab.bridge.reference import GaussianReference
-from .reference import CategoricalReference
+from sbtab.bridge.reference import CategoricalReference
 from sbtab.bridge.sde import EulerMaruyama
 from sbtab.bridge.timegrid import TimeGrid
 from sbtab.models.neural.MixedMLP import MixedSbmMlp
@@ -54,6 +54,8 @@ class MixedSBMSolver:
         if not self.has_cont and not self.has_cat:
             raise ValueError("There is no data to process.")
 
+        self.timegrid = TimeGrid.uniform(cfg.num_steps)
+
         self.ref_gauss = GaussianReference(
             dim=continuous_dim,
             mean=cfg.num_ref_mean,
@@ -62,17 +64,20 @@ class MixedSBMSolver:
             dtype=cfg.num_dtype
         ) if self.has_cont else None
 
+        mixing_rate = CategoricalReference.rate_from_step_alpha(cfg.alpha, max(cardinalities), cfg.num_steps) if (
+                    self.has_cat and max(cardinalities) >= 2) else 1.0
+
         self.ref_cat = CategoricalReference(
             cardinalities=cardinalities,
             is_ordered=is_ordered,
-            total_number_of_q_powers=cfg.num_steps,
-            alpha=cfg.alpha,
+            timegrid=self.timegrid,
+            mixing_rate=getattr(cfg, "mixing_rate", mixing_rate),
+            ordered_bandwidth=getattr(cfg, "ordered_bandwidth", 0.2),
             device=self.device,
             dtype=cfg.cat_dtype
         ) if self.has_cat else None
 
         self.integrator = EulerMaruyama(noise=cfg.noise, sigma=cfg.sigma) if self.has_cont else None
-        self.timegrid = TimeGrid.uniform(cfg.num_steps)
 
         self.sampler = MixedPathSampler(
             timegrid=self.timegrid,
@@ -276,13 +281,7 @@ class MixedSBMSolver:
             else torch.empty((N, 0), device=self.device)
         )
         prior_cat = (
-            torch.stack(
-                [
-                    torch.randint(0, c, (N,), device=self.device)
-                    for c in self.cardinalities
-                ],
-                dim=1,
-            )
+            self.ref_cat.sample_prior(N, generator=torch.Generator(device=self.device).manual_seed(self.cfg.seed + 999))
             if self.has_cat
             else torch.empty((N, 0), dtype=torch.long, device=self.device)
         )
@@ -373,13 +372,7 @@ class MixedSBMSolver:
                 else torch.empty((n_samples, 0), device=self.device)
             )
             start_cat = (
-                torch.stack(
-                    [
-                        torch.randint(0, c, (n_samples,), device=self.device, generator=generator)
-                        for c in self.cardinalities
-                    ],
-                    dim=1,
-                )
+                self.ref_cat.sample_prior(n_samples, generator=generator)
                 if self.has_cat
                 else torch.empty((n_samples, 0), dtype=torch.long, device=self.device)
             )
@@ -397,7 +390,6 @@ class MixedSBMSolver:
             self.model.train(was_training)
 
         return gen_num, gen_cat
-
 
     @property
     def n_updates(self) -> int:
@@ -423,7 +415,7 @@ class MixedSBMSolver:
     def load_checkpoint(cls, path, device=None):
         state = torch.load(path, map_location="cpu", weights_only=False)
         if state.get("format") != CHECKPOINT_FORMAT:
-            raise ValueError("unsupported MSBM checkpoint: expected sbtab.mixedsbm/4 (exact categorical powers); older references require retraining")
+            raise ValueError(f"unsupported MSBM checkpoint: expected {CHECKPOINT_FORMAT}")
         config = dict(state["config"])
         config["fb_sequence"] = tuple(config["fb_sequence"])
         if device is not None:
